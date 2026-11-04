@@ -7,6 +7,7 @@ namespace ChargerEmulator\Protocol;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
+use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -102,6 +103,13 @@ final class StationSessionWorker
 
             if ($command['action'] === 'RemoteStart') {
                 $result = $this->remoteStart($chargerId, $command['payload']);
+                $this->commands->complete($command['id'], $result);
+
+                return true;
+            }
+
+            if ($command['action'] === 'RemoteStop') {
+                $result = $this->remoteStop($chargerId, $command['payload']);
                 $this->commands->complete($command['id'], $result);
 
                 return true;
@@ -252,19 +260,24 @@ final class StationSessionWorker
     {
         $deviceModel = new DeviceModel($this->outletSessions, $chargerId);
         $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
+        $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
 
         return new OcppClient(
             $this->sessions[$chargerId]['connection'],
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $remoteStart): ?array {
+            function (string $action, array $payload) use ($deviceModel, $remoteStart, $remoteStop): ?array {
                 $deviceModelResponse = $deviceModel->handle($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
                 }
 
-                return $action === 'RequestStartTransaction' ? $remoteStart->handle($payload) : null;
+                if ($action === 'RequestStartTransaction') {
+                    return $remoteStart->handle($payload);
+                }
+
+                return $action === 'RequestStopTransaction' ? $remoteStop->handle($payload) : null;
             },
             function () use ($chargerId): ?string {
                 $charger = $this->chargers->get($chargerId);
@@ -377,6 +390,39 @@ final class StationSessionWorker
      * @param array<string, mixed> $payload
      * @return array{status:string}
      */
+    private function remoteStop(int $chargerId, array $payload): array
+    {
+        $evseId = $this->requiredOutletId($payload, 'evseId');
+        $connectorId = $this->requiredOutletId($payload, 'connectorId');
+        $transactionId = $payload['transactionId'] ?? null;
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if (!is_string($transactionId) || $session === null
+            || $session['connector_status'] !== 'Occupied'
+            || $session['transaction_id'] !== $transactionId) {
+            throw new RuntimeException('The accepted remote-stop request no longer matches an active transaction.');
+        }
+
+        $sequence = $session['seq_no'] + 1;
+        $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'RemoteStop',
+            'seqNo' => $sequence,
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => 'EVConnected',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ]);
+        $this->outletSessions->markRemoteStopRequested($chargerId, $evseId, $connectorId, $transactionId, $sequence);
+
+        return ['status' => 'StopRequested'];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string}
+     */
     private function unplug(int $chargerId, array $payload): array
     {
         $evseId = $this->requiredOutletId($payload, 'evseId');
@@ -386,8 +432,13 @@ final class StationSessionWorker
             throw new RuntimeException('The selected outlet has no active vehicle.');
         }
 
+        if (isset($payload['transactionId']) && $payload['transactionId'] !== $session['transaction_id']) {
+            throw new RuntimeException('The active outlet transaction changed before remote stop completed.');
+        }
+
         $sequence = $session['seq_no'] + 1;
         $meterWh = $session['meter_wh'] + self::SIMULATED_SESSION_ENERGY_WH;
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
         $this->createClient($chargerId)->request('TransactionEvent', [
             'eventType' => 'Ended',
             'timestamp' => gmdate(DATE_ATOM),
@@ -397,12 +448,11 @@ final class StationSessionWorker
             'transactionInfo' => [
                 'transactionId' => $session['transaction_id'],
                 'chargingState' => 'Idle',
-                'stoppedReason' => 'EVDisconnected',
+                'stoppedReason' => $session['stop_reason'] === 'Remote' ? 'Remote' : 'EVDisconnected',
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
         ]);
         $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id'], $meterWh);
-        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
 
         return ['status' => 'Unplugged'];
     }

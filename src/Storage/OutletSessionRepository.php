@@ -35,12 +35,12 @@ final class OutletSessionRepository
     }
 
     /**
-     * @return list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int}>
+     * @return list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string}>
      */
     public function allForCharger(int $chargerId): array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason
             FROM outlet_session WHERE charger_id = :charger_id ORDER BY evse_id, connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId]);
@@ -54,17 +54,18 @@ final class OutletSessionRepository
                 'id_token' => $row['id_token'],
                 'seq_no' => (int) $row['seq_no'],
                 'meter_wh' => (int) $row['meter_wh'],
+                'stop_reason' => $row['stop_reason'],
             ];
         }, $statement->fetchAll());
     }
 
     /**
-     * @return array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int}|null
+     * @return array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string}|null
      */
     public function find(int $chargerId, int $evseId, int $connectorId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason
             FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId, 'evse_id' => $evseId, 'connector_id' => $connectorId]);
@@ -81,6 +82,36 @@ final class OutletSessionRepository
             'id_token' => $row['id_token'],
             'seq_no' => (int) $row['seq_no'],
             'meter_wh' => (int) $row['meter_wh'],
+            'stop_reason' => $row['stop_reason'],
+        ];
+    }
+
+    /**
+     * @return array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string}|null
+     */
+    public function findByTransactionId(int $chargerId, string $transactionId): ?array
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason
+            FROM outlet_session
+            WHERE charger_id = :charger_id AND transaction_id = :transaction_id AND connector_status = 'Occupied'
+            LIMIT 1
+            SQL);
+        $statement->execute(['charger_id' => $chargerId, 'transaction_id' => $transactionId]);
+        $row = $statement->fetch();
+        if ($row === false) {
+            return null;
+        }
+
+        return [
+            'evse_id' => (int) $row['evse_id'],
+            'connector_id' => (int) $row['connector_id'],
+            'connector_status' => $row['connector_status'],
+            'transaction_id' => $row['transaction_id'],
+            'id_token' => $row['id_token'],
+            'seq_no' => (int) $row['seq_no'],
+            'meter_wh' => (int) $row['meter_wh'],
+            'stop_reason' => $row['stop_reason'],
         ];
     }
 
@@ -88,7 +119,7 @@ final class OutletSessionRepository
     {
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
-            SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = NULL, seq_no = 0
+            SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = NULL, seq_no = 0, stop_reason = NULL
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Available'
             SQL);
@@ -127,7 +158,7 @@ final class OutletSessionRepository
     {
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
-            SET connector_status = 'Available', transaction_id = NULL, id_token = NULL, seq_no = 0, meter_wh = :meter_wh
+            SET connector_status = 'Available', transaction_id = NULL, id_token = NULL, seq_no = 0, meter_wh = :meter_wh, stop_reason = NULL
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND transaction_id = :transaction_id
             SQL);
@@ -140,6 +171,25 @@ final class OutletSessionRepository
         ]);
         if ($statement->rowCount() !== 1) {
             throw new RuntimeException('The active outlet transaction changed before unplug completed.');
+        }
+    }
+
+    public function markRemoteStopRequested(int $chargerId, int $evseId, int $connectorId, string $transactionId, int $sequence): void
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE outlet_session SET seq_no = :seq_no, stop_reason = 'Remote'
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Occupied' AND transaction_id = :transaction_id
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'seq_no' => $sequence,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The active outlet transaction changed before remote stop completed.');
         }
     }
 

@@ -39,6 +39,17 @@ it('keeps an outlet meter register across completed sessions and database reopen
 
     expect($session['meter_wh'] ?? null)->toBe(2000);
 
+    $sessions->markOccupied($chargerId, 1, 1, 'tx-3');
+    $sessions->markRemoteStopRequested($chargerId, 1, 1, 'tx-3', 1);
+    unset($sessions, $database);
+    $database = Database::connect($databasePath);
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, $outlets);
+    $session = $sessions->find($chargerId, 1, 1);
+
+    expect($session['seq_no'] ?? null)->toBe(1)
+        ->and($session['stop_reason'] ?? null)->toBe('Remote');
+
     unset($sessions, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
         if (is_file($path)) {

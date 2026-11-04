@@ -197,7 +197,8 @@ final class Database
     private static function migrateCommands(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
-        $needsMigration = is_string($schema) && !str_contains($schema, "'RemoteStart'");
+        $needsMigration = is_string($schema)
+            && (!str_contains($schema, "'RemoteStart'") || !str_contains($schema, "'RemoteStop'"));
         if ($needsMigration) {
             $pdo->exec('DROP INDEX IF EXISTS ocpp_command_pending');
             $pdo->exec('ALTER TABLE ocpp_command RENAME TO ocpp_command_legacy');
@@ -207,7 +208,7 @@ final class Database
             CREATE TABLE IF NOT EXISTS ocpp_command (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart')),
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart', 'RemoteStop')),
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
                 result TEXT,
@@ -240,6 +241,7 @@ final class Database
                 id_token TEXT,
                 seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
                 meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
+                stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote'),
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
                 CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
@@ -250,6 +252,10 @@ final class Database
         $columns = $pdo->query('PRAGMA table_info(outlet_session)')->fetchAll(PDO::FETCH_COLUMN, 1);
         if (!in_array('meter_wh', $columns, true)) {
             $pdo->exec('ALTER TABLE outlet_session ADD COLUMN meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0)');
+        }
+
+        if (!in_array('stop_reason', $columns, true)) {
+            $pdo->exec("ALTER TABLE outlet_session ADD COLUMN stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote')");
         }
     }
 }

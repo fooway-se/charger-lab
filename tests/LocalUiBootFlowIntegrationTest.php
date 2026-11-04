@@ -343,6 +343,26 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         expect($remoteStartOutput)->toContain('"status":"Accepted"');
         expect(strpos($remoteStartOutput, 'RemoteStart station response: '))
             ->toBeLessThan(strpos($remoteStartOutput, 'RemoteStart TransactionEvent: '));
+        if (!str_contains($remoteStartOutput, 'RemoteStop station response: ')) {
+            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
+        }
+
+        if (!str_contains($remoteStartOutput, 'RemoteStop TransactionEvent: ')) {
+            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop TransactionEvent: ', 5_000);
+        }
+
+        expect($remoteStartOutput)->toContain('RemoteStop station response: ');
+        expect($remoteStartOutput)->toContain('"status":"Accepted"');
+        expect(strpos($remoteStartOutput, 'RemoteStop station response: '))
+            ->toBeLessThan(strpos($remoteStartOutput, 'RemoteStop TransactionEvent: '));
+
+        [$remoteStopUnplugBody, $remoteStopUnplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($remoteStopUnplugHeaders[0] ?? '', '200') || !is_string($remoteStopUnplugBody))->toBeFalse('The vehicle should unplug after the remote stop request has ended energy delivery.');
         $heartbeatEntries = waitForHeartbeat($appPort, $chargerId, 7_000);
         $heartbeatCall = json_decode($heartbeatEntries[0]['message'] ?? 'null', false);
         expect(count($heartbeatEntries) < 2
@@ -487,14 +507,38 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($remoteStartPayload[3]['eventType'] ?? null) !== 'Started'
             || ($remoteStartPayload[3]['transactionInfo']['remoteStartId'] ?? null) !== 42
             || ($remoteStartPayload[3]['idToken']['idToken'] ?? null) !== 'REMOTE-42')->toBeFalse('An accepted remote start should produce a correlated Started TransactionEvent.');
+        $remoteStopEntries = array_values(array_filter(
+            $updatedCharger['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
 
-        [$remoteUnplugBody, $remoteUnplugHeaders] = request(
-            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
-            'POST',
-            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
-            'application/json',
-        );
-        expect(!str_contains($remoteUnplugHeaders[0] ?? '', '200') || !is_string($remoteUnplugBody))->toBeFalse('The UI should be able to end the remotely started simulated transaction.');
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['triggerReason'] ?? null) === 'RemoteStop';
+            },
+        ));
+        $remoteStopPayload = json_decode($remoteStopEntries[0]['message'] ?? 'null', true);
+        expect(count($remoteStopEntries) !== 1
+            || ($remoteStopPayload[3]['eventType'] ?? null) !== 'Updated'
+            || ($remoteStopPayload[3]['triggerReason'] ?? null) !== 'RemoteStop')->toBeFalse('An accepted remote stop should report the stop with a RemoteStop update before cable removal.');
+        $remoteEndedEntries = array_values(array_filter(
+            $updatedCharger['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['eventType'] ?? null) === 'Ended'
+                    && ($call[3]['evse']['id'] ?? null) === 1;
+            },
+        ));
+        $remoteEndedPayload = json_decode($remoteEndedEntries[0]['message'] ?? 'null', true);
+        expect(count($remoteEndedEntries) !== 1
+            || ($remoteEndedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'Remote')->toBeFalse('After unplugging, the stopped transaction should end with reason Remote.');
         $transactionCalls = array_values(array_filter(
             $transactionEntries,
             static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing',
@@ -665,7 +709,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $bootCount !== 4
             || $authorizeCount !== 2
             || $statusNotificationCount !== 12
-            || $transactionEventCount !== 12
+            || $transactionEventCount !== 14
             || $heartbeatCount < 2
             || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
                 'boot' => $bootCount,

@@ -217,6 +217,7 @@ function serveClient($client): void
                 writeFrame($client, 0x1, $remoteStartCall);
                 $requestAnswered = false;
                 $transactionStarted = false;
+                $remoteTransactionId = null;
                 while ((!$requestAnswered || !$transactionStarted) && ($stationResponse = readFrame($client)) !== null) {
                     if ($stationResponse[0] !== 0x1) {
                         continue;
@@ -244,11 +245,52 @@ function serveClient($client): void
                             && ($outgoingPayload['eventType'] ?? null) === 'Started'
                             && ($outgoingPayload['triggerReason'] ?? null) === 'RemoteStart') {
                             $transactionStarted = true;
+                            $remoteTransactionId = $outgoingPayload['transactionInfo']['transactionId'] ?? null;
                             fwrite(STDOUT, 'RemoteStart TransactionEvent: ' . $stationResponse[1] . "\n");
                         }
 
                         $outgoingResponse = json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                         writeFrame($client, 0x1, $outgoingResponse);
+                    }
+                }
+
+                if ($requestAnswered && $transactionStarted && is_string($remoteTransactionId)) {
+                    $remoteStopCallId = 'fake-csms-remote-stop-' . $call[1];
+                    $remoteStopCall = json_encode([2, $remoteStopCallId, 'RequestStopTransaction', [
+                        'transactionId' => $remoteTransactionId,
+                    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $remoteStopCall);
+                    $stopAnswered = false;
+                    $remoteStopReported = false;
+                    while ((!$stopAnswered || !$remoteStopReported) && ($stationResponse = readFrame($client)) !== null) {
+                        if ($stationResponse[0] !== 0x1) {
+                            continue;
+                        }
+
+                        $stationMessage = json_decode($stationResponse[1], true);
+                        if (!is_array($stationMessage)) {
+                            continue;
+                        }
+
+                        if (($stationMessage[0] ?? null) === 3 && ($stationMessage[1] ?? null) === $remoteStopCallId) {
+                            fwrite(STDOUT, 'RemoteStop station response: ' . $stationResponse[1] . "\n");
+                            $stopAnswered = ($stationMessage[2]['status'] ?? null) === 'Accepted';
+                        } elseif (($stationMessage[0] ?? null) === 2) {
+                            $outgoingAction = $stationMessage[2] ?? '';
+                            $outgoingPayload = $stationMessage[3] ?? [];
+                            if ($outgoingAction === 'TransactionEvent'
+                                && ($outgoingPayload['eventType'] ?? null) === 'Updated'
+                                && ($outgoingPayload['triggerReason'] ?? null) === 'RemoteStop') {
+                                $remoteStopReported = true;
+                                fwrite(STDOUT, 'RemoteStop TransactionEvent: ' . $stationResponse[1] . "\n");
+                            }
+
+                            $outgoingResult = $outgoingAction === 'Heartbeat'
+                                ? ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')]
+                                : new stdClass();
+                            $outgoingResponse = json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                            writeFrame($client, 0x1, $outgoingResponse);
+                        }
                     }
                 }
             }
