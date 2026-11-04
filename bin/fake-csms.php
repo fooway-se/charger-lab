@@ -217,7 +217,11 @@ function serveClient($client): void
                     ], [
                         'component' => ['name' => 'SampledDataCtrlr'],
                         'variable' => ['name' => 'TxEndedMeasurands'],
-                        'attributeValue' => '',
+                        'attributeValue' => 'Energy.Active.Import.Register',
+                    ], [
+                        'component' => ['name' => 'SampledDataCtrlr'],
+                        'variable' => ['name' => 'TxEndedInterval'],
+                        'attributeValue' => '1',
                     ]],
                 ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 writeFrame($client, 0x1, $meterSettingsCall);

@@ -81,6 +81,8 @@ it('adds the meter register when upgrading an existing outlet session table', fu
 
     $legacyDatabase = new PDO('sqlite:' . $databasePath);
     $legacyDatabase->exec('ALTER TABLE outlet_session DROP COLUMN meter_wh');
+    $legacyDatabase->exec('ALTER TABLE outlet_session DROP COLUMN meter_ended_at');
+    $legacyDatabase->exec('ALTER TABLE outlet_session DROP COLUMN meter_end_samples');
     unset($legacyDatabase);
 
     $database = Database::connect($databasePath);
@@ -89,9 +91,55 @@ it('adds the meter register when upgrading an existing outlet session table', fu
     expect($session['connector_status'] ?? null)->toBe('Occupied')
         ->and($session['transaction_id'] ?? null)->toBe('legacy-tx')
         ->and($session['id_token'] ?? null)->toBe('04A1')
-        ->and($session['meter_wh'] ?? null)->toBe(0);
+        ->and($session['meter_wh'] ?? null)->toBe(0)
+        ->and($session['meter_end_samples'] ?? null)->toBe([])
+        ->and($session['meter_ended_at'] ?? null)->toBeNull();
 
     unset($database);
+    foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+
+    rmdir($directory);
+});
+
+it('persists transaction end interval samples across database reopen', function (): void {
+    $directory = sys_get_temp_dir() . '/charger-ended-meter-samples-' . bin2hex(random_bytes(6));
+    $databasePath = $directory . '/emulator.sqlite';
+    $database = Database::connect($databasePath);
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->markOccupied($chargerId, 1, 1, 'tx-samples');
+    $sampledAt = '2026-11-04T12:00:00+00:00';
+    $meterValue = [
+        'timestamp' => $sampledAt,
+        'sampledValue' => [[
+            'value' => 100,
+            'context' => 'Sample.Periodic',
+            'measurand' => 'Energy.Active.Import.Register',
+            'unitOfMeasure' => ['unit' => 'Wh'],
+        ]],
+    ];
+    $sessions->recordTransactionEndSample($chargerId, 1, 1, 'tx-samples', 100, $sampledAt, $meterValue);
+    unset($sessions, $database);
+
+    $database = Database::connect($databasePath);
+    $sessions = new OutletSessionRepository($database);
+    $session = $sessions->find($chargerId, 1, 1);
+
+    expect($session['meter_wh'] ?? null)->toBe(100)
+        ->and($session['meter_end_samples'] ?? null)->toBe([$meterValue])
+        ->and($session['meter_ended_at'] ?? null)->toBe($sampledAt);
+
+    $sessions->markAvailable($chargerId, 1, 1, 'tx-samples', 1100);
+    $session = $sessions->find($chargerId, 1, 1);
+    expect($session['meter_end_samples'] ?? null)->toBe([])
+        ->and($session['meter_ended_at'] ?? null)->toBeNull();
+
+    unset($sessions, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
         if (is_file($path)) {
             unlink($path);

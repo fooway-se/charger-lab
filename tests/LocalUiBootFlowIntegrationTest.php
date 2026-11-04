@@ -651,8 +651,15 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
 
             return ($payload[3]['triggerReason'] ?? null) === 'MeterValuePeriodic';
         });
+        $endedMeterValues = $endedPayload[3]['meterValue'] ?? [];
+        $endedIntervalSamples = array_filter($endedMeterValues, static function (array $meterValue): bool {
+            return ($meterValue['sampledValue'][0]['context'] ?? null) === 'Sample.Periodic';
+        });
+        $endedRegisterSamples = array_filter($endedMeterValues, static function (array $meterValue): bool {
+            return ($meterValue['sampledValue'][0]['context'] ?? null) === 'Transaction.End';
+        });
         $expectedEndedSequence = 3 + count($periodicCalls);
-        $expectedEndedMeterWh = 1000 + (100 * count($periodicCalls));
+        $expectedEndedMeterWh = 1000 + (100 * (count($periodicCalls) + count($endedIntervalSamples)));
         $unplugDatabase = new PDO('sqlite:' . $databasePath);
         $persistedMeterWh = (int) $unplugDatabase->query(
             "SELECT meter_wh FROM outlet_session WHERE charger_id = {$chargerId} AND evse_id = 2 AND connector_id = 1",
@@ -673,7 +680,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
             || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
-            || isset($endedPayload[3]['meterValue'])
+            || $endedIntervalSamples === []
+            || $endedRegisterSamples === []
             || $persistedMeterWh !== $expectedEndedMeterWh
             || ($availableStatusPayload[3]['connectorStatus'] ?? null) !== 'Available'
             || ($availableStatusPayload[3]['evseId'] ?? null) !== 2)->toBeFalse('Unplugging an outlet should end its transaction and restore Available status.');

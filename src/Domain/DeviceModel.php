@@ -243,7 +243,7 @@ final class DeviceModel
     private function isWritable(array $component, array $variable): bool
     {
         return ($component['name'] ?? null) === 'SampledDataCtrlr'
-            && in_array($variable['name'] ?? null, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
+            && in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
     }
 
     /**
@@ -251,7 +251,7 @@ final class DeviceModel
      */
     private function isValidSetting(string $variable, string $value): bool
     {
-        if ($variable === 'TxUpdatedInterval') {
+        if (in_array($variable, ['TxEndedInterval', 'TxUpdatedInterval'], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
                 && filter_var($value, FILTER_VALIDATE_INT) !== false;
         }

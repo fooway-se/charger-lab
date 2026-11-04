@@ -215,6 +215,10 @@ final class StationSessionWorker
                     return true;
                 }
 
+                if ($this->sampleTransactionEndMeterValue($chargerId)) {
+                    return true;
+                }
+
                 $message = $session['connection']->receiveAvailable();
                 if ($message !== null) {
                     $charger = $this->chargers->get($chargerId);
@@ -474,9 +478,13 @@ final class StationSessionWorker
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
         ];
+        $meterValues = $session['meter_end_samples'];
         $meterValue = $this->transactionEndMeterValue($chargerId, $meterWh);
         if ($meterValue !== null) {
-            $transactionEvent['meterValue'] = $meterValue;
+            $meterValues = [...$meterValues, ...$meterValue];
+        }
+        if ($meterValues !== []) {
+            $transactionEvent['meterValue'] = $meterValues;
         }
 
         $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
@@ -567,10 +575,10 @@ final class StationSessionWorker
     /**
      * @return list<array{timestamp:string,sampledValue:list<array{value:int,context:string,measurand:string,unitOfMeasure:array{unit:string}}>}>
      */
-    private function meterValue(int $meterWh, string $context): array
+    private function meterValue(int $meterWh, string $context, ?string $sampledAt = null): array
     {
         return [[
-            'timestamp' => gmdate(DATE_ATOM),
+            'timestamp' => $sampledAt ?? gmdate(DATE_ATOM),
             'sampledValue' => [[
                 'value' => $meterWh,
                 'context' => $context,
@@ -627,6 +635,48 @@ final class StationSessionWorker
                 $meterWh,
                 $sequence,
                 $sampledAt,
+            );
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private function sampleTransactionEndMeterValue(int $chargerId): bool
+    {
+        $interval = filter_var(
+            $this->deviceModelSettings->get($chargerId, 'TxEndedInterval'),
+            FILTER_VALIDATE_INT,
+        );
+        if (!is_int($interval) || $interval < 1
+            || $this->deviceModelSettings->get($chargerId, 'TxEndedMeasurands') !== 'Energy.Active.Import.Register') {
+            return false;
+        }
+
+        foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
+            if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null) {
+                continue;
+            }
+
+            $lastSampleAt = $session['meter_ended_at'] === null
+                ? false
+                : strtotime($session['meter_ended_at']);
+            if ($lastSampleAt !== false && time() < $lastSampleAt + $interval) {
+                continue;
+            }
+
+            $sampledAt = gmdate(DATE_ATOM);
+            $meterWh = $session['meter_wh'] + self::SIMULATED_PERIODIC_ENERGY_WH;
+            $meterValue = $this->meterValue($meterWh, 'Sample.Periodic', $sampledAt)[0];
+            $this->outletSessions->recordTransactionEndSample(
+                $chargerId,
+                $session['evse_id'],
+                $session['connector_id'],
+                $session['transaction_id'],
+                $meterWh,
+                $sampledAt,
+                $meterValue,
             );
 
             return true;

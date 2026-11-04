@@ -244,6 +244,8 @@ final class Database
                 meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
                 stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote'),
                 meter_updated_at TEXT,
+                meter_ended_at TEXT,
+                meter_end_samples TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
                 CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
@@ -263,12 +265,20 @@ final class Database
         if (!in_array('meter_updated_at', $columns, true)) {
             $pdo->exec('ALTER TABLE outlet_session ADD COLUMN meter_updated_at TEXT');
         }
+
+        if (!in_array('meter_ended_at', $columns, true)) {
+            $pdo->exec('ALTER TABLE outlet_session ADD COLUMN meter_ended_at TEXT');
+        }
+
+        if (!in_array('meter_end_samples', $columns, true)) {
+            $pdo->exec("ALTER TABLE outlet_session ADD COLUMN meter_end_samples TEXT NOT NULL DEFAULT '[]'");
+        }
     }
 
     private static function migrateDeviceModelSettings(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
-        if ($schema !== false && str_contains((string) $schema, "'TxEndedMeasurands'")) {
+        if ($schema !== false && str_contains((string) $schema, "'TxEndedInterval'")) {
             return;
         }
 
@@ -279,7 +289,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )
