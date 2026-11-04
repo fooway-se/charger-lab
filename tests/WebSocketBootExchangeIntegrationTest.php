@@ -23,6 +23,8 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
         'PATH' => (string) getenv('PATH'),
         'FAKE_CSMS_PORT' => (string) $port,
         'FAKE_CSMS_FRAGMENT_RESPONSE' => '1',
+        'FAKE_CSMS_BASIC_AUTH_STATION' => 'IntegrationCharger',
+        'FAKE_CSMS_BASIC_AUTH_PASSWORD' => 'integration-secret',
     ];
 
     $process = proc_open(
@@ -60,7 +62,11 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
 
         $exchanges = [];
         $client = new OcppClient(
-            new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"),
+            new WebSocketConnection(
+                "ws://127.0.0.1:{$port}/ocpp/IntegrationCharger",
+                username: 'IntegrationCharger',
+                password: 'integration-secret',
+            ),
             static function (string $direction, string $action, string $message) use (&$exchanges): void {
                 $exchanges[] = [$direction, $action, json_decode($message, true, flags: JSON_THROW_ON_ERROR)];
             },
@@ -79,7 +85,11 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
 
         unset($client);
 
-        $unsupportedClient = new OcppClient(new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"));
+        $unsupportedClient = new OcppClient(new WebSocketConnection(
+            "ws://127.0.0.1:{$port}/ocpp/IntegrationCharger",
+            username: 'IntegrationCharger',
+            password: 'integration-secret',
+        ));
         expect(fn () => $unsupportedClient->request('GetVariables', []))
             ->toThrow(OcppProtocolException::class, 'NotImplemented');
 

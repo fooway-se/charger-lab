@@ -214,6 +214,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'FAKE_CSMS_BOOT_COUNT_PATH' => $directory . '/fake-csms-boot-count',
         'FAKE_CSMS_PENDING_BOOT_COUNT' => '1',
         'FAKE_CSMS_REJECT_STATION' => 'UiIntegrationCharger',
+        'FAKE_CSMS_BASIC_AUTH_STATION' => 'UiIntegrationCharger',
+        'FAKE_CSMS_BASIC_AUTH_PASSWORD' => 'ui-station-secret',
         'FAKE_CSMS_SEND_CALL' => '1',
         'FAKE_CSMS_SEND_REJECTED_CALL' => '1',
         'FAKE_CSMS_SEND_REMOTE_START' => '1',
@@ -270,6 +272,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             'uses_default_csms' => false,
             'station_identity' => 'UiIntegrationCharger',
             'csms_url' => $overrideEndpoint,
+            'csms_password' => 'ui-station-secret',
             'vendor_name' => 'UI Test Vendor',
             'model' => 'UI Test Model',
             'serial_number' => 'UI-001',
@@ -284,6 +287,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         [$pendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $pendingState = is_string($pendingStateBody) ? json_decode($pendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $pendingCharger = $pendingState['chargers'][0] ?? [];
+        expect(($pendingCharger['has_password'] ?? false))->toBeTrue()
+            ->and($pendingStateBody)->not->toContain('ui-station-secret');
         $rejectedCallOutput = waitForProcessOutput($fakeCsms, 'Rejected station response: ', 1_000);
         expect($rejectedCallOutput)->toContain('"SecurityError"');
         $retryDeadline = strtotime((string) ($pendingCharger['boot_retry_at'] ?? ''));

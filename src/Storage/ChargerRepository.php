@@ -69,17 +69,18 @@ final class ChargerRepository
     }
 
     /**
-     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count?:int,outlet_topology?:string,uses_default_csms?:bool} $charger
+     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,csms_password?:string,outlet_count?:int,outlet_topology?:string,uses_default_csms?:bool} $charger
      */
     public function create(array $charger): int
     {
         $statement = $this->database->prepare(<<<'SQL'
-            INSERT INTO charger (station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, boot_status, updated_at)
-            VALUES (:station_identity, :csms_url, :vendor_name, :model, :serial_number, :outlet_count, :outlet_topology, :uses_default_csms, 'Not connected', :updated_at)
+            INSERT INTO charger (station_identity, csms_url, csms_password, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, boot_status, updated_at)
+            VALUES (:station_identity, :csms_url, :csms_password, :vendor_name, :model, :serial_number, :outlet_count, :outlet_topology, :uses_default_csms, 'Not connected', :updated_at)
             SQL);
         $values = $charger + [
             'outlet_count' => 1,
             'outlet_topology' => 'independent',
+            'csms_password' => '',
             'uses_default_csms' => 1,
             'updated_at' => gmdate(DATE_ATOM),
         ];
@@ -107,18 +108,25 @@ final class ChargerRepository
     }
 
     /**
-     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms?:bool} $charger
+     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,csms_password:string,outlet_count:int,outlet_topology:string,uses_default_csms?:bool} $charger
      */
     public function save(int $id, array $charger): void
     {
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE charger SET station_identity = :station_identity, csms_url = :csms_url,
+                csms_password = :csms_password,
                 vendor_name = :vendor_name, model = :model, serial_number = :serial_number,
                 uses_default_csms = :uses_default_csms,
                 outlet_count = :outlet_count, outlet_topology = :outlet_topology, updated_at = :updated_at
             WHERE id = :id
             SQL);
-        $values = $charger + ['uses_default_csms' => 1, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id];
+        $current = $this->get($id);
+        $values = $charger + [
+            'csms_password' => is_array($current) ? $current['csms_password'] : '',
+            'uses_default_csms' => 1,
+            'updated_at' => gmdate(DATE_ATOM),
+            'id' => $id,
+        ];
         $values['uses_default_csms'] = ($values['uses_default_csms'] ?? true) ? 1 : 0;
         $statement->execute($values);
         if ($statement->rowCount() === 0 && $this->get($id) === null) {
@@ -172,13 +180,14 @@ final class ChargerRepository
     }
 
     /**
-     * @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
+     * @return array{station_identity:string,csms_url:string,csms_password:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
      */
     private static function defaultCharger(string $csmsUrl): array
     {
         return [
             'station_identity' => 'DemoCharger',
             'csms_url' => $csmsUrl,
+            'csms_password' => '',
             'vendor_name' => 'Local Emulator',
             'model' => 'Developer Charger',
             'serial_number' => 'DEMO-001',

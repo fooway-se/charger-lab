@@ -38,6 +38,8 @@ final class StationController
                 $charger['csms_url'] = $defaultCsmsUrl;
             }
 
+            $charger = $this->publicCharger($charger);
+
             $outletStates = [];
             foreach ($this->outletSessions->allForCharger((int) $charger['id']) as $outletState) {
                 $outletStates[$outletState['evse_id'] . ':' . $outletState['connector_id']] = $outletState;
@@ -103,7 +105,10 @@ final class StationController
 
         $this->chargers->save($id, $charger);
 
-        return Response::json(200, ['notice' => 'Charger configuration saved.', 'charger' => $this->chargers->get($id)]);
+        return Response::json(200, [
+            'notice' => 'Charger configuration saved.',
+            'charger' => $this->publicCharger($this->chargers->get($id) ?? []),
+        ]);
     }
 
     public function boot(Request $request): Response
@@ -305,7 +310,7 @@ final class StationController
 
     /**
      * @param array<string, mixed> $input
-     * @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
+     * @return array{station_identity:string,csms_url:string,csms_password:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
      */
     private function validatedCharger(int $id, array $input): array
     {
@@ -317,6 +322,7 @@ final class StationController
         $charger = [
             'station_identity' => $this->stringValue($input, 'station_identity', $current['station_identity']),
             'csms_url' => $this->stringValue($input, 'csms_url', $current['csms_url']),
+            'csms_password' => $this->passwordValue($input, $current['csms_password']),
             'vendor_name' => $this->stringValue($input, 'vendor_name', $current['vendor_name']),
             'model' => $this->stringValue($input, 'model', $current['model']),
             'serial_number' => $this->stringValue($input, 'serial_number', $current['serial_number']),
@@ -338,8 +344,25 @@ final class StationController
         }
 
         $this->validateCsmsUrl($charger['csms_url']);
+        if (str_starts_with($charger['csms_url'], 'wss://')
+            && $charger['csms_password'] !== ''
+            && strlen($charger['csms_password']) < 16) {
+            throw new InvalidArgumentException('Security Profile 2 CSMS passwords must be at least 16 characters.');
+        }
 
         new OutletMap($charger['outlet_count'], $charger['outlet_topology']);
+
+        return $charger;
+    }
+
+    /**
+     * @param array<string, mixed> $charger
+     * @return array<string, mixed>
+     */
+    private function publicCharger(array $charger): array
+    {
+        $charger['has_password'] = ($charger['csms_password'] ?? '') !== '';
+        unset($charger['csms_password']);
 
         return $charger;
     }
@@ -425,6 +448,30 @@ final class StationController
         }
 
         throw new InvalidArgumentException("{$key} must be a boolean value.");
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function passwordValue(array $input, string $currentPassword): string
+    {
+        if ($this->booleanValue($input, 'clear_csms_password', false)) {
+            return '';
+        }
+
+        $password = $input['csms_password'] ?? '';
+        if (!is_string($password)) {
+            throw new InvalidArgumentException('csms_password must be a string.');
+        }
+
+        if ($password === '') {
+            return $currentPassword;
+        }
+        if (strlen($password) > 1024) {
+            throw new InvalidArgumentException('CSMS password must be 1024 bytes or fewer.');
+        }
+
+        return $password;
     }
 
     private function validateCsmsUrl(string $url): void

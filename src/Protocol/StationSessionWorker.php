@@ -27,7 +27,7 @@ final class StationSessionWorker
     private const SIMULATED_PERIODIC_ENERGY_WH = 100;
 
     /**
-     * @var array<int, array{connection:?WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
+     * @var array<int, array{connection:?WebSocketConnection,url:string,username:string,password:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
      */
     private array $sessions = [];
 
@@ -80,6 +80,8 @@ final class StationSessionWorker
 
             $connectionUrl = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
             if (!isset($this->sessions[$chargerId]) || $this->sessions[$chargerId]['url'] !== $connectionUrl
+                || $this->sessions[$chargerId]['username'] !== $charger['station_identity']
+                || $this->sessions[$chargerId]['password'] !== $charger['csms_password']
                 || $this->sessions[$chargerId]['connection'] === null) {
                 unset($this->sessions[$chargerId]);
                 if ($command['action'] !== 'BootNotification') {
@@ -87,8 +89,14 @@ final class StationSessionWorker
                 }
 
                 $this->sessions[$chargerId] = [
-                    'connection' => new WebSocketConnection($connectionUrl),
+                    'connection' => new WebSocketConnection(
+                        $connectionUrl,
+                        username: $charger['station_identity'],
+                        password: $charger['csms_password'],
+                    ),
                     'url' => $connectionUrl,
+                    'username' => $charger['station_identity'],
+                    'password' => $charger['csms_password'],
                     'heartbeat_interval' => 300,
                     'next_heartbeat_at' => null,
                     'boot_payload' => [],
@@ -204,7 +212,19 @@ final class StationSessionWorker
                         continue;
                     }
 
-                    $this->sessions[$chargerId]['connection'] = new WebSocketConnection($session['url']);
+                    $charger = $this->chargers->get($chargerId);
+                    if ($charger === null) {
+                        unset($this->sessions[$chargerId]);
+
+                        return true;
+                    }
+                    $this->sessions[$chargerId]['username'] = $charger['station_identity'];
+                    $this->sessions[$chargerId]['password'] = $charger['csms_password'];
+                    $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
+                        $session['url'],
+                        username: $charger['station_identity'],
+                        password: $charger['csms_password'],
+                    );
                     $this->sessions[$chargerId]['reconnect_attempt'] = 0;
                     $this->sessions[$chargerId]['next_reconnect_at'] = null;
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $session['heartbeat_interval'];
@@ -291,6 +311,8 @@ final class StationSessionWorker
             $this->sessions[$chargerId] = [
                 'connection' => null,
                 'url' => $url,
+                'username' => $charger['station_identity'],
+                'password' => $charger['csms_password'],
                 'heartbeat_interval' => $this->deviceModelSettingInt($chargerId, 'HeartbeatInterval', 300, 1),
                 'next_heartbeat_at' => null,
                 'boot_payload' => [],

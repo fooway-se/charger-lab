@@ -61,6 +61,18 @@ function serveClient($client): void
         }
     }
 
+    $pathSegments = explode('/', trim($stationKey, '/'));
+    $stationIdentity = rawurldecode((string) end($pathSegments));
+    $expectedAuthStation = getenv('FAKE_CSMS_BASIC_AUTH_STATION') ?: '';
+    if ($stationIdentity === $expectedAuthStation && $expectedAuthStation !== '') {
+        $expectedPassword = getenv('FAKE_CSMS_BASIC_AUTH_PASSWORD') ?: '';
+        $expectedAuthorization = 'Basic ' . base64_encode($expectedAuthStation . ':' . $expectedPassword);
+        if (($headers['authorization'] ?? null) !== $expectedAuthorization) {
+            fwrite($client, "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"OCPP\"\r\nConnection: close\r\n\r\n");
+            return;
+        }
+    }
+
     $key = $headers['sec-websocket-key'] ?? '';
     $protocols = array_map('trim', explode(',', $headers['sec-websocket-protocol'] ?? ''));
     if ($key === '' || !in_array('ocpp2.0.1', $protocols, true)) {

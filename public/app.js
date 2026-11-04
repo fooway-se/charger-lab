@@ -161,6 +161,10 @@ function renderCharger(charger) {
     const usesDefaultCsms = configForm.elements.namedItem('uses_default_csms');
     usesDefaultCsms.checked = charger.uses_default_csms;
     configForm.elements.namedItem('csms_url').disabled = usesDefaultCsms.checked;
+    const passwordField = configForm.elements.namedItem('csms_password');
+    passwordField.value = '';
+    passwordField.placeholder = charger.has_password ? 'Leave blank to keep saved password' : 'No password saved';
+    configForm.elements.namedItem('clear_csms_password').disabled = !charger.has_password;
 
     workspace.querySelector('[data-role="station-identity"]').textContent = charger.station_identity;
     workspace.querySelector('[data-role="vendor-name"]').textContent = charger.vendor_name;

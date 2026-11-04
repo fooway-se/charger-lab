@@ -13,7 +13,7 @@ it('serves a standalone frontend with strict JavaScript', function (): void {
 
     expect(!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js" defer></script>'))->toBeFalse('The GUI should be static HTML with a separate browser script.');
 
-    foreach (['name="outlet_count"', 'name="outlet_topology"', 'name="uses_default_csms"', 'name="outlet_number"', 'id="workspace-csms-form"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
+    foreach (['name="csms_password"', 'name="clear_csms_password"', 'name="outlet_count"', 'name="outlet_topology"', 'name="uses_default_csms"', 'name="outlet_number"', 'id="workspace-csms-form"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
         expect(!str_contains($html, $requiredElement))->toBeFalse("The GUI should expose configurable outlet topology: {$requiredElement}");
     }
 

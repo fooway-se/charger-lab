@@ -55,6 +55,7 @@ final class Database
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 station_identity TEXT NOT NULL UNIQUE,
                 csms_url TEXT NOT NULL,
+                csms_password TEXT NOT NULL DEFAULT '',
                 vendor_name TEXT NOT NULL,
                 model TEXT NOT NULL,
                 serial_number TEXT NOT NULL DEFAULT '',
@@ -76,6 +77,10 @@ final class Database
 
         if (!in_array('outlet_topology', $columns, true)) {
             $pdo->exec("ALTER TABLE charger ADD COLUMN outlet_topology TEXT NOT NULL DEFAULT 'independent'");
+        }
+
+        if (!in_array('csms_password', $columns, true)) {
+            $pdo->exec("ALTER TABLE charger ADD COLUMN csms_password TEXT NOT NULL DEFAULT ''");
         }
 
         $csmsModeAdded = !in_array('uses_default_csms', $columns, true);
@@ -102,6 +107,7 @@ final class Database
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     station_identity TEXT NOT NULL UNIQUE,
                     csms_url TEXT NOT NULL,
+                    csms_password TEXT NOT NULL DEFAULT '',
                     vendor_name TEXT NOT NULL,
                     model TEXT NOT NULL,
                     serial_number TEXT NOT NULL DEFAULT '',
@@ -115,7 +121,17 @@ final class Database
                     updated_at TEXT NOT NULL
                 )
                 SQL);
-            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status, boot_retry_at, next_transaction_sequence, updated_at FROM charger');
+            $pdo->exec(<<<'SQL'
+                INSERT INTO charger_multi (
+                    id, station_identity, csms_url, csms_password, vendor_name, model, serial_number,
+                    outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status,
+                    boot_retry_at, next_transaction_sequence, updated_at
+                )
+                SELECT id, station_identity, csms_url, csms_password, vendor_name, model, serial_number,
+                    outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status,
+                    boot_retry_at, next_transaction_sequence, updated_at
+                FROM charger
+                SQL);
             $pdo->exec('DROP TABLE charger');
             $pdo->exec('ALTER TABLE charger_multi RENAME TO charger');
         }

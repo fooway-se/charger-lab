@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Protocol;
 
+use InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 
@@ -23,8 +24,17 @@ final class WebSocketConnection implements Connection
 
     private bool $streamClosed = false;
 
-    public function __construct(string $url, private readonly int $timeoutSeconds = 8)
+    public function __construct(
+        string $url,
+        private readonly int $timeoutSeconds = 8,
+        private readonly ?string $username = null,
+        private readonly ?string $password = null,
+    )
     {
+        if ($password !== null && $password !== '' && $username === null) {
+            throw new InvalidArgumentException('A username is required when a CSMS password is configured.');
+        }
+
         $parts = parse_url($url);
         if (!is_array($parts) || !isset($parts['scheme'], $parts['host']) || !in_array($parts['scheme'], ['ws', 'wss'], true)) {
             throw new RuntimeException('CSMS URL must start with ws:// or wss://.');
@@ -217,8 +227,12 @@ final class WebSocketConnection implements Connection
             . "Upgrade: websocket\r\n"
             . "Connection: Upgrade\r\n"
             . "Sec-WebSocket-Key: {$key}\r\n"
-            . "Sec-WebSocket-Version: 13\r\n"
-            . "Sec-WebSocket-Protocol: ocpp2.0.1\r\n\r\n";
+            . "Sec-WebSocket-Version: 13\r\n";
+        if ($this->password !== null && $this->password !== '') {
+            $request .= 'Authorization: Basic ' . base64_encode($this->username . ':' . $this->password) . "\r\n";
+        }
+
+        $request .= "Sec-WebSocket-Protocol: ocpp2.0.1\r\n\r\n";
         $this->writeAll($request);
 
         $status = fgets($this->stream);
