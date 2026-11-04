@@ -6,6 +6,7 @@ namespace ChargerEmulator\Storage;
 
 use PDO;
 use RuntimeException;
+use Throwable;
 
 /**
  * Persists and sequences TransactionEvent messages until delivery is acknowledged.
@@ -111,6 +112,40 @@ final class TransactionEventOutboxRepository
             WHERE id = :id AND status = 'pending'
             SQL);
         $statement->execute(['id' => $id, 'completed_at' => gmdate(DATE_ATOM)]);
+    }
+
+    public function markPendingOffline(int $chargerId): void
+    {
+        $this->database->beginTransaction();
+        try {
+            $select = $this->database->prepare(<<<'SQL'
+                SELECT id, payload FROM transaction_event_outbox
+                WHERE charger_id = :charger_id AND status = 'pending'
+                ORDER BY id
+                SQL);
+            $select->execute(['charger_id' => $chargerId]);
+            $update = $this->database->prepare(<<<'SQL'
+                UPDATE transaction_event_outbox SET payload = :payload
+                WHERE id = :id AND status = 'pending'
+                SQL);
+            foreach ($select->fetchAll() as $row) {
+                $payload = json_decode($row['payload'], true, flags: JSON_THROW_ON_ERROR);
+                if (!is_array($payload)) {
+                    throw new RuntimeException('A TransactionEvent outbox payload must be a JSON object.');
+                }
+
+                $payload['offline'] = true;
+                $update->execute([
+                    'payload' => json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+                    'id' => $row['id'],
+                ]);
+            }
+
+            $this->database->commit();
+        } catch (Throwable $exception) {
+            $this->database->rollBack();
+            throw $exception;
+        }
     }
 
     public function hasPending(int $chargerId, ?string $transactionId = null): bool

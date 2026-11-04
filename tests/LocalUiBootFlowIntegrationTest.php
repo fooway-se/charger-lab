@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use ChargerEmulator\Storage\TransactionEventOutboxRepository;
+
 function findOpenPort(): int
 {
     $server = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorMessage);
@@ -758,6 +760,16 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($sharedCharger['outlets'][1]['evse_id'] ?? null) !== 1
             || ($sharedCharger['outlets'][1]['connector_id'] ?? null) !== 2)->toBeFalse('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
 
+        $offlineEventDatabase = new PDO('sqlite:' . $databasePath);
+        $offlineEvent = (new TransactionEventOutboxRepository($offlineEventDatabase))->enqueue($chargerId, [
+            'eventType' => 'Started',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'CablePluggedIn',
+            'seqNo' => 0,
+            'transactionInfo' => ['transactionId' => 'offline-restart-integration', 'chargingState' => 'EVConnected'],
+            'evse' => ['id' => 1, 'connectorId' => 1],
+        ]);
+        unset($offlineEventDatabase);
         stopProcess($worker);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
@@ -769,6 +781,17 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             4_000,
         );
         expect($reconnectedOutput)->toContain('Connected GET /ocpp/UiIntegrationCharger HTTP/1.1');
+        $offlineEventOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '')
+            . waitForProcessOutput($fakeCsms, '"offline":true', 3_000);
+        expect($offlineEventOutput)->toContain('"offline":true')
+            ->and($offlineEventOutput)->toContain('offline-restart-integration');
+        $offlineDeliveryDatabase = new PDO('sqlite:' . $databasePath);
+        $offlineDelivery = $offlineDeliveryDatabase->query(
+            "SELECT status, payload FROM transaction_event_outbox WHERE id = {$offlineEvent['id']}",
+        )->fetch(PDO::FETCH_ASSOC);
+        expect($offlineDelivery['status'] ?? null)->toBe('delivered')
+            ->and(json_decode($offlineDelivery['payload'] ?? '{}', true)['offline'] ?? null)->toBeTrue();
+        unset($offlineDeliveryDatabase);
 
         $fakeCsmsOutput = $GLOBALS['capturedFakeCsmsOutput'] ?? '';
         foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
@@ -796,7 +819,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $bootCount !== 4
             || $authorizeCount !== 2
             || $statusNotificationCount !== 12
-            || $transactionEventCount !== 14 + (2 * $periodicTransactionEventCount)
+            || $transactionEventCount !== 16 + (2 * $periodicTransactionEventCount)
             || $heartbeatCount < 2
             || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
                 'boot' => $bootCount,

@@ -72,3 +72,76 @@ it('does not deliver a later transaction event before an earlier event retry is 
     expect($outbox->nextPending($chargerId, 1_800_000_009))->toBeNull()
         ->and($outbox->nextPending($chargerId, 1_800_000_010)['id'] ?? null)->toBe($first['id']);
 });
+
+it('marks queued transaction events offline when the charger loses its connection', function (): void {
+    $directory = sys_get_temp_dir() . '/charger-offline-outbox-' . bin2hex(random_bytes(6));
+    mkdir($directory);
+    $databasePath = $directory . '/emulator.sqlite';
+    $database = Database::connect($databasePath);
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outbox = new TransactionEventOutboxRepository($database);
+    $pending = $outbox->enqueue($chargerId, [
+        'eventType' => 'Started',
+        'seqNo' => 0,
+        'transactionInfo' => ['transactionId' => 'offline-transaction'],
+    ]);
+    $delivered = $outbox->enqueue($chargerId, [
+        'eventType' => 'Updated',
+        'seqNo' => 1,
+        'transactionInfo' => ['transactionId' => 'offline-transaction'],
+    ]);
+    $outbox->markDelivered($delivered['id']);
+
+    $outbox->markPendingOffline($chargerId);
+    unset($outbox, $database);
+
+    $database = Database::connect($databasePath);
+    $outbox = new TransactionEventOutboxRepository($database);
+    $pendingAfterReopen = $outbox->nextPending($chargerId);
+    $deliveredRow = $database->query(
+        "SELECT payload, status FROM transaction_event_outbox WHERE id = {$delivered['id']}",
+    )->fetch(PDO::FETCH_ASSOC);
+
+    expect($pendingAfterReopen['id'] ?? null)->toBe($pending['id'])
+        ->and($pendingAfterReopen['message_id'] ?? null)->toBe($pending['message_id'])
+        ->and($pendingAfterReopen['payload']['offline'] ?? null)->toBeTrue()
+        ->and($deliveredRow['status'] ?? null)->toBe('delivered')
+        ->and(json_decode($deliveredRow['payload'] ?? '{}', true)['offline'] ?? null)->toBeNull();
+
+    unset($outbox, $database);
+    foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+
+    rmdir($directory);
+});
+
+it('rolls back all offline flags if a queued payload cannot be decoded', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outbox = new TransactionEventOutboxRepository($database);
+    $queued = $outbox->enqueue($chargerId, [
+        'eventType' => 'Started',
+        'seqNo' => 0,
+        'transactionInfo' => ['transactionId' => 'offline-rollback-transaction'],
+    ]);
+    $insertInvalidPayload = $database->prepare(<<<'SQL'
+        INSERT INTO transaction_event_outbox
+            (charger_id, transaction_id, seq_no, message_id, payload, status)
+        VALUES (:charger_id, 'invalid-payload-transaction', 0, :message_id, '{', 'pending')
+        SQL);
+    $insertInvalidPayload->execute([
+        'charger_id' => $chargerId,
+        'message_id' => bin2hex(random_bytes(16)),
+    ]);
+
+    expect(fn () => $outbox->markPendingOffline($chargerId))->toThrow(JsonException::class)
+        ->and($database->inTransaction())->toBeFalse();
+
+    $queuedRow = $database->query(
+        "SELECT payload FROM transaction_event_outbox WHERE id = {$queued['id']}",
+    )->fetch(PDO::FETCH_ASSOC);
+    expect(json_decode($queuedRow['payload'] ?? '{}', true)['offline'] ?? null)->toBeNull();
+});

@@ -287,6 +287,7 @@ final class StationSessionWorker
 
             $chargerId = (int) $charger['id'];
             $url = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
+            $this->transactionEvents->markPendingOffline($chargerId);
             $this->sessions[$chargerId] = [
                 'connection' => null,
                 'url' => $url,
@@ -306,6 +307,7 @@ final class StationSessionWorker
             return;
         }
 
+        $this->transactionEvents->markPendingOffline($chargerId);
         $attempt = $this->sessions[$chargerId]['reconnect_attempt'] + 1;
         $this->sessions[$chargerId]['connection'] = null;
         $this->sessions[$chargerId]['reconnect_attempt'] = $attempt;
