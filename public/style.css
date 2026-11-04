@@ -203,16 +203,16 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
 .log-entry { padding: 13px 0; border-bottom: 1px solid #edf1ef; }
 .log-entry:last-child { border-bottom: 0; }
 .log-entry-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-.direction-tag { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 3px; font: 500 8px var(--mono); }
+.direction-tag { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 3px; font: 700 9px var(--mono); }
 .direction-tag > span { font-size: 10px; }
-.tag-out { color: #346d8c; background: #edf5fa; }
-.tag-in { color: #267458; background: #ebf7f0; }
+.tag-out { color: #fff; background: #1769aa; }
+.tag-in { color: #fff; background: #087a56; }
 .tag-system { color: #a34e48; background: #fdf0ef; }
 .log-time { color: #9ba7a2; font: 400 9px var(--mono); }
 .message-title { display: flex; align-items: center; gap: 6px; color: #3d4c48; font: 700 11px var(--sans); }
 .message-caret { color: #9ba9a3; font-size: 12px; }
 .message-kind { margin-left: auto; color: #9aa6a1; font: 400 8px var(--mono); letter-spacing: .5px; }
-.log-entry pre { margin: 8px 0 0 17px; padding: 10px 12px; border: 1px solid #edf1ef; border-radius: 4px; background: #f8faf9; color: #475b55; font: 400 10px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-entry pre { margin: 8px 0 0 17px; padding: 10px 12px; border: 1px solid #2e383e; border-radius: 4px; background: #171d21; color: #f3f6f4; font: 400 10px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-footer { min-height: 34px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; border-top: 1px solid #edf1ef; color: #9ba7a2; font: 400 8px var(--mono); letter-spacing: .4px; }
 .log-footer i { width: 5px; height: 5px; border-radius: 50%; background: #55ae84; }
 .profile-note { display: flex; align-items: center; gap: 11px; margin-top: 12px; padding: 12px 14px; border: 1px solid #e7eeea; border-radius: 5px; background: #f9fbfa; }

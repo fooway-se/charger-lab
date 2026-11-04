@@ -191,3 +191,18 @@ it('provides a clear confirmed delete action in charger setup', function (): voi
         ->and($script)->toContain('window.confirm(')
         ->toContain("/api/charger/delete");
 });
+
+it('styles OCPP message payloads like a dark terminal', function (): void {
+    $styles = file_get_contents(__DIR__ . '/../public/style.css');
+
+    expect(!is_string($styles))->toBeFalse()
+        ->and(preg_match('/\.log-entry\s+pre\s*\{[^}]*background:\s*#171d21[^}]*color:\s*#f3f6f4/s', $styles))->toBe(1);
+});
+
+it('makes message direction labels easy to distinguish at a glance', function (): void {
+    $styles = file_get_contents(__DIR__ . '/../public/style.css');
+
+    expect(!is_string($styles))->toBeFalse()
+        ->and(preg_match('/\.tag-out\s*\{[^}]*color:\s*#fff[^}]*background:\s*#1769aa/s', $styles))->toBe(1)
+        ->and(preg_match('/\.tag-in\s*\{[^}]*color:\s*#fff[^}]*background:\s*#087a56/s', $styles))->toBe(1);
+});
