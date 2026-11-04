@@ -67,7 +67,6 @@
             <div class="charger-card-top">
                 <div class="charger-illustration" aria-hidden="true"><div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-ports"><i class="charger-port"></i><i class="charger-port"></i></div></div><div class="charger-foot"></div></div>
                 <div class="charger-summary"><span data-role="device-type" class="device-type">AC · 1 OUTLET</span><h3 data-role="station-identity"></h3><p><span data-role="vendor-name"></span> <span class="dot-sep">·</span> <span data-role="model-name"></span></p><div data-role="boot-status" class="status-chip status-idle"><i></i><span data-role="boot-status-text"></span></div></div>
-                <button class="text-button remove-charger" data-action="delete" type="button">Remove</button>
                 <button class="button button-primary connect-button" data-action="boot" type="button">Connect &amp; Boot</button>
             </div>
             <section class="outlet-map"><div class="outlet-map-heading"><span>OUTLET MAP</span><span data-role="outlet-count"></span></div><div data-role="outlet-list" class="outlet-list"></div></section>
@@ -81,7 +80,7 @@
                 <div class="form-row"><label>Vendor<input name="vendor_name" required></label><label>Model<input name="model" required></label></div>
                 <div class="form-row"><label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" required></label><label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small data-role="topology-hint"></small></label></div>
                 <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number"></label>
-                <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button></div>
+                <div class="form-actions"><button class="button button-danger" data-action="delete" type="button">Delete charger</button><button class="button button-quiet" type="submit">Save settings</button></div>
             </form>
             <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Plug in a vehicle first to attach the token to its transaction.</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><select name="outlet_number" aria-label="Occupied outlet"><option value="">Authorization only</option></select><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
         </article>

@@ -495,23 +495,45 @@ function showScreen(screenId) {
     }
 }
 
+function revealNewCharger(chargerId) {
+    const workspace = Array.from(chargerList.children)
+        .find((charger) => charger.dataset.chargerId === String(chargerId));
+    if (workspace === undefined) {
+        return;
+    }
+
+    workspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    const stationIdentity = workspace.querySelector('[data-action="save"] [name="station_identity"]');
+    if (stationIdentity !== null) {
+        stationIdentity.focus({ preventScroll: true });
+    }
+}
+
 let stateRefreshPromise = null;
 
 async function refreshState(preserveFormInput = false) {
     if (stateRefreshPromise !== null) {
-        await stateRefreshPromise;
-        return;
+        await stateRefreshPromise.catch(() => {});
+        if (preserveFormInput) {
+            return;
+        }
     }
 
     const formState = preserveFormInput ? captureFormState() : null;
-    stateRefreshPromise = api('/api/state');
-    try {
-        renderState(await stateRefreshPromise, preserveFormInput);
+    const refreshTask = (async () => {
+        const state = await api('/api/state');
+        renderState(state, preserveFormInput);
         if (formState !== null) {
             restoreFormState(formState);
         }
+    })();
+    stateRefreshPromise = refreshTask;
+    try {
+        await refreshTask;
     } finally {
-        stateRefreshPromise = null;
+        if (stateRefreshPromise === refreshTask) {
+            stateRefreshPromise = null;
+        }
     }
 }
 
@@ -604,6 +626,11 @@ chargerList.addEventListener('click', async (event) => {
             const path = button.dataset.action === 'plug-in' ? '/api/outlet/plug-in' : '/api/outlet/unplug';
             await postAction(path, { charger_id: chargerId, outlet_number: Number(button.dataset.outletNumber) });
         } else if (button.dataset.action === 'delete') {
+            const stationIdentity = workspace.querySelector('[data-role="station-identity"]').textContent.trim();
+            if (!window.confirm(`Delete charger “${stationIdentity}” and its saved configuration and logs?`)) {
+                return;
+            }
+
             await postAction('/api/charger/delete', { charger_id: chargerId });
         }
     } catch (error) {
@@ -634,6 +661,7 @@ document.querySelector('#add-charger').addEventListener('click', async () => {
     try {
         const result = await api('/api/charger/create', { method: 'POST', body: '{}' });
         await refreshState();
+        revealNewCharger(result.charger_id);
         showNotice(result.notice);
     } catch (error) {
         showNotice(error.message, true);

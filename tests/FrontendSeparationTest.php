@@ -156,3 +156,38 @@ it('updates charger panels in place during polling instead of rebuilding their c
         ->toContain('function updateOutletTile(')
         ->toContain('function updateLogEntry(');
 });
+
+it('scrolls a newly added charger into view and focuses its setup field', function (): void {
+    $script = file_get_contents(__DIR__ . '/../public/app.js');
+
+    expect(!is_string($script))->toBeFalse()
+        ->and($script)->toContain('function revealNewCharger(')
+        ->toContain("workspace.scrollIntoView({ behavior: 'smooth', block: 'start' })")
+        ->toContain("workspace.querySelector('[data-action=\"save\"] [name=\"station_identity\"]')")
+        ->toContain('revealNewCharger(result.charger_id)');
+});
+
+it('fetches fresh state after waiting for an in-flight polling refresh', function (): void {
+    $script = file_get_contents(__DIR__ . '/../public/app.js');
+
+    expect(!is_string($script))->toBeFalse()
+        ->and($script)->toContain('const refreshTask = (async () => {')
+        ->toContain('await stateRefreshPromise.catch(() => {});')
+        ->toContain('if (preserveFormInput) {')
+        ->toContain('const state = await api(\'/api/state\');')
+        ->toContain('stateRefreshPromise = refreshTask;');
+});
+
+it('provides a clear confirmed delete action in charger setup', function (): void {
+    $html = file_get_contents(__DIR__ . '/../public/index.html');
+    $script = file_get_contents(__DIR__ . '/../public/app.js');
+    $configFormPosition = is_string($html) ? strpos($html, 'data-action="save" class="config-form"') : false;
+    $deleteButtonPosition = is_string($html) ? strpos($html, 'data-action="delete"') : false;
+
+    expect(!is_string($html) || !is_string($script))->toBeFalse()
+        ->and(!is_int($configFormPosition) || !is_int($deleteButtonPosition) || $deleteButtonPosition < $configFormPosition)->toBeFalse()
+        ->and($html)->toContain('Delete charger')
+        ->not->toContain('>Remove</button>')
+        ->and($script)->toContain('window.confirm(')
+        ->toContain("/api/charger/delete");
+});

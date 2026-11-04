@@ -73,8 +73,7 @@ body[data-active-screen="setup-screen"] .charger-workspace { grid-template-colum
 body[data-active-screen="setup-screen"] .log-column,
 body[data-active-screen="setup-screen"] .token-panel,
 body[data-active-screen="setup-screen"] .connect-button { display: none; }
-body[data-active-screen="testing-screen"] .config-form,
-body[data-active-screen="testing-screen"] .remove-charger { display: none; }
+body[data-active-screen="testing-screen"] .config-form { display: none; }
 .connect-button { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
 .workspace-settings { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 16px 20px; margin-bottom: 18px; border: 1px solid #e5ebea; border-radius: 8px; background: #fff; }
 .workspace-settings h2 { margin-bottom: 4px; }
@@ -160,11 +159,13 @@ input[name="csms_url"], .token-form input, .token-form select { font-family: var
 label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; font-weight: 400; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .optional { margin-left: 4px; color: #a5afac; font-size: 7px; letter-spacing: .5px; }
-.form-actions { display: flex; gap: 9px; margin-top: 3px; }
+.form-actions { display: flex; justify-content: space-between; gap: 9px; margin-top: 3px; }
 .button { min-height: 35px; display: inline-flex; justify-content: center; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid transparent; border-radius: 4px; cursor: pointer; font: 700 10px var(--sans); transition: transform .12s, background .15s, border-color .15s; }
 .button:hover { transform: translateY(-1px); }
 .button-quiet { border-color: #dfe7e4; background: #fff; color: #62716c; }
 .button-quiet:hover { background: #f7faf8; }
+.button-danger { border-color: #f0d4d1; background: #fff8f7; color: #a34e46; }
+.button-danger:hover { border-color: #e8bbb6; background: #fff0ee; }
 .button-primary { flex: 1; background: #147462; color: #fff; box-shadow: 0 2px 4px rgb(14 94 74 / 15%); }
 .button-primary:hover { background: #105f50; }
 .button-primary span { font-size: 14px; }
