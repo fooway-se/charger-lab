@@ -10,6 +10,7 @@ use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 $directory = sys_get_temp_dir() . '/charger-controller-' . bin2hex(random_bytes(6));
@@ -22,6 +23,7 @@ $controller = new StationController(
     new ExchangeRepository($database),
     new WorkspaceSettingsRepository($database),
     new OcppCommandRepository($database),
+    new OutletSessionRepository($database),
 );
 $response = $controller->save(new Request('POST', '/api/charger', [], [], [
     'station_identity' => 'InvalidStation',

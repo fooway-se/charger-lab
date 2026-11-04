@@ -103,7 +103,7 @@ function serveClient($client): void
         }
 
         $action = $call[2] ?? '';
-        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'StatusNotification'], true)) {
+        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'StatusNotification', 'TransactionEvent'], true)) {
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
@@ -111,6 +111,7 @@ function serveClient($client): void
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
                 'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
                 'StatusNotification' => new stdClass(),
+                'TransactionEvent' => new stdClass(),
             };
             $replyFrame = [3, $call[1], $result];
         }

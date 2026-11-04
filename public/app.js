@@ -105,7 +105,7 @@ function renderLog(workspace, entries) {
     content.append(list);
 }
 
-function renderOutlets(workspace, outlets, topology) {
+function renderOutlets(workspace, outlets, topology, isConnected) {
     const list = workspace.querySelector('[data-role="outlet-list"]');
     const card = workspace.querySelector('[data-role="charger-card"]');
     const count = workspace.querySelector('[data-role="outlet-count"]');
@@ -133,9 +133,17 @@ function renderOutlets(workspace, outlets, topology) {
         ids.textContent = `EVSE ${outlet.evse_id} · Connector ${outlet.connector_id}`;
         details.append(title, ids);
         const badge = document.createElement('span');
-        badge.className = 'outlet-tag';
-        badge.textContent = 'MAPPED';
-        tile.append(marker, details, badge);
+        const connectorStatus = outlet.connector_status || 'Available';
+        badge.className = `outlet-tag outlet-status-${connectorStatus.toLowerCase()}`;
+        badge.textContent = connectorStatus.toUpperCase();
+        const action = document.createElement('button');
+        action.className = 'button button-quiet outlet-action';
+        action.type = 'button';
+        action.dataset.action = connectorStatus === 'Occupied' ? 'unplug' : 'plug-in';
+        action.dataset.outletNumber = String(outlet.number);
+        action.disabled = !isConnected;
+        action.textContent = connectorStatus === 'Occupied' ? 'Unplug' : 'Plug in';
+        tile.append(marker, details, badge, action);
         list.append(tile);
     }
 }
@@ -165,7 +173,18 @@ function renderCharger(charger) {
     status.classList.toggle('status-online', connectionStatus === 'Connected');
     status.classList.toggle('status-error', connectionStatus === 'Connection failed');
     status.classList.toggle('status-idle', connectionStatus === 'Not connected');
-    renderOutlets(workspace, charger.outlets, charger.outlet_topology);
+    renderOutlets(workspace, charger.outlets, charger.outlet_topology, connectionStatus === 'Connected');
+    const outletSelect = workspace.querySelector('[data-action="authorize"] select[name="outlet_number"]');
+    const occupiedOutlets = charger.outlets.filter((outlet) => outlet.connector_status === 'Occupied');
+    for (const outlet of occupiedOutlets) {
+        const option = document.createElement('option');
+        option.value = String(outlet.number);
+        option.textContent = `Outlet ${outlet.number} · EVSE ${outlet.evse_id}`;
+        outletSelect.append(option);
+    }
+    if (occupiedOutlets.length === 1) {
+        outletSelect.value = String(occupiedOutlets[0].number);
+    }
     renderLog(workspace, charger.entries);
 
     return workspace;
@@ -200,7 +219,11 @@ chargerList.addEventListener('submit', async (event) => {
                 uses_default_csms: form.elements.namedItem('uses_default_csms').checked,
             });
         } else if (form.dataset.action === 'authorize') {
-            await postAction('/api/authorize', { rfid_token: formValues(form).rfid_token, charger_id: chargerId });
+            await postAction('/api/authorize', {
+                rfid_token: formValues(form).rfid_token,
+                outlet_number: formValues(form).outlet_number || undefined,
+                charger_id: chargerId,
+            });
         }
     } catch (error) {
         await refreshState().catch(() => {});
@@ -234,6 +257,9 @@ chargerList.addEventListener('click', async (event) => {
             });
         } else if (button.dataset.action === 'clear-log') {
             await postAction('/api/log/clear', { charger_id: chargerId });
+        } else if (button.dataset.action === 'plug-in' || button.dataset.action === 'unplug') {
+            const path = button.dataset.action === 'plug-in' ? '/api/outlet/plug-in' : '/api/outlet/unplug';
+            await postAction(path, { charger_id: chargerId, outlet_number: Number(button.dataset.outletNumber) });
         } else if (button.dataset.action === 'delete') {
             await postAction('/api/charger/delete', { charger_id: chargerId });
         }

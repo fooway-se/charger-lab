@@ -50,7 +50,7 @@
                 <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number"></label>
                 <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button><button data-action="boot" class="button button-primary" type="button"><span>↗</span> Connect &amp; Boot</button></div>
             </form>
-            <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Send an Authorize request to this CSMS</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
+            <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Plug in a vehicle first to attach the token to its transaction.</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><select name="outlet_number" aria-label="Occupied outlet"><option value="">Authorization only</option></select><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
         </article>
         <section class="log-column">
             <div class="section-heading"><div><span class="section-kicker">LIVE INSPECTION</span><h2>Communication log <span data-role="log-count" class="count-pill">00</span></h2></div><button data-action="clear-log" class="text-button" type="button" hidden>Clear log</button></div>

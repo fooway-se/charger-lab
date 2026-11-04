@@ -146,6 +146,59 @@ try {
         throw new RuntimeException('The local UI state should expose two independent EVSEs and the BootNotification log.');
     }
 
+    [$plugBody, $plugHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    $plugResponse = is_string($plugBody) ? json_decode($plugBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    if (!str_contains($plugHeaders[0] ?? '', '200')
+        || ($plugResponse['result']['status'] ?? null) !== 'PluggedIn') {
+        throw new RuntimeException('Plugging in an outlet should report its occupied and transaction-start events.');
+    }
+    [$duplicatePlugBody, $duplicatePlugHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [$pluggedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $pluggedState = is_string($pluggedStateBody) ? json_decode($pluggedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $pluggedOutlet = $pluggedState['chargers'][0]['outlets'][1] ?? [];
+    $plugStatusCalls = array_values(array_filter(
+        $pluggedState['chargers'][0]['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing',
+    ));
+    $lastPlugStatusCall = $plugStatusCalls === [] ? [] : $plugStatusCalls[array_key_last($plugStatusCalls)];
+    $occupiedStatusPayload = json_decode($lastPlugStatusCall['message'] ?? 'null', true);
+    if (!str_contains($duplicatePlugHeaders[0] ?? '', '409')
+        || ($pluggedOutlet['connector_status'] ?? null) !== 'Occupied'
+        || !is_string($pluggedOutlet['transaction_id'] ?? null)
+        || $pluggedOutlet['transaction_id'] === ''
+        || ($occupiedStatusPayload[3]['connectorStatus'] ?? null) !== 'Occupied'
+        || ($occupiedStatusPayload[3]['evseId'] ?? null) !== 2) {
+        throw new RuntimeException('An occupied outlet should retain one active transaction and reject a duplicate plug-in.');
+    }
+    $activeConfiguration = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+    $activeConfiguration['outlet_count'] = 1;
+    [, $activeConfigurationHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/charger",
+        'POST',
+        json_encode($activeConfiguration, JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [, $activeDeleteHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/charger/delete",
+        'POST',
+        json_encode(['charger_id' => $chargerId], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    if (!str_contains($activeConfigurationHeaders[0] ?? '', '409')
+        || !str_contains($activeDeleteHeaders[0] ?? '', '409')) {
+        throw new RuntimeException('An active transaction should prevent changing its outlet map or removing its charger.');
+    }
+
     $authorizePayload = json_encode([
         'charger_id' => $chargerId,
         'uses_default_csms' => false,
@@ -157,6 +210,7 @@ try {
         'outlet_count' => 2,
         'outlet_topology' => 'independent',
         'rfid_token' => '04A1B2C3D4',
+        'outlet_number' => 2,
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     [$authorizeBody, $authorizeHeaders] = request(
         "http://127.0.0.1:{$appPort}/api/authorize",
@@ -181,6 +235,74 @@ try {
         || ($authorizeCall[3]['idToken']['type'] ?? null) !== 'ISO14443'
         || count($updatedSecondCharger['entries'] ?? []) !== 0) {
         throw new RuntimeException('The local log should persist the presented RFID token as an ISO14443 Authorize call.');
+    }
+
+    $transactionEntries = array_values(array_filter(
+        $updatedCharger['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent',
+    ));
+    $transactionCalls = array_values(array_filter(
+        $transactionEntries,
+        static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing',
+    ));
+    $startedPayload = json_decode($transactionCalls[0]['message'] ?? 'null', true);
+    $updatedPayload = json_decode($transactionCalls[1]['message'] ?? 'null', true);
+    if (count($transactionCalls) !== 2
+        || ($startedPayload[3]['eventType'] ?? null) !== 'Started'
+        || ($startedPayload[3]['triggerReason'] ?? null) !== 'CablePluggedIn'
+        || ($startedPayload[3]['seqNo'] ?? null) !== 0
+        || ($startedPayload[3]['evse']['id'] ?? null) !== 2
+        || ($startedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
+        || ($updatedPayload[3]['eventType'] ?? null) !== 'Updated'
+        || ($updatedPayload[3]['triggerReason'] ?? null) !== 'Authorized'
+        || ($updatedPayload[3]['seqNo'] ?? null) !== 1
+        || ($updatedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
+        || ($updatedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Charging'
+        || ($updatedPayload[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4') {
+        throw new RuntimeException('The plug-first flow should start a transaction, then attach its accepted RFID token.');
+    }
+
+    [$unplugBody, $unplugHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    $unplugResponse = is_string($unplugBody) ? json_decode($unplugBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    [$unpluggedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $unpluggedState = is_string($unpluggedStateBody) ? json_decode($unpluggedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $finalTransactionCalls = array_values(array_filter(
+        $unpluggedState['chargers'][0]['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent' && ($entry['direction'] ?? null) === 'outgoing',
+    ));
+    $endedPayload = json_decode($finalTransactionCalls[2]['message'] ?? 'null', true);
+    $finalStatusCalls = array_values(array_filter(
+        $unpluggedState['chargers'][0]['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing',
+    ));
+    $lastAvailableCall = $finalStatusCalls === [] ? [] : $finalStatusCalls[array_key_last($finalStatusCalls)];
+    $availableStatusPayload = json_decode($lastAvailableCall['message'] ?? 'null', true);
+    if (!str_contains($unplugHeaders[0] ?? '', '200')
+        || ($unplugResponse['result']['status'] ?? null) !== 'Unplugged'
+        || ($unpluggedState['chargers'][0]['outlets'][1]['connector_status'] ?? null) !== 'Available'
+        || ($unpluggedState['chargers'][0]['outlets'][1]['transaction_id'] ?? null) !== null
+        || ($endedPayload[3]['eventType'] ?? null) !== 'Ended'
+        || ($endedPayload[3]['seqNo'] ?? null) !== 2
+        || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
+        || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
+        || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
+        || ($availableStatusPayload[3]['connectorStatus'] ?? null) !== 'Available'
+        || ($availableStatusPayload[3]['evseId'] ?? null) !== 2) {
+        throw new RuntimeException('Unplugging an outlet should end its transaction and restore Available status.');
+    }
+    [, $duplicateUnplugHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    if (!str_contains($duplicateUnplugHeaders[0] ?? '', '409')) {
+        throw new RuntimeException('Unplugging an already available outlet should return a conflict.');
     }
 
     $updatedWorkspaceUrl = 'wss://second-workspace-csms.example/ocpp';
@@ -274,6 +396,7 @@ try {
     $bootCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification'")->fetchColumn();
     $authorizeCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Authorize'")->fetchColumn();
     $statusNotificationCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'StatusNotification'")->fetchColumn();
+    $transactionEventCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'TransactionEvent'")->fetchColumn();
     $heartbeatCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Heartbeat'")->fetchColumn();
     $serverCallCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'GetVariables'")->fetchColumn();
     if ($charger['boot_status'] !== 'Accepted'
@@ -281,7 +404,8 @@ try {
         || $charger['outlet_topology'] !== 'shared'
         || $bootCount !== 2
         || $authorizeCount !== 2
-        || $statusNotificationCount !== 4
+        || $statusNotificationCount !== 8
+        || $transactionEventCount !== 6
         || $heartbeatCount < 2
         || $serverCallCount !== 2) {
         throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');

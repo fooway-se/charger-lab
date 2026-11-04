@@ -13,6 +13,7 @@ use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 require __DIR__ . '/../src/autoload.php';
@@ -30,6 +31,7 @@ try {
         new ExchangeRepository($database),
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
+        new OutletSessionRepository($database),
     );
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);
@@ -39,6 +41,8 @@ try {
     $router->add('POST', '/api/charger/delete', [$controller, 'delete']);
     $router->add('POST', '/api/boot', [$controller, 'boot']);
     $router->add('POST', '/api/authorize', [$controller, 'authorize']);
+    $router->add('POST', '/api/outlet/plug-in', [$controller, 'plugIn']);
+    $router->add('POST', '/api/outlet/unplug', [$controller, 'unplug']);
     $router->add('POST', '/api/log/clear', [$controller, 'clearLog']);
 
     $router->dispatch($request)->send();

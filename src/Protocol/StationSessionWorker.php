@@ -8,6 +8,7 @@ use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\OutletSessionRepository;
 use RuntimeException;
 use Throwable;
 
@@ -25,6 +26,7 @@ final class StationSessionWorker
         private readonly ChargerRepository $chargers,
         private readonly ExchangeRepository $logs,
         private readonly OcppCommandRepository $commands,
+        private readonly OutletSessionRepository $outletSessions,
     ) {
     }
 
@@ -77,8 +79,28 @@ final class StationSessionWorker
                 ];
             }
 
+            if ($command['action'] === 'PlugIn') {
+                $result = $this->plugIn($chargerId, $command['payload']);
+                $this->commands->complete($command['id'], $result);
+
+                return true;
+            }
+
+            if ($command['action'] === 'Unplug') {
+                $result = $this->unplug($chargerId, $command['payload']);
+                $this->commands->complete($command['id'], $result);
+
+                return true;
+            }
+
+            $payload = $command['payload'];
+            $outlet = $payload['_outlet'] ?? null;
+            unset($payload['_outlet']);
             $client = $this->createClient($chargerId);
-            $result = $client->request($command['action'], $command['payload']);
+            $result = $client->request($command['action'], $payload);
+            if ($command['action'] === 'Authorize' && ($result['idTokenInfo']['status'] ?? null) === 'Accepted' && is_array($outlet)) {
+                $this->attachAuthorizedToken($chargerId, $outlet, $payload['idToken']);
+            }
             if ($command['action'] === 'BootNotification') {
                 $this->chargers->setBootStatus($chargerId, (string) ($result['status'] ?? 'Unknown response'));
                 $interval = $result['interval'] ?? 300;
@@ -157,14 +179,130 @@ final class StationSessionWorker
      */
     private function reportAvailableOutlets(int $chargerId, array $charger): void
     {
-        $client = $this->createClient($chargerId);
-        foreach ((new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets() as $outlet) {
-            $client->request('StatusNotification', [
-                'timestamp' => gmdate(DATE_ATOM),
-                'connectorStatus' => 'Available',
-                'evseId' => $outlet['evse_id'],
-                'connectorId' => $outlet['connector_id'],
-            ]);
+        $outlets = (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets();
+        $this->outletSessions->initialize($chargerId, $outlets);
+        foreach ($outlets as $outlet) {
+            $session = $this->outletSessions->find($chargerId, $outlet['evse_id'], $outlet['connector_id']);
+            $this->sendStatusNotification(
+                $chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $session['connector_status'] ?? 'Available',
+            );
         }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string,transactionId:string}
+     */
+    private function plugIn(int $chargerId, array $payload): array
+    {
+        $evseId = $this->requiredOutletId($payload, 'evseId');
+        $connectorId = $this->requiredOutletId($payload, 'connectorId');
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if ($session === null || $session['connector_status'] !== 'Available') {
+            throw new RuntimeException('The selected outlet is not available.');
+        }
+
+        $transactionId = bin2hex(random_bytes(16));
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
+        $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Started',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'CablePluggedIn',
+            'seqNo' => 0,
+            'transactionInfo' => ['transactionId' => $transactionId],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ]);
+        $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
+
+        return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string}
+     */
+    private function unplug(int $chargerId, array $payload): array
+    {
+        $evseId = $this->requiredOutletId($payload, 'evseId');
+        $connectorId = $this->requiredOutletId($payload, 'connectorId');
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if ($session === null || $session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null) {
+            throw new RuntimeException('The selected outlet has no active vehicle.');
+        }
+
+        $sequence = $session['seq_no'] + 1;
+        $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Ended',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'EVCommunicationLost',
+            'seqNo' => $sequence,
+            'transactionInfo' => [
+                'transactionId' => $session['transaction_id'],
+                'chargingState' => 'Idle',
+                'stoppedReason' => 'EVDisconnected',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ]);
+        $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id']);
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
+
+        return ['status' => 'Unplugged'];
+    }
+
+    /**
+     * @param array{evse_id:int,connector_id:int} $outlet
+     * @param array{idToken:string,type:string} $idToken
+     */
+    private function attachAuthorizedToken(int $chargerId, array $outlet, array $idToken): void
+    {
+        $session = $this->outletSessions->find($chargerId, $outlet['evse_id'], $outlet['connector_id']);
+        if ($session === null || $session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null) {
+            throw new RuntimeException('Plug in the selected outlet before presenting an RFID token.');
+        }
+
+        $sequence = $session['seq_no'] + 1;
+        $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'Authorized',
+            'seqNo' => $sequence,
+            'transactionInfo' => ['transactionId' => $session['transaction_id'], 'chargingState' => 'Charging'],
+            'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
+            'idToken' => $idToken,
+        ]);
+        $this->outletSessions->attachToken(
+            $chargerId,
+            $outlet['evse_id'],
+            $outlet['connector_id'],
+            $session['transaction_id'],
+            $idToken['idToken'],
+            $sequence,
+        );
+    }
+
+    private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void
+    {
+        $this->createClient($chargerId)->request('StatusNotification', [
+            'timestamp' => gmdate(DATE_ATOM),
+            'connectorStatus' => $status,
+            'evseId' => $evseId,
+            'connectorId' => $connectorId,
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function requiredOutletId(array $payload, string $key): int
+    {
+        $value = $payload[$key] ?? null;
+        if (!is_int($value) || $value < 1) {
+            throw new RuntimeException('The outlet command contains an invalid EVSE or connector ID.');
+        }
+
+        return $value;
     }
 }

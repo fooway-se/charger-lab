@@ -32,6 +32,7 @@ final class Database
             self::migrateWorkspaceSettings($pdo, $csmsModeAdded);
             self::migrateLogs($pdo);
             self::migrateCommands($pdo);
+            self::migrateOutletSessions($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -183,11 +184,18 @@ final class Database
 
     private static function migrateCommands(PDO $pdo): void
     {
+        $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
+        $needsMigration = is_string($schema) && !str_contains($schema, "'PlugIn'");
+        if ($needsMigration) {
+            $pdo->exec('DROP INDEX IF EXISTS ocpp_command_pending');
+            $pdo->exec('ALTER TABLE ocpp_command RENAME TO ocpp_command_legacy');
+        }
+
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS ocpp_command (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect')),
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug')),
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
                 result TEXT,
@@ -196,6 +204,34 @@ final class Database
                 completed_at TEXT
             )
             SQL);
+        if ($needsMigration) {
+            $pdo->exec(<<<'SQL'
+                INSERT INTO ocpp_command (id, charger_id, action, payload, status, result, error, created_at, completed_at)
+                SELECT id, charger_id, action, payload, status, result, error, created_at, completed_at
+                FROM ocpp_command_legacy
+                SQL);
+            $pdo->exec('DROP TABLE ocpp_command_legacy');
+        }
+
         $pdo->exec('CREATE INDEX IF NOT EXISTS ocpp_command_pending ON ocpp_command (status, id)');
+    }
+
+    private static function migrateOutletSessions(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS outlet_session (
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                evse_id INTEGER NOT NULL CHECK (evse_id > 0),
+                connector_id INTEGER NOT NULL CHECK (connector_id > 0),
+                connector_status TEXT NOT NULL CHECK (connector_status IN ('Available', 'Occupied')),
+                transaction_id TEXT,
+                id_token TEXT,
+                seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
+                PRIMARY KEY (charger_id, evse_id, connector_id),
+                UNIQUE (charger_id, transaction_id),
+                CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
+                    OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL))
+            )
+            SQL);
     }
 }

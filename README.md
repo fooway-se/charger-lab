@@ -1,6 +1,6 @@
 # Charger Lab
 
-A standalone local emulator for developer testing against OCPP 2.0.1 CSMS implementations. The current slice supports BootNotification, connector availability StatusNotification, and Authorize exchanges with configurable outlet topology. This is a developer testing aid, not a certification tool.
+A standalone local emulator for developer testing against OCPP 2.0.1 CSMS implementations. The current slice supports BootNotification, connector availability StatusNotification, RFID Authorize, and a plug-first TransactionEvent lifecycle with configurable outlet topology. This is a developer testing aid, not a certification tool.
 
 ## Run it
 
@@ -14,7 +14,7 @@ Charger settings, the workspace CSMS default, and per-charger exchange logs pers
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 
-The GUI is static HTML/CSS/JavaScript. PHP serves the JSON API and queues OCPP actions in SQLite. A long-running PHP worker owns one open WebSocket session per charger and reuses it for later actions. After an Accepted BootNotification it reports each outlet as Available, sends Heartbeat at the returned interval, and responds with `NotImplemented` to CSMS-initiated calls the emulator does not support. The worker updates the displayed session status, recovers interrupted BootNotification requests after restart, and closes a station session when its card is removed. No Composer packages or external font assets are required.
+The GUI is static HTML/CSS/JavaScript. Plug in a vehicle on a connected outlet to report `Occupied` and send `TransactionEvent Started`; present an RFID token to authorize and attach it to that transaction; unplug to send `TransactionEvent Ended` and report `Available`. The worker persists outlet transaction state in SQLite, sends Heartbeat at the interval returned by BootNotification, responds with `NotImplemented` to CSMS-initiated calls the emulator does not support, and owns one open WebSocket session per charger. No Composer packages or external font assets are required.
 
 ## Tests
 
@@ -25,6 +25,7 @@ php tests/BootNotificationExchangeTest.php
 php tests/OcppClientCallErrorTest.php
 php tests/OcppConnectionUrlTest.php
 php tests/OcppCommandQueueTest.php
+php tests/OcppCommandMigrationTest.php
 php tests/StoragePersistenceTest.php
 php tests/MultiChargerPersistenceTest.php
 php tests/MultiChargerMigrationTest.php

@@ -10,6 +10,7 @@ use ChargerEmulator\Http\Response;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use InvalidArgumentException;
 
@@ -23,6 +24,7 @@ final class StationController
         private readonly ExchangeRepository $logs,
         private readonly WorkspaceSettingsRepository $settings,
         private readonly OcppCommandRepository $commands,
+        private readonly OutletSessionRepository $outletSessions,
     ) {
     }
 
@@ -35,7 +37,19 @@ final class StationController
             if ($charger['uses_default_csms']) {
                 $charger['csms_url'] = $defaultCsmsUrl;
             }
-            $charger['outlets'] = (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets();
+
+            $outletStates = [];
+            foreach ($this->outletSessions->allForCharger((int) $charger['id']) as $outletState) {
+                $outletStates[$outletState['evse_id'] . ':' . $outletState['connector_id']] = $outletState;
+            }
+
+            $charger['outlets'] = array_map(static function (array $outlet) use ($outletStates): array {
+                $state = $outletStates[$outlet['evse_id'] . ':' . $outlet['connector_id']] ?? null;
+                $outlet['connector_status'] = $state['connector_status'] ?? 'Available';
+                $outlet['transaction_id'] = $state['transaction_id'] ?? null;
+
+                return $outlet;
+            }, (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets());
             $charger['entries'] = $this->logs->recent((int) $charger['id']);
             $chargers[] = $charger;
         }
@@ -77,6 +91,16 @@ final class StationController
             return Response::json(422, ['error' => $exception->getMessage()]);
         }
 
+        $current = $this->chargers->get($id);
+        if ($current !== null
+            && $this->outletSessions->hasActiveTransactions($id)
+            && ($current['station_identity'] !== $charger['station_identity']
+                || $current['csms_url'] !== $charger['csms_url']
+                || (int) $current['outlet_count'] !== $charger['outlet_count']
+                || $current['outlet_topology'] !== $charger['outlet_topology'])) {
+            return Response::json(409, ['error' => 'End outlet transactions before changing the charger identity, CSMS URL, or outlet map.']);
+        }
+
         $this->chargers->save($id, $charger);
 
         return Response::json(200, ['notice' => 'Charger configuration saved.', 'charger' => $this->chargers->get($id)]);
@@ -90,6 +114,16 @@ final class StationController
     public function authorize(Request $request): Response
     {
         return $this->executeOcppAction($request, 'Authorize');
+    }
+
+    public function plugIn(Request $request): Response
+    {
+        return $this->executeOutletAction($request, 'PlugIn');
+    }
+
+    public function unplug(Request $request): Response
+    {
+        return $this->executeOutletAction($request, 'Unplug');
     }
 
     public function clearLog(Request $request): Response
@@ -114,6 +148,9 @@ final class StationController
         if (count($this->chargers->all()) < 2) {
             return Response::json(409, ['error' => 'Keep at least one charger in the workspace.']);
         }
+        if ($this->outletSessions->hasActiveTransactions($id)) {
+            return Response::json(409, ['error' => 'Unplug all vehicles before removing this charger.']);
+        }
 
         $disconnectId = $this->commands->enqueue($id, 'Disconnect', []);
         $disconnect = $this->commands->waitForCompletion($disconnectId);
@@ -123,6 +160,9 @@ final class StationController
         if ($disconnect['status'] === 'failed') {
             return Response::json(502, ['error' => $disconnect['error'] ?? 'The charger could not be disconnected.']);
         }
+        if ($this->outletSessions->hasActiveTransactions($id)) {
+            return Response::json(409, ['error' => 'Unplug all vehicles before removing this charger.']);
+        }
 
         $this->chargers->delete($id);
 
@@ -131,11 +171,30 @@ final class StationController
 
     private function executeOcppAction(Request $request, string $action): Response
     {
+        $outlet = null;
         try {
             $input = $request->body();
             $id = $this->chargerId($input);
             $charger = $this->validatedCharger($id, $input);
             $token = $action === 'Authorize' ? $this->requiredString($request->body(), 'rfid_token') : null;
+            if ($action === 'Authorize' && array_key_exists('outlet_number', $input)) {
+                $outletNumber = $this->integerValue($input, 'outlet_number', 0);
+                foreach ((new OutletMap($charger['outlet_count'], $charger['outlet_topology']))->outlets() as $candidate) {
+                    if ($candidate['number'] === $outletNumber) {
+                        $outlet = ['evse_id' => $candidate['evse_id'], 'connector_id' => $candidate['connector_id']];
+                        break;
+                    }
+                }
+
+                if ($outlet === null) {
+                    throw new InvalidArgumentException('Select a valid outlet for this RFID token.');
+                }
+
+                $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);
+                if ($outletState === null || $outletState['connector_status'] !== 'Occupied' || $outletState['transaction_id'] === null) {
+                    return Response::json(409, ['error' => 'Plug in a vehicle on the selected outlet before presenting a token.']);
+                }
+            }
         } catch (InvalidArgumentException $exception) {
             return Response::json(422, ['error' => $exception->getMessage()]);
         }
@@ -155,6 +214,9 @@ final class StationController
                 'reason' => 'PowerUp',
             ]
             : ['idToken' => ['idToken' => $token, 'type' => 'ISO14443']];
+        if ($outlet !== null) {
+            $payload['_outlet'] = $outlet;
+        }
 
         $commandId = $this->commands->enqueue($id, $action, $payload);
         $command = $this->commands->waitForCompletion($commandId);
@@ -174,6 +236,60 @@ final class StationController
         }
 
         return Response::json(200, ['notice' => $notice, 'result' => $result]);
+    }
+
+    private function executeOutletAction(Request $request, string $action): Response
+    {
+        try {
+            $input = $request->body();
+            $id = $this->chargerId($input);
+            $charger = $this->chargers->get($id);
+            if ($charger === null) {
+                throw new InvalidArgumentException('Select a valid charger.');
+            }
+
+            $outletNumber = $this->integerValue($input, 'outlet_number', 0);
+            $outlet = null;
+            foreach ((new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets() as $candidate) {
+                if ($candidate['number'] === $outletNumber) {
+                    $outlet = $candidate;
+                    break;
+                }
+            }
+
+            if ($outlet === null) {
+                throw new InvalidArgumentException('Select a valid outlet.');
+            }
+            if ($charger['connection_status'] !== 'Connected') {
+                return Response::json(409, ['error' => 'Connect the charger with BootNotification before simulating a vehicle.']);
+            }
+
+            $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);
+            if ($action === 'PlugIn' && ($outletState === null || $outletState['connector_status'] !== 'Available')) {
+                return Response::json(409, ['error' => 'The selected outlet is not available for a vehicle.']);
+            }
+            if ($action === 'Unplug' && ($outletState === null || $outletState['connector_status'] !== 'Occupied')) {
+                return Response::json(409, ['error' => 'The selected outlet has no vehicle to unplug.']);
+            }
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
+
+        $commandId = $this->commands->enqueue($id, $action, [
+            'evseId' => $outlet['evse_id'],
+            'connectorId' => $outlet['connector_id'],
+        ]);
+        $command = $this->commands->waitForCompletion($commandId);
+        if ($command === null || in_array($command['status'], ['pending', 'processing'], true)) {
+            return Response::json(504, ['error' => 'The station session worker did not respond in time.']);
+        }
+        if ($command['status'] === 'failed') {
+            return Response::json(502, ['error' => $command['error'] ?? 'The outlet action failed.']);
+        }
+
+        $result = is_array($command['result']) ? $command['result'] : [];
+
+        return Response::json(200, ['notice' => $action === 'PlugIn' ? 'Vehicle plugged in.' : 'Vehicle unplugged.', 'result' => $result]);
     }
 
     /**
