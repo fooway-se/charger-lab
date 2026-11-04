@@ -18,7 +18,7 @@ use Throwable;
 final class StationSessionWorker
 {
     /**
-     * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float}>
+     * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float}>
      */
     private array $sessions = [];
 
@@ -76,6 +76,8 @@ final class StationSessionWorker
                     'url' => $connectionUrl,
                     'heartbeat_interval' => 300,
                     'next_heartbeat_at' => null,
+                    'boot_payload' => [],
+                    'next_boot_at' => null,
                 ];
             }
 
@@ -96,23 +98,20 @@ final class StationSessionWorker
             $payload = $command['payload'];
             $outlet = $payload['_outlet'] ?? null;
             unset($payload['_outlet']);
+            if ($command['action'] === 'BootNotification') {
+                $this->sessions[$chargerId]['boot_payload'] = $payload;
+            }
             $client = $this->createClient($chargerId);
             $result = $client->request($command['action'], $payload);
             if ($command['action'] === 'Authorize' && ($result['idTokenInfo']['status'] ?? null) === 'Accepted' && is_array($outlet)) {
                 $this->attachAuthorizedToken($chargerId, $outlet, $payload['idToken']);
             }
             if ($command['action'] === 'BootNotification') {
-                $this->chargers->setBootStatus($chargerId, (string) ($result['status'] ?? 'Unknown response'));
-                $interval = $result['interval'] ?? 300;
-                $interval = is_int($interval) && $interval > 0 ? $interval : 300;
-                $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
-                $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
-                if (($result['status'] ?? null) === 'Accepted') {
-                    $this->reportAvailableOutlets($chargerId, $charger);
-                }
+                $this->applyBootResponse($chargerId, $charger, $result);
+            } else {
+                $this->chargers->setConnectionStatus($chargerId, 'Connected');
             }
 
-            $this->chargers->setConnectionStatus($chargerId, 'Connected');
             $this->commands->complete($command['id'], $result);
         } catch (Throwable $exception) {
             unset($this->sessions[$chargerId]);
@@ -134,8 +133,22 @@ final class StationSessionWorker
     {
         foreach ($this->sessions as $chargerId => $session) {
             try {
+                if ($session['next_boot_at'] !== null && microtime(true) >= $session['next_boot_at']) {
+                    $charger = $this->chargers->get($chargerId);
+                    if ($charger === null) {
+                        unset($this->sessions[$chargerId]);
+
+                        return true;
+                    }
+
+                    $result = $this->createClient($chargerId)->request('BootNotification', $session['boot_payload']);
+                    $this->applyBootResponse($chargerId, $charger, $result);
+
+                    return true;
+                }
+
                 if ($session['next_heartbeat_at'] !== null && microtime(true) >= $session['next_heartbeat_at']) {
-                    $result = $this->createClient($chargerId)->request('Heartbeat', []);
+                    $result = $this->createClient($chargerId)->request('Heartbeat', new \stdClass());
                     $interval = $this->sessions[$chargerId]['heartbeat_interval'];
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
                     $this->chargers->setConnectionStatus($chargerId, 'Connected');
@@ -162,6 +175,33 @@ final class StationSessionWorker
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $charger
+     * @param array<string, mixed> $result
+     */
+    private function applyBootResponse(int $chargerId, array $charger, array $result): void
+    {
+        $status = is_string($result['status'] ?? null) ? $result['status'] : 'Unknown response';
+        $interval = $result['interval'] ?? 300;
+        $interval = is_int($interval) && $interval > 0 ? $interval : 300;
+        if ($status === 'Accepted') {
+            $this->sessions[$chargerId]['next_boot_at'] = null;
+            $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
+            $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
+            $this->reportAvailableOutlets($chargerId, $charger);
+            $this->chargers->setBootStatus($chargerId, $status);
+            $this->chargers->setConnectionStatus($chargerId, 'Connected');
+
+            return;
+        }
+
+        $this->sessions[$chargerId]['next_boot_at'] = microtime(true) + $interval;
+        $retryAt = gmdate(DATE_ATOM, (int) ceil($this->sessions[$chargerId]['next_boot_at']));
+        $this->chargers->setBootStatus($chargerId, $status, $retryAt);
+        $this->sessions[$chargerId]['next_heartbeat_at'] = null;
+        $this->chargers->setConnectionStatus($chargerId, $status);
     }
 
     private function createClient(int $chargerId): OcppClient
@@ -205,14 +245,14 @@ final class StationSessionWorker
             throw new RuntimeException('The selected outlet is not available.');
         }
 
-        $transactionId = bin2hex(random_bytes(16));
+        $transactionId = $this->chargers->nextTransactionId($chargerId);
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
         $this->createClient($chargerId)->request('TransactionEvent', [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'CablePluggedIn',
             'seqNo' => 0,
-            'transactionInfo' => ['transactionId' => $transactionId],
+            'transactionInfo' => ['transactionId' => $transactionId, 'chargingState' => 'EVConnected'],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
         ]);
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
@@ -264,22 +304,36 @@ final class StationSessionWorker
         }
 
         $sequence = $session['seq_no'] + 1;
-        $this->createClient($chargerId)->request('TransactionEvent', [
+        $authorizationResult = $this->createClient($chargerId)->request('TransactionEvent', [
             'eventType' => 'Updated',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'Authorized',
             'seqNo' => $sequence,
-            'transactionInfo' => ['transactionId' => $session['transaction_id'], 'chargingState' => 'Charging'],
+            'transactionInfo' => ['transactionId' => $session['transaction_id']],
             'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
             'idToken' => $idToken,
         ]);
+        if (($authorizationResult['idTokenInfo']['status'] ?? null) !== 'Accepted') {
+            throw new OcppProtocolException('The CSMS did not accept the idToken in the TransactionEvent response.');
+        }
+
+        $chargingSequence = $sequence + 1;
+        $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'ChargingStateChanged',
+            'seqNo' => $chargingSequence,
+            'transactionInfo' => ['transactionId' => $session['transaction_id'], 'chargingState' => 'Charging'],
+            'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
+        ]);
+
         $this->outletSessions->attachToken(
             $chargerId,
             $outlet['evse_id'],
             $outlet['connector_id'],
             $session['transaction_id'],
             $idToken['idToken'],
-            $sequence,
+            $chargingSequence,
         );
     }
 

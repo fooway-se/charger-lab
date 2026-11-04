@@ -39,10 +39,13 @@ unset($legacyDatabase);
 
 $database = Database::connect($databasePath);
 $chargerSchema = $database->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'charger'")->fetchColumn();
+$chargerColumns = $database->query('PRAGMA table_info(charger)')->fetchAll(PDO::FETCH_COLUMN, 1);
 $logColumns = $database->query('PRAGMA table_info(exchange_log)')->fetchAll(PDO::FETCH_COLUMN, 1);
 $legacyCharger = $database->query('SELECT * FROM charger WHERE id = 1')->fetch();
 $legacyLogs = $database->query('SELECT * FROM exchange_log')->fetchAll();
 if (str_contains((string) $chargerSchema, 'CHECK (id = 1)')
+    || !in_array('boot_retry_at', $chargerColumns, true)
+    || !in_array('next_transaction_sequence', $chargerColumns, true)
     || !in_array('charger_id', $logColumns, true)
     || $legacyCharger['station_identity'] !== 'Legacy'
     || $legacyCharger['boot_status'] !== 'Accepted'

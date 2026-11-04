@@ -8,11 +8,16 @@ use ChargerEmulator\Protocol\OcppClient;
 use ChargerEmulator\Protocol\OcppProtocolException;
 use ChargerEmulator\Protocol\WebSocketConnection;
 
-$reservation = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-if ($reservation === false || !socket_bind($reservation, '127.0.0.1', 0) || !socket_getsockname($reservation, $address, $port)) {
+$reservation = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorMessage);
+if (!is_resource($reservation)) {
     throw new RuntimeException('Could not reserve an integration-test port.');
 }
-socket_close($reservation);
+$address = stream_socket_get_name($reservation, false);
+fclose($reservation);
+if (!is_string($address) || !str_contains($address, ':')) {
+    throw new RuntimeException('Could not determine the integration-test port.');
+}
+$port = (int) substr(strrchr($address, ':'), 1);
 
 $environment = [
     'PATH' => (string) getenv('PATH'),

@@ -61,6 +61,8 @@ final class Database
                 uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
                 connection_status TEXT NOT NULL DEFAULT 'Not connected',
                 boot_status TEXT NOT NULL DEFAULT 'Not connected',
+                boot_retry_at TEXT,
+                next_transaction_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_transaction_sequence > 0),
                 updated_at TEXT NOT NULL
             )
             SQL);
@@ -83,6 +85,14 @@ final class Database
             $pdo->exec("ALTER TABLE charger ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'Not connected'");
         }
 
+        if (!in_array('boot_retry_at', $columns, true)) {
+            $pdo->exec('ALTER TABLE charger ADD COLUMN boot_retry_at TEXT');
+        }
+
+        if (!in_array('next_transaction_sequence', $columns, true)) {
+            $pdo->exec('ALTER TABLE charger ADD COLUMN next_transaction_sequence INTEGER NOT NULL DEFAULT 1');
+        }
+
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'charger'")->fetchColumn();
         if (is_string($schema) && preg_match('/CHECK\s*\(\s*id\s*=\s*1\s*\)/i', $schema) === 1) {
             $pdo->exec(<<<'SQL'
@@ -98,10 +108,12 @@ final class Database
                     uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
                     connection_status TEXT NOT NULL DEFAULT 'Not connected',
                     boot_status TEXT NOT NULL DEFAULT 'Not connected',
+                    boot_retry_at TEXT,
+                    next_transaction_sequence INTEGER NOT NULL DEFAULT 1 CHECK (next_transaction_sequence > 0),
                     updated_at TEXT NOT NULL
                 )
                 SQL);
-            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status, updated_at FROM charger');
+            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status, boot_retry_at, next_transaction_sequence, updated_at FROM charger');
             $pdo->exec('DROP TABLE charger');
             $pdo->exec('ALTER TABLE charger_multi RENAME TO charger');
         }

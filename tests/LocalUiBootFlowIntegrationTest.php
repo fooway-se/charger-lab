@@ -12,6 +12,7 @@ $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
     'PATH' => (string) getenv('PATH'),
     'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
     'FAKE_CSMS_HEARTBEAT_INTERVAL' => '1',
+    'FAKE_CSMS_PENDING_BOOT_COUNT' => '1',
     'FAKE_CSMS_SEND_CALL' => '1',
 ]);
 $worker = null;
@@ -81,10 +82,42 @@ try {
         throw new RuntimeException('The BootNotification API should return an accepted CSMS response; received ' . ($headers[0] ?? 'no HTTP status') . ' ' . (string) $body);
     }
     $bootResponse = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
-    if (($bootResponse['notice'] ?? null) !== 'BootNotification received: Accepted.') {
-        throw new RuntimeException('The BootNotification API should report the Accepted status.');
+    if (($bootResponse['result']['status'] ?? null) !== 'Pending') {
+        throw new RuntimeException('The initial BootNotification API response should preserve the CSMS Pending status.');
     }
 
+    [$pendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $pendingState = is_string($pendingStateBody) ? json_decode($pendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $pendingCharger = $pendingState['chargers'][0] ?? [];
+    $pendingStatusCalls = array_filter($pendingCharger['entries'] ?? [], static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification');
+    $pendingStationCalls = array_filter(
+        $pendingCharger['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing'
+            && in_array($entry['action'] ?? null, ['Authorize', 'Heartbeat', 'StatusNotification', 'TransactionEvent'], true),
+    );
+    [, $pendingPlugHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [, $pendingAuthorizeHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/authorize",
+        'POST',
+        json_encode(['charger_id' => $chargerId, 'rfid_token' => '04A1B2C3D4'], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    if (($pendingCharger['boot_status'] ?? null) !== 'Pending'
+        || ($pendingCharger['connection_status'] ?? null) !== 'Pending'
+        || !is_string($pendingCharger['boot_retry_at'] ?? null)
+        || $pendingStatusCalls !== []
+        || $pendingStationCalls !== []
+        || !str_contains($pendingPlugHeaders[0] ?? '', '409')
+        || !str_contains($pendingAuthorizeHeaders[0] ?? '', '409')) {
+        throw new RuntimeException('A Pending station must keep the session but send no station calls or vehicle actions before retry.');
+    }
+
+    waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
     [$bootStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
     $bootState = is_string($bootStateBody) ? json_decode($bootStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
     $statusEntries = array_values(array_filter(
@@ -114,10 +147,17 @@ try {
         throw new RuntimeException('The open session should answer a CSMS-initiated call while idle.');
     }
     $heartbeatEntries = waitForHeartbeat($appPort, $chargerId, 2_500);
+    $heartbeatCall = json_decode($heartbeatEntries[0]['message'] ?? 'null', false);
     if (count($heartbeatEntries) < 2
         || ($heartbeatEntries[0]['direction'] ?? null) !== 'outgoing'
-        || ($heartbeatEntries[1]['direction'] ?? null) !== 'incoming') {
-        throw new RuntimeException('The station should send Heartbeat and record the CSMS response using the returned interval.');
+        || ($heartbeatEntries[1]['direction'] ?? null) !== 'incoming'
+        || !is_array($heartbeatCall)
+        || !($heartbeatCall[3] ?? null) instanceof stdClass) {
+        throw new RuntimeException('Heartbeat exchange mismatch: ' . json_encode([
+            'count' => count($heartbeatEntries),
+            'directions' => array_column($heartbeatEntries, 'direction'),
+            'payload' => $heartbeatCall[3] ?? null,
+        ]));
     }
 
     [$stateBody, $stateHeaders] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
@@ -133,7 +173,7 @@ try {
     if (count($state['chargers'] ?? []) !== 2
         || ($charger['boot_status'] ?? null) !== 'Accepted'
         || ($charger['connection_status'] ?? null) !== 'Connected'
-        || count($bootEntries) !== 2
+        || count($bootEntries) !== 4
         || count($heartbeatStateEntries) < 2
         || count($serverCallEntries) !== 2
         || ($charger['outlets'][0]['evse_id'] ?? null) !== 1
@@ -246,19 +286,25 @@ try {
         static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing',
     ));
     $startedPayload = json_decode($transactionCalls[0]['message'] ?? 'null', true);
-    $updatedPayload = json_decode($transactionCalls[1]['message'] ?? 'null', true);
-    if (count($transactionCalls) !== 2
+    $authorizedPayload = json_decode($transactionCalls[1]['message'] ?? 'null', true);
+    $chargingPayload = json_decode($transactionCalls[2]['message'] ?? 'null', true);
+    if (count($transactionCalls) !== 3
         || ($startedPayload[3]['eventType'] ?? null) !== 'Started'
         || ($startedPayload[3]['triggerReason'] ?? null) !== 'CablePluggedIn'
         || ($startedPayload[3]['seqNo'] ?? null) !== 0
         || ($startedPayload[3]['evse']['id'] ?? null) !== 2
         || ($startedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
-        || ($updatedPayload[3]['eventType'] ?? null) !== 'Updated'
-        || ($updatedPayload[3]['triggerReason'] ?? null) !== 'Authorized'
-        || ($updatedPayload[3]['seqNo'] ?? null) !== 1
-        || ($updatedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
-        || ($updatedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Charging'
-        || ($updatedPayload[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4') {
+        || ($startedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'EVConnected'
+        || ($authorizedPayload[3]['eventType'] ?? null) !== 'Updated'
+        || ($authorizedPayload[3]['triggerReason'] ?? null) !== 'Authorized'
+        || ($authorizedPayload[3]['seqNo'] ?? null) !== 1
+        || ($authorizedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
+        || isset($authorizedPayload[3]['transactionInfo']['chargingState'])
+        || ($authorizedPayload[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4'
+        || ($chargingPayload[3]['eventType'] ?? null) !== 'Updated'
+        || ($chargingPayload[3]['triggerReason'] ?? null) !== 'ChargingStateChanged'
+        || ($chargingPayload[3]['seqNo'] ?? null) !== 2
+        || ($chargingPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Charging') {
         throw new RuntimeException('The plug-first flow should start a transaction, then attach its accepted RFID token.');
     }
 
@@ -275,7 +321,7 @@ try {
         $unpluggedState['chargers'][0]['entries'] ?? [],
         static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent' && ($entry['direction'] ?? null) === 'outgoing',
     ));
-    $endedPayload = json_decode($finalTransactionCalls[2]['message'] ?? 'null', true);
+    $endedPayload = json_decode($finalTransactionCalls[3]['message'] ?? 'null', true);
     $finalStatusCalls = array_values(array_filter(
         $unpluggedState['chargers'][0]['entries'] ?? [],
         static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing',
@@ -287,7 +333,7 @@ try {
         || ($unpluggedState['chargers'][0]['outlets'][1]['connector_status'] ?? null) !== 'Available'
         || ($unpluggedState['chargers'][0]['outlets'][1]['transaction_id'] ?? null) !== null
         || ($endedPayload[3]['eventType'] ?? null) !== 'Ended'
-        || ($endedPayload[3]['seqNo'] ?? null) !== 2
+        || ($endedPayload[3]['seqNo'] ?? null) !== 3
         || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
         || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
         || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
@@ -343,9 +389,10 @@ try {
     );
     $secondBootResult = is_string($secondBootBody) ? json_decode($secondBootBody, true, flags: JSON_THROW_ON_ERROR) : [];
     if (!str_contains($secondBootHeaders[0] ?? '', '200')
-        || ($secondBootResult['result']['status'] ?? null) !== 'Accepted') {
+        || ($secondBootResult['result']['status'] ?? null) !== 'Pending') {
         throw new RuntimeException('The session worker should keep multiple charger connections active against the fake CSMS.');
     }
+    waitForBootStatus($appPort, $secondChargerId, 'Accepted', 3_000);
 
     $sharedTopology = json_encode([
         'charger_id' => $chargerId,
@@ -402,10 +449,10 @@ try {
     if ($charger['boot_status'] !== 'Accepted'
         || (int) $charger['outlet_count'] !== 2
         || $charger['outlet_topology'] !== 'shared'
-        || $bootCount !== 2
+        || $bootCount !== 4
         || $authorizeCount !== 2
         || $statusNotificationCount !== 8
-        || $transactionEventCount !== 6
+        || $transactionEventCount !== 8
         || $heartbeatCount < 2
         || $serverCallCount !== 2) {
         throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
@@ -451,13 +498,17 @@ try {
 
 function findOpenPort(): int
 {
-    $socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-    if ($socket === false || !socket_bind($socket, '127.0.0.1', 0) || !socket_getsockname($socket, $address, $port)) {
+    $server = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorMessage);
+    if (!is_resource($server)) {
         throw new RuntimeException('Could not reserve an integration-test port.');
     }
-    socket_close($socket);
+    $address = stream_socket_get_name($server, false);
+    fclose($server);
+    if (!is_string($address) || !str_contains($address, ':')) {
+        throw new RuntimeException('Could not determine the integration-test port.');
+    }
 
-    return $port;
+    return (int) substr(strrchr($address, ':'), 1);
 }
 
 function startProcess(array $command, array $environment)
@@ -534,6 +585,24 @@ function waitForProcessOutput($process, string $expected, int $timeoutMillisecon
     return $output;
 }
 
+function waitForBootStatus(int $appPort, int $chargerId, string $status, int $timeoutMilliseconds): void
+{
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    while (microtime(true) < $deadline) {
+        [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+        foreach ($state['chargers'] ?? [] as $charger) {
+            if ((int) ($charger['id'] ?? 0) === $chargerId && ($charger['boot_status'] ?? null) === $status) {
+                return;
+            }
+        }
+
+        usleep(100_000);
+    }
+
+    throw new RuntimeException("The station did not reach BootNotification status {$status}.");
+}
+
 function waitForHeartbeat(int $appPort, int $chargerId, int $timeoutMilliseconds): array
 {
     $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
@@ -546,13 +615,13 @@ function waitForHeartbeat(int $appPort, int $chargerId, int $timeoutMilliseconds
                     $charger['entries'] ?? [],
                     static fn (array $entry): bool => ($entry['action'] ?? null) === 'Heartbeat',
                 ));
-                if ($heartbeats !== []) {
+                if (count($heartbeats) >= 2) {
                     return $heartbeats;
                 }
             }
         }
 
-        usleep(20_000);
+        usleep(100_000);
     } while (microtime(true) < $deadline);
 
     return [];

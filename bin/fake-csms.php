@@ -74,6 +74,9 @@ function serveClient($client): void
     writeAll($client, $response);
     fwrite(STDOUT, 'Connected ' . trim($requestLine) . "\n");
 
+    $bootNotifications = 0;
+    $pendingBootCount = (int) (getenv('FAKE_CSMS_PENDING_BOOT_COUNT') ?: 0);
+    $serverCallSent = false;
     while (true) {
         $frame = readFrame($client);
         if ($frame === null) {
@@ -107,11 +110,13 @@ function serveClient($client): void
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
-                'BootNotification' => ['status' => 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => (int) (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)],
+                'BootNotification' => ['status' => ++$bootNotifications <= $pendingBootCount ? 'Pending' : 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => (int) (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)],
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
                 'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
                 'StatusNotification' => new stdClass(),
-                'TransactionEvent' => new stdClass(),
+                'TransactionEvent' => isset($call[3]['idToken'])
+                    ? ['idTokenInfo' => ['status' => 'Accepted']]
+                    : new stdClass(),
             };
             $replyFrame = [3, $call[1], $result];
         }
@@ -126,7 +131,11 @@ function serveClient($client): void
             writeFrame($client, 0x1, $reply);
         }
 
-        if ($action === 'BootNotification' && getenv('FAKE_CSMS_SEND_CALL') === '1') {
+        if ($action === 'BootNotification'
+            && ($result['status'] ?? null) === 'Accepted'
+            && !$serverCallSent
+            && getenv('FAKE_CSMS_SEND_CALL') === '1') {
+            $serverCallSent = true;
             $serverCallId = 'fake-csms-call-' . $call[1];
             $serverCall = json_encode([2, $serverCallId, 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             writeFrame($client, 0x1, $serverCall);

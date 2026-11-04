@@ -73,6 +73,22 @@ if ($duplicateIdentityResponse->status !== 422 || $chargers->get($firstId)['stat
     throw new RuntimeException('Duplicate station identities should return 422 without changing either charger.');
 }
 
+$chargers->setBootStatus($firstId, 'Pending', gmdate(DATE_ATOM, time() + 60));
+$pendingBootResponse = $controller->boot(new Request('POST', '/api/boot', [], [], [
+    'charger_id' => $firstId,
+    'station_identity' => 'DemoCharger',
+    'csms_url' => 'ws://localhost:9000/ocpp/DemoCharger',
+    'vendor_name' => 'Vendor',
+    'model' => 'Model',
+    'serial_number' => 'DEMO-001',
+    'outlet_count' => 1,
+    'outlet_topology' => 'independent',
+]));
+$queuedCommands = (int) $database->query("SELECT COUNT(*) FROM ocpp_command WHERE charger_id = {$firstId}")->fetchColumn();
+if ($pendingBootResponse->status !== 409 || $queuedCommands !== 0) {
+    throw new RuntimeException('A Pending BootNotification retry should wait for its persisted CSMS interval.');
+}
+
 unset($controller, $database);
 foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
     if (is_file($path)) {

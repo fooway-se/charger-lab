@@ -109,10 +109,32 @@ final class ChargerRepository
         }
     }
 
-    public function setBootStatus(int $id, string $status): void
+    public function setBootStatus(int $id, string $status, ?string $retryAt = null): void
     {
-        $statement = $this->database->prepare('UPDATE charger SET boot_status = :status, updated_at = :updated_at WHERE id = :id');
-        $statement->execute(['status' => $status, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id]);
+        $statement = $this->database->prepare('UPDATE charger SET boot_status = :status, boot_retry_at = :retry_at, updated_at = :updated_at WHERE id = :id');
+        $statement->execute([
+            'status' => $status,
+            'retry_at' => $retryAt,
+            'updated_at' => gmdate(DATE_ATOM),
+            'id' => $id,
+        ]);
+    }
+
+    public function nextTransactionId(int $id): string
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE charger
+            SET next_transaction_sequence = next_transaction_sequence + 1
+            WHERE id = :id
+            RETURNING next_transaction_sequence - 1
+            SQL);
+        $statement->execute(['id' => $id]);
+        $sequence = $statement->fetchColumn();
+        if ($sequence === false) {
+            throw new RuntimeException('The requested charger no longer exists.');
+        }
+
+        return sprintf('%016x%016x', $id, (int) $sequence);
     }
 
     public function setConnectionStatus(int $id, string $status): void

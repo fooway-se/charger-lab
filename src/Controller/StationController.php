@@ -176,6 +176,17 @@ final class StationController
             $input = $request->body();
             $id = $this->chargerId($input);
             $charger = $this->validatedCharger($id, $input);
+            $current = $this->chargers->get($id);
+            if ($action === 'BootNotification'
+                && in_array($current['boot_status'] ?? null, ['Pending', 'Rejected'], true)
+                && is_string($current['boot_retry_at'] ?? null)
+                && ($retryTimestamp = strtotime($current['boot_retry_at'])) !== false
+                && $retryTimestamp > time()) {
+                return Response::json(409, ['error' => 'Wait for the CSMS BootNotification retry interval before retrying.']);
+            }
+            if ($action === 'Authorize' && ($current['boot_status'] ?? null) !== 'Accepted') {
+                return Response::json(409, ['error' => 'Accept BootNotification before authorizing a vehicle.']);
+            }
             $token = $action === 'Authorize' ? $this->requiredString($request->body(), 'rfid_token') : null;
             if ($action === 'Authorize' && array_key_exists('outlet_number', $input)) {
                 $outletNumber = $this->integerValue($input, 'outlet_number', 0);
@@ -260,7 +271,7 @@ final class StationController
             if ($outlet === null) {
                 throw new InvalidArgumentException('Select a valid outlet.');
             }
-            if ($charger['connection_status'] !== 'Connected') {
+            if ($charger['connection_status'] !== 'Connected' || $charger['boot_status'] !== 'Accepted') {
                 return Response::json(409, ['error' => 'Connect the charger with BootNotification before simulating a vehicle.']);
             }
 

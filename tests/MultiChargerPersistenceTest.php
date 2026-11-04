@@ -34,6 +34,9 @@ $secondId = $chargers->create([
     'outlet_topology' => 'shared',
 ]);
 $chargers->setBootStatus($firstId, 'Accepted');
+$firstTransactionId = $chargers->nextTransactionId($firstId);
+$secondTransactionId = $chargers->nextTransactionId($firstId);
+$otherChargerTransactionId = $chargers->nextTransactionId($secondId);
 $logs->record($firstId, 'outgoing', 'BootNotification', '[2,"a","BootNotification",{}]');
 $logs->record($secondId, 'outgoing', 'BootNotification', '[2,"b","BootNotification",{}]');
 
@@ -43,6 +46,9 @@ $secondLogs = $logs->recent($secondId);
 if (count($allChargers) !== 2
     || $chargers->get($firstId)['boot_status'] !== 'Accepted'
     || $allChargers[1]['outlet_topology'] !== 'shared'
+    || !preg_match('/^[a-f0-9]{32}$/', $firstTransactionId)
+    || $firstTransactionId === $secondTransactionId
+    || $firstTransactionId === $otherChargerTransactionId
     || count($firstLogs) !== 1
     || $firstLogs[0]['message'] !== '[2,"a","BootNotification",{}]'
     || count($secondLogs) !== 1
@@ -51,6 +57,14 @@ if (count($allChargers) !== 2
 }
 
 unset($logs, $chargers, $database);
+$database = Database::connect($databasePath);
+$chargers = new ChargerRepository($database);
+if ($chargers->nextTransactionId($firstId) === $firstTransactionId
+    || $chargers->nextTransactionId($firstId) === $secondTransactionId) {
+    throw new RuntimeException('Transaction IDs should remain unique across worker restarts.');
+}
+
+unset($chargers, $database);
 foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
     if (is_file($path)) {
         unlink($path);

@@ -22,10 +22,10 @@ final class OcppClient
     }
 
     /**
-     * @param array<string, mixed> $payload
+     * @param array<string, mixed>|\stdClass $payload
      * @return array<string, mixed>
      */
-    public function request(string $action, array $payload): array
+    public function request(string $action, array|\stdClass $payload): array
     {
         $messageId = bin2hex(random_bytes(16));
         $call = [2, $messageId, $action, $payload];
