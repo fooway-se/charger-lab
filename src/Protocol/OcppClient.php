@@ -23,7 +23,7 @@ final class OcppClient
 
     /**
      * @param array<string, mixed> $payload
-     *  @return array<string, mixed>
+     * @return array<string, mixed>
      */
     public function request(string $action, array $payload): array
     {

@@ -57,6 +57,10 @@ h1 { margin-bottom: 6px; font: 700 30px var(--display); letter-spacing: -1.1px; 
 .notice span { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #d8f0e3; font-size: 10px; font-weight: 700; }
 
 .workspace-grid { display: grid; grid-template-columns: minmax(365px, .84fr) minmax(0, 1.16fr); gap: 25px; align-items: start; }
+.charger-list { display: grid; gap: 22px; }
+.charger-workspace { display: grid; grid-template-columns: minmax(360px, .84fr) minmax(0, 1.16fr); gap: 25px; align-items: start; }
+.charger-workspace > .log-column { min-width: 0; }
+.station-column > .section-heading .button-primary { flex: 0 0 auto; }
 .section-heading { min-height: 45px; display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 13px; }
 .section-kicker { display: block; margin: 0 0 4px; color: #94a09d; font-size: 8px; }
 h2 { margin: 0; font: 700 16px var(--display); letter-spacing: -.35px; }
@@ -166,6 +170,7 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
     .page-shell { padding: 32px 20px 20px; }
     .topbar { padding: 0 20px; }
     .workspace-grid { grid-template-columns: 1fr; gap: 26px; }
+    .charger-workspace { grid-template-columns: 1fr; gap: 18px; }
     .session-label { display: none; }
     .log-card { min-height: 400px; }
 }

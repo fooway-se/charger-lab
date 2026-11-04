@@ -10,84 +10,48 @@
 </head>
 <body>
 <header class="topbar">
-    <a class="brand" href="/" aria-label="Charger Lab home">
-        <span class="brand-mark">ϟ</span><span>charger<span class="brand-light">lab</span></span>
-    </a>
+    <a class="brand" href="/" aria-label="Charger Lab home"><span class="brand-mark">ϟ</span><span>charger<span class="brand-light">lab</span></span></a>
     <div class="topbar-right"><span class="profile-pill"><span class="live-dot"></span> OCPP 2.0.1 · Core</span><span class="topbar-caption">LOCAL DEVELOPER TOOL</span></div>
 </header>
-
 <main class="page-shell">
     <section class="page-heading">
-        <div>
-            <p class="eyebrow">WORKSPACE / CHARGING STATIONS</p>
-            <h1>Station simulator</h1>
-            <p class="subtitle">Bring a virtual charger online and inspect every message.</p>
-        </div>
+        <div><p class="eyebrow">WORKSPACE / CHARGING STATIONS</p><h1>Station simulator</h1><p class="subtitle">Bring virtual chargers online and inspect each message stream.</p></div>
         <div class="session-label"><span class="session-icon">◉</span> PRIVATE LOCAL SESSION</div>
     </section>
-
     <div id="notice" class="notice" role="status" hidden></div>
-
-    <div class="workspace-grid">
-        <section class="station-column">
-            <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging station <span class="count-pill">01</span></h2></div><span class="more-mark">•••</span></div>
-            <article id="charger-card" class="charger-card" data-outlet-count="1">
-                <div class="charger-card-top">
-                    <div class="charger-illustration" aria-hidden="true">
-                        <div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-ports"><i class="charger-port"></i><i class="charger-port"></i></div></div><div class="charger-foot"></div>
-                    </div>
-                    <div class="charger-summary">
-                        <span id="device-type" class="device-type">AC · 1 OUTLET</span>
-                        <h3 id="station-identity">DemoCharger</h3>
-                        <p><span id="vendor-name">Local Emulator</span> <span class="dot-sep">·</span> <span id="model-name">Developer Charger</span></p>
-                        <div id="boot-status" class="status-chip status-idle"><i></i><span id="boot-status-text">Not connected</span></div>
-                    </div>
-                </div>
-
-                <section class="outlet-map" aria-labelledby="outlet-map-title">
-                    <div class="outlet-map-heading"><span id="outlet-map-title">OUTLET MAP</span><span id="outlet-map-count">1 OUTLET</span></div>
-                    <div id="outlet-list" class="outlet-list"></div>
-                </section>
-
-                <form id="charger-form" class="config-form">
-                    <div class="form-heading"><span>STATION CONFIGURATION</span><span class="saved-hint">Saved in local SQLite</span></div>
-                    <label>Station identity<input name="station_identity" value="DemoCharger" required></label>
-                    <label>CSMS WebSocket URL<input name="csms_url" value="ws://fake-csms:9000/ocpp/DemoCharger" spellcheck="false" required><small>Try the bundled fake CSMS or enter your own ws:// or wss:// endpoint.</small></label>
-                    <div class="form-row"><label>Vendor<input name="vendor_name" value="Local Emulator" required></label><label>Model<input name="model" value="Developer Charger" required></label></div>
-                    <div class="form-row">
-                        <label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" value="1" required></label>
-                        <label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small id="topology-hint">Separate EVSE IDs for each outlet.</small></label>
-                    </div>
-                    <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number" value="DEMO-001"></label>
-                    <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button><button id="boot-button" class="button button-primary" type="button"><span>↗</span> Connect &amp; Boot</button></div>
-                </form>
-
-                <div class="token-panel">
-                    <div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Send an Authorize request to the CSMS</span></div></div>
-                    <form id="token-form" class="token-form">
-                        <input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required>
-                        <button class="button button-dark" type="submit">Present token <span>→</span></button>
-                    </form>
-                </div>
-            </article>
-            <p class="local-note"><span>ⓘ</span> Your charger settings and message log stay in this local app.</p>
-        </section>
-
-        <section class="log-column">
-            <div class="section-heading"><div><span class="section-kicker">LIVE INSPECTION</span><h2>Communication log <span id="log-count" class="count-pill">00</span></h2></div>
-                <button id="clear-log" class="text-button" type="button" hidden>Clear log</button>
-            </div>
-            <div class="log-card">
-                <div class="log-toolbar"><div><span class="toolbar-dot"></span> EXCHANGE STREAM</div><span>NEWEST AT BOTTOM</span></div>
-                <div id="log-content">
-                    <div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect the station to start your first OCPP exchange.</p><div class="empty-line"></div></div>
-                </div>
-                <div class="log-footer"><span><i></i> LOCAL LOGGING ACTIVE</span><span>OCPP-J · JSON</span></div>
-            </div>
-            <div class="profile-note"><span class="profile-note-icon">⌘</span><p><strong>Developer testing aid</strong><br>This simulator helps you inspect CSMS behavior. It is not a certification tool.</p></div>
-        </section>
-    </div>
+    <section class="station-column">
+        <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging stations <span id="charger-count" class="count-pill">00</span></h2></div><button id="add-charger" class="button button-primary" type="button">＋ Add charger</button></div>
+        <div id="charger-list" class="charger-list"></div>
+        <p class="local-note"><span>ⓘ</span> Charger settings and individual message logs stay in this local app.</p>
+    </section>
+    <div class="profile-note"><span class="profile-note-icon">⌘</span><p><strong>Developer testing aid</strong><br>This simulator helps you inspect CSMS behavior. It is not a certification tool.</p></div>
     <footer class="page-footer"><span>CHARGERLAB <b>·</b> OPEN DEVELOPER TOOL</span><span>NO CLOUD ACCOUNT REQUIRED</span></footer>
 </main>
+<template id="charger-template">
+    <div class="charger-workspace" data-charger-id="">
+        <article class="charger-card" data-role="charger-card" data-outlet-count="1">
+            <div class="charger-card-top">
+                <div class="charger-illustration" aria-hidden="true"><div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-ports"><i class="charger-port"></i><i class="charger-port"></i></div></div><div class="charger-foot"></div></div>
+                <div class="charger-summary"><span data-role="device-type" class="device-type">AC · 1 OUTLET</span><h3 data-role="station-identity"></h3><p><span data-role="vendor-name"></span> <span class="dot-sep">·</span> <span data-role="model-name"></span></p><div data-role="boot-status" class="status-chip status-idle"><i></i><span data-role="boot-status-text"></span></div></div>
+                <button class="text-button remove-charger" data-action="delete" type="button">Remove</button>
+            </div>
+            <section class="outlet-map"><div class="outlet-map-heading"><span>OUTLET MAP</span><span data-role="outlet-count"></span></div><div data-role="outlet-list" class="outlet-list"></div></section>
+            <form data-action="save" class="config-form">
+                <div class="form-heading"><span>STATION CONFIGURATION</span><span class="saved-hint">Saved in local SQLite</span></div>
+                <label>Station identity<input name="station_identity" required></label>
+                <label>CSMS WebSocket URL<input name="csms_url" spellcheck="false" required><small>Use the bundled fake CSMS or enter your own ws:// or wss:// endpoint.</small></label>
+                <div class="form-row"><label>Vendor<input name="vendor_name" required></label><label>Model<input name="model" required></label></div>
+                <div class="form-row"><label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" required></label><label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small data-role="topology-hint"></small></label></div>
+                <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number"></label>
+                <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button><button data-action="boot" class="button button-primary" type="button"><span>↗</span> Connect &amp; Boot</button></div>
+            </form>
+            <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Send an Authorize request to this CSMS</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
+        </article>
+        <section class="log-column">
+            <div class="section-heading"><div><span class="section-kicker">LIVE INSPECTION</span><h2>Communication log <span data-role="log-count" class="count-pill">00</span></h2></div><button data-action="clear-log" class="text-button" type="button" hidden>Clear log</button></div>
+            <div class="log-card"><div class="log-toolbar"><div><span class="toolbar-dot"></span> EXCHANGE STREAM</div><span>NEWEST AT BOTTOM</span></div><div data-role="log-content"><div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect this station to start its OCPP exchange.</p><div class="empty-line"></div></div></div><div class="log-footer"><span><i></i> LOCAL LOGGING ACTIVE</span><span>OCPP-J · JSON</span></div></div>
+        </section>
+    </div>
+</template>
 </body>
 </html>

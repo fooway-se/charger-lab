@@ -26,7 +26,22 @@ try {
         throw new RuntimeException('The local app should serve the standalone station GUI.');
     }
 
+    [$initialStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $initialState = is_string($initialStateBody) ? json_decode($initialStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $chargerId = (int) ($initialState['chargers'][0]['id'] ?? 0);
+    if ($chargerId < 1) {
+        throw new RuntimeException('The UI state should initialize a default charger.');
+    }
+
+    [$createBody, $createHeaders] = request("http://127.0.0.1:{$appPort}/api/charger/create", 'POST', '{}', 'application/json');
+    $createResponse = is_string($createBody) ? json_decode($createBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $secondChargerId = (int) ($createResponse['charger_id'] ?? 0);
+    if (!str_contains($createHeaders[0] ?? '', '201') || $secondChargerId < 1 || $secondChargerId === $chargerId) {
+        throw new RuntimeException('The local app should create an additional independent charger.');
+    }
+
     $payload = json_encode([
+        'charger_id' => $chargerId,
         'station_identity' => 'UiIntegrationCharger',
         'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
         'vendor_name' => 'UI Test Vendor',
@@ -49,18 +64,23 @@ try {
         throw new RuntimeException('A bodyless state request should succeed even if the browser sends a JSON content type.');
     }
     $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
-    if (($state['charger']['boot_status'] ?? null) !== 'Accepted'
-        || count($state['entries'] ?? []) !== 2
-        || ($state['entries'][0]['action'] ?? null) !== 'BootNotification'
-        || ($state['entries'][1]['action'] ?? null) !== 'BootNotification'
-        || ($state['outlets'][0]['evse_id'] ?? null) !== 1
-        || ($state['outlets'][0]['connector_id'] ?? null) !== 1
-        || ($state['outlets'][1]['evse_id'] ?? null) !== 2
-        || ($state['outlets'][1]['connector_id'] ?? null) !== 1) {
+    $charger = $state['chargers'][0] ?? [];
+    $secondCharger = $state['chargers'][1] ?? [];
+    if (count($state['chargers'] ?? []) !== 2
+        || ($charger['boot_status'] ?? null) !== 'Accepted'
+        || count($charger['entries'] ?? []) !== 2
+        || ($charger['entries'][0]['action'] ?? null) !== 'BootNotification'
+        || ($charger['entries'][1]['action'] ?? null) !== 'BootNotification'
+        || ($charger['outlets'][0]['evse_id'] ?? null) !== 1
+        || ($charger['outlets'][0]['connector_id'] ?? null) !== 1
+        || ($charger['outlets'][1]['evse_id'] ?? null) !== 2
+        || ($charger['outlets'][1]['connector_id'] ?? null) !== 1
+        || count($secondCharger['entries'] ?? []) !== 0) {
         throw new RuntimeException('The local UI state should expose two independent EVSEs and the BootNotification log.');
     }
 
     $authorizePayload = json_encode([
+        'charger_id' => $chargerId,
         'station_identity' => 'UiIntegrationCharger',
         'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
         'vendor_name' => 'UI Test Vendor',
@@ -84,15 +104,19 @@ try {
 
     [$updatedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
     $updatedState = is_string($updatedStateBody) ? json_decode($updatedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
-    $authorizeCall = json_decode($updatedState['entries'][2]['message'] ?? 'null', true);
-    if (count($updatedState['entries'] ?? []) !== 4
-        || ($updatedState['entries'][2]['action'] ?? null) !== 'Authorize'
+    $updatedCharger = $updatedState['chargers'][0] ?? [];
+    $updatedSecondCharger = $updatedState['chargers'][1] ?? [];
+    $authorizeCall = json_decode($updatedCharger['entries'][2]['message'] ?? 'null', true);
+    if (count($updatedCharger['entries'] ?? []) !== 4
+        || ($updatedCharger['entries'][2]['action'] ?? null) !== 'Authorize'
         || ($authorizeCall[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4'
-        || ($authorizeCall[3]['idToken']['type'] ?? null) !== 'ISO14443') {
+        || ($authorizeCall[3]['idToken']['type'] ?? null) !== 'ISO14443'
+        || count($updatedSecondCharger['entries'] ?? []) !== 0) {
         throw new RuntimeException('The local log should persist the presented RFID token as an ISO14443 Authorize call.');
     }
 
     $sharedTopology = json_encode([
+        'charger_id' => $chargerId,
         'station_identity' => 'UiIntegrationCharger',
         'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
         'vendor_name' => 'UI Test Vendor',
@@ -112,15 +136,16 @@ try {
     }
     [$sharedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
     $sharedState = is_string($sharedStateBody) ? json_decode($sharedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
-    if (($sharedState['outlets'][0]['evse_id'] ?? null) !== 1
-        || ($sharedState['outlets'][0]['connector_id'] ?? null) !== 1
-        || ($sharedState['outlets'][1]['evse_id'] ?? null) !== 1
-        || ($sharedState['outlets'][1]['connector_id'] ?? null) !== 2) {
+    $sharedCharger = $sharedState['chargers'][0] ?? [];
+    if (($sharedCharger['outlets'][0]['evse_id'] ?? null) !== 1
+        || ($sharedCharger['outlets'][0]['connector_id'] ?? null) !== 1
+        || ($sharedCharger['outlets'][1]['evse_id'] ?? null) !== 1
+        || ($sharedCharger['outlets'][1]['connector_id'] ?? null) !== 2) {
         throw new RuntimeException('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
     }
 
     $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
-    $charger = $database->query('SELECT * FROM charger WHERE id = 1')->fetch();
+    $charger = $database->query('SELECT * FROM charger WHERE id = ' . $chargerId)->fetch();
     $messageCount = (int) $database->query('SELECT COUNT(*) FROM exchange_log')->fetchColumn();
     if ($charger['boot_status'] !== 'Accepted'
         || (int) $charger['outlet_count'] !== 2

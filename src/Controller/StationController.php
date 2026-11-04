@@ -27,27 +27,36 @@ final class StationController
 
     public function state(Request $request): Response
     {
-        $charger = $this->chargers->get();
-        $outlets = new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']);
+        $chargers = [];
+        foreach ($this->chargers->all() as $charger) {
+            $charger['outlets'] = (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets();
+            $charger['entries'] = $this->logs->recent((int) $charger['id']);
+            $chargers[] = $charger;
+        }
 
-        return Response::json(200, [
-            'charger' => $charger,
-            'outlets' => $outlets->outlets(),
-            'entries' => $this->logs->recent(),
-        ]);
+        return Response::json(200, ['chargers' => $chargers]);
+    }
+
+    public function create(Request $request): Response
+    {
+        $id = $this->chargers->createDefault();
+
+        return Response::json(201, ['notice' => 'Charger added.', 'charger_id' => $id]);
     }
 
     public function save(Request $request): Response
     {
         try {
-            $charger = $this->validatedCharger($request->body());
+            $input = $request->body();
+            $id = $this->chargerId($input);
+            $charger = $this->validatedCharger($id, $input);
         } catch (InvalidArgumentException $exception) {
             return Response::json(422, ['error' => $exception->getMessage()]);
         }
 
-        $this->chargers->save($charger);
+        $this->chargers->save($id, $charger);
 
-        return Response::json(200, ['notice' => 'Charger configuration saved.', 'charger' => $this->chargers->get()]);
+        return Response::json(200, ['notice' => 'Charger configuration saved.', 'charger' => $this->chargers->get($id)]);
     }
 
     public function boot(Request $request): Response
@@ -62,15 +71,38 @@ final class StationController
 
     public function clearLog(Request $request): Response
     {
-        $this->logs->clear();
+        try {
+            $this->logs->clear($this->chargerId($request->body()));
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
 
         return Response::json(200, ['notice' => 'Exchange log cleared.']);
+    }
+
+    public function delete(Request $request): Response
+    {
+        try {
+            $id = $this->chargerId($request->body());
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
+
+        if (count($this->chargers->all()) < 2) {
+            return Response::json(409, ['error' => 'Keep at least one charger in the workspace.']);
+        }
+
+        $this->chargers->delete($id);
+
+        return Response::json(200, ['notice' => 'Charger removed.']);
     }
 
     private function executeOcppAction(Request $request, string $action): Response
     {
         try {
-            $charger = $this->validatedCharger($request->body());
+            $input = $request->body();
+            $id = $this->chargerId($input);
+            $charger = $this->validatedCharger($id, $input);
             $token = $action === 'Authorize' ? $this->requiredString($request->body(), 'rfid_token') : null;
         } catch (InvalidArgumentException $exception) {
             return Response::json(422, ['error' => $exception->getMessage()]);
@@ -80,7 +112,7 @@ final class StationController
             return Response::json(422, ['error' => 'Enter an RFID token to present.']);
         }
 
-        $this->chargers->save($charger);
+        $this->chargers->save($id, $charger);
         $payload = $action === 'BootNotification'
             ? [
                 'chargingStation' => array_filter([
@@ -95,13 +127,13 @@ final class StationController
         try {
             $client = new OcppClient(
                 new WebSocketConnection($charger['csms_url']),
-                function (string $direction, string $message) use ($action): void {
-                    $this->logs->record($direction, $action, $message);
+                function (string $direction, string $message) use ($action, $id): void {
+                    $this->logs->record($id, $direction, $action, $message);
                 },
             );
             $result = $client->request($action, $payload);
             if ($action === 'BootNotification') {
-                $this->chargers->setBootStatus((string) ($result['status'] ?? 'Unknown response'));
+                $this->chargers->setBootStatus($id, (string) ($result['status'] ?? 'Unknown response'));
                 $notice = 'BootNotification received: ' . (string) ($result['status'] ?? 'unknown') . '.';
             } else {
                 $notice = 'RFID token response: ' . (string) ($result['idTokenInfo']['status'] ?? 'Unknown response') . '.';
@@ -109,9 +141,9 @@ final class StationController
 
             return Response::json(200, ['notice' => $notice, 'result' => $result]);
         } catch (Throwable $exception) {
-            $this->logs->record('system', $action, $exception->getMessage());
+            $this->logs->record($id, 'system', $action, $exception->getMessage());
             if ($action === 'BootNotification') {
-                $this->chargers->setBootStatus('Connection failed');
+                $this->chargers->setBootStatus($id, 'Connection failed');
             }
 
             return Response::json(502, ['error' => $exception->getMessage()]);
@@ -120,11 +152,15 @@ final class StationController
 
     /**
      * @param array<string, mixed> $input
-     *  @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string}
+     * @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string}
      */
-    private function validatedCharger(array $input): array
+    private function validatedCharger(int $id, array $input): array
     {
-        $current = $this->chargers->get();
+        $current = $this->chargers->get($id);
+        if ($current === null) {
+            throw new InvalidArgumentException('The requested charger does not exist.');
+        }
+
         $charger = [
             'station_identity' => $this->stringValue($input, 'station_identity', $current['station_identity']),
             'csms_url' => $this->stringValue($input, 'csms_url', $current['csms_url']),
@@ -139,6 +175,10 @@ final class StationController
             throw new InvalidArgumentException('Station identity, vendor, and model are required.');
         }
 
+        if ($this->chargers->identityInUse($charger['station_identity'], $id)) {
+            throw new InvalidArgumentException('Each charger needs a unique station identity.');
+        }
+
         $parts = parse_url($charger['csms_url']);
         if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
             throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
@@ -147,6 +187,19 @@ final class StationController
         new OutletMap($charger['outlet_count'], $charger['outlet_topology']);
 
         return $charger;
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function chargerId(array $input): int
+    {
+        $id = $this->integerValue($input, 'charger_id', 0);
+        if ($id < 1 || $this->chargers->get($id) === null) {
+            throw new InvalidArgumentException('Select a valid charger.');
+        }
+
+        return $id;
     }
 
     /**

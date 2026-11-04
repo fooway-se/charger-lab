@@ -26,7 +26,9 @@ try {
     $controller = new StationController(new ChargerRepository($database), new ExchangeRepository($database));
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);
+    $router->add('POST', '/api/charger/create', [$controller, 'create']);
     $router->add('POST', '/api/charger', [$controller, 'save']);
+    $router->add('POST', '/api/charger/delete', [$controller, 'delete']);
     $router->add('POST', '/api/boot', [$controller, 'boot']);
     $router->add('POST', '/api/authorize', [$controller, 'authorize']);
     $router->add('POST', '/api/log/clear', [$controller, 'clearLog']);

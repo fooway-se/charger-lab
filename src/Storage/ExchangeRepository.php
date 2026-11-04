@@ -7,7 +7,7 @@ namespace ChargerEmulator\Storage;
 use PDO;
 
 /**
- * Persists and retrieves the most recent OCPP exchange entries.
+ * Persists and retrieves OCPP exchange entries for individual chargers.
  */
 final class ExchangeRepository
 {
@@ -15,12 +15,13 @@ final class ExchangeRepository
     {
     }
 
-    public function record(string $direction, string $action, string $message): void
+    public function record(int $chargerId, string $direction, string $action, string $message): void
     {
         $statement = $this->database->prepare(
-            'INSERT INTO exchange_log (direction, action, message, created_at) VALUES (:direction, :action, :message, :created_at)',
+            'INSERT INTO exchange_log (charger_id, direction, action, message, created_at) VALUES (:charger_id, :direction, :action, :message, :created_at)',
         );
         $statement->execute([
+            'charger_id' => $chargerId,
             'direction' => $direction,
             'action' => $action,
             'message' => $message,
@@ -28,17 +29,19 @@ final class ExchangeRepository
         ]);
     }
 
-    public function clear(): void
+    public function clear(int $chargerId): void
     {
-        $this->database->exec('DELETE FROM exchange_log');
+        $statement = $this->database->prepare('DELETE FROM exchange_log WHERE charger_id = :charger_id');
+        $statement->execute(['charger_id' => $chargerId]);
     }
 
     /**
-     * @return list<array{id:int,direction:string,action:string,message:string,created_at:string}>
+     * @return list<array{id:int,charger_id:int,direction:string,action:string,message:string,created_at:string}>
      */
-    public function recent(int $limit = 30): array
+    public function recent(int $chargerId, int $limit = 30): array
     {
-        $statement = $this->database->prepare('SELECT * FROM exchange_log ORDER BY id DESC LIMIT :limit');
+        $statement = $this->database->prepare('SELECT * FROM exchange_log WHERE charger_id = :charger_id ORDER BY id DESC LIMIT :limit');
+        $statement->bindValue(':charger_id', $chargerId, PDO::PARAM_INT);
         $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
         $statement->execute();
 

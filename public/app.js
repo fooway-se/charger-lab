@@ -1,9 +1,8 @@
 'use strict';
 
-const chargerForm = document.querySelector('#charger-form');
-const tokenForm = document.querySelector('#token-form');
+const chargerList = document.querySelector('#charger-list');
+const chargerTemplate = document.querySelector('#charger-template');
 const notice = document.querySelector('#notice');
-let currentCharger = null;
 
 function formValues(form) {
     return Object.fromEntries(new FormData(form).entries());
@@ -40,10 +39,10 @@ function showNotice(message, isError = false) {
     notice.append(icon, text);
 }
 
-function renderLog(entries) {
-    const content = document.querySelector('#log-content');
-    const count = document.querySelector('#log-count');
-    const clearButton = document.querySelector('#clear-log');
+function renderLog(workspace, entries) {
+    const content = workspace.querySelector('[data-role="log-content"]');
+    const count = workspace.querySelector('[data-role="log-count"]');
+    const clearButton = workspace.querySelector('[data-action="clear-log"]');
     count.textContent = String(entries.length).padStart(2, '0');
     clearButton.hidden = entries.length === 0;
     content.replaceChildren();
@@ -51,7 +50,16 @@ function renderLog(entries) {
     if (entries.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.innerHTML = '<div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect the station to start your first OCPP exchange.</p><div class="empty-line"></div>';
+        const icon = document.createElement('div');
+        icon.className = 'empty-icon';
+        icon.textContent = '⌁';
+        const title = document.createElement('strong');
+        title.textContent = 'Waiting for a message';
+        const description = document.createElement('p');
+        description.textContent = 'Connect this station to start its OCPP exchange.';
+        const line = document.createElement('div');
+        line.className = 'empty-line';
+        empty.append(icon, title, description, line);
         content.append(empty);
         return;
     }
@@ -63,7 +71,6 @@ function renderLog(entries) {
         const system = entry.direction === 'system';
         const row = document.createElement('article');
         row.className = `log-entry${system ? ' log-system' : ''}`;
-
         const head = document.createElement('div');
         head.className = 'log-entry-head';
         const direction = document.createElement('span');
@@ -75,7 +82,6 @@ function renderLog(entries) {
         time.className = 'log-time';
         time.textContent = new Date(entry.created_at).toLocaleTimeString([], { hour12: false });
         head.append(direction, time);
-
         const title = document.createElement('div');
         title.className = 'message-title';
         const caret = document.createElement('span');
@@ -87,7 +93,6 @@ function renderLog(entries) {
         kind.className = 'message-kind';
         kind.textContent = system ? 'EVENT' : (outgoing ? 'CALL' : 'RESPONSE');
         title.append(caret, action, kind);
-
         const pre = document.createElement('pre');
         try {
             pre.textContent = JSON.stringify(JSON.parse(entry.message), null, 2);
@@ -100,14 +105,14 @@ function renderLog(entries) {
     content.append(list);
 }
 
-function renderOutlets(outlets, topology) {
-    const list = document.querySelector('#outlet-list');
-    const count = document.querySelector('#outlet-map-count');
-    const chargerCard = document.querySelector('#charger-card');
-    const deviceType = document.querySelector('#device-type');
-    const topologyHint = document.querySelector('#topology-hint');
+function renderOutlets(workspace, outlets, topology) {
+    const list = workspace.querySelector('[data-role="outlet-list"]');
+    const card = workspace.querySelector('[data-role="charger-card"]');
+    const count = workspace.querySelector('[data-role="outlet-count"]');
+    const deviceType = workspace.querySelector('[data-role="device-type"]');
+    const topologyHint = workspace.querySelector('[data-role="topology-hint"]');
     list.replaceChildren();
-    chargerCard.dataset.outletCount = String(outlets.length);
+    card.dataset.outletCount = String(outlets.length);
     count.textContent = `${outlets.length} OUTLET${outlets.length === 1 ? '' : 'S'}`;
     deviceType.textContent = `AC · ${outlets.length} OUTLET${outlets.length === 1 ? '' : 'S'}`;
     topologyHint.textContent = topology === 'shared'
@@ -115,8 +120,8 @@ function renderOutlets(outlets, topology) {
         : 'Separate EVSE IDs for each outlet.';
 
     for (const outlet of outlets) {
-        const card = document.createElement('article');
-        card.className = 'outlet-tile';
+        const tile = document.createElement('article');
+        tile.className = 'outlet-tile';
         const marker = document.createElement('span');
         marker.className = 'outlet-marker';
         marker.textContent = String(outlet.number).padStart(2, '0');
@@ -130,31 +135,38 @@ function renderOutlets(outlets, topology) {
         const badge = document.createElement('span');
         badge.className = 'outlet-tag';
         badge.textContent = 'MAPPED';
-        card.append(marker, details, badge);
-        list.append(card);
+        tile.append(marker, details, badge);
+        list.append(tile);
     }
 }
 
-function renderState(state) {
-    const charger = state.charger;
-    currentCharger = charger;
+function renderCharger(charger) {
+    const workspace = chargerTemplate.content.firstElementChild.cloneNode(true);
+    workspace.dataset.chargerId = String(charger.id);
     for (const [name, value] of Object.entries(charger)) {
-        const field = chargerForm.elements.namedItem(name);
+        const field = workspace.querySelector(`[name="${name}"]`);
         if (field) {
             field.value = value;
         }
     }
-    document.querySelector('#station-identity').textContent = charger.station_identity;
-    document.querySelector('#vendor-name').textContent = charger.vendor_name;
-    document.querySelector('#model-name').textContent = charger.model;
-    document.querySelector('#boot-status-text').textContent = charger.boot_status;
-    renderOutlets(state.outlets, charger.outlet_topology);
 
-    const status = document.querySelector('#boot-status');
+    workspace.querySelector('[data-role="station-identity"]').textContent = charger.station_identity;
+    workspace.querySelector('[data-role="vendor-name"]').textContent = charger.vendor_name;
+    workspace.querySelector('[data-role="model-name"]').textContent = charger.model;
+    workspace.querySelector('[data-role="boot-status-text"]').textContent = charger.boot_status;
+    const status = workspace.querySelector('[data-role="boot-status"]');
     status.classList.toggle('status-online', charger.boot_status === 'Accepted');
     status.classList.toggle('status-error', charger.boot_status === 'Connection failed');
     status.classList.toggle('status-idle', charger.boot_status !== 'Accepted' && charger.boot_status !== 'Connection failed');
-    renderLog(state.entries);
+    renderOutlets(workspace, charger.outlets, charger.outlet_topology);
+    renderLog(workspace, charger.entries);
+
+    return workspace;
+}
+
+function renderState(state) {
+    chargerList.replaceChildren(...state.chargers.map(renderCharger));
+    document.querySelector('#charger-count').textContent = String(state.chargers.length).padStart(2, '0');
 }
 
 async function refreshState() {
@@ -167,38 +179,51 @@ async function postAction(path, payload) {
     showNotice(result.notice || 'Done.');
 }
 
-chargerForm.addEventListener('submit', async (event) => {
+chargerList.addEventListener('submit', async (event) => {
+    const form = event.target;
+    const workspace = form.closest('.charger-workspace');
+    const chargerId = Number(workspace.dataset.chargerId);
     event.preventDefault();
     try {
-        await postAction('/api/charger', formValues(chargerForm));
-    } catch (error) {
-        showNotice(error.message, true);
-    }
-});
-
-document.querySelector('#boot-button').addEventListener('click', async () => {
-    try {
-        await postAction('/api/boot', formValues(chargerForm));
+        if (form.dataset.action === 'save') {
+            await postAction('/api/charger', { ...formValues(form), charger_id: chargerId });
+        } else if (form.dataset.action === 'authorize') {
+            await postAction('/api/authorize', { rfid_token: formValues(form).rfid_token, charger_id: chargerId });
+        }
     } catch (error) {
         await refreshState().catch(() => {});
         showNotice(error.message, true);
     }
 });
 
-tokenForm.addEventListener('submit', async (event) => {
-    event.preventDefault();
+chargerList.addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-action], button.remove-charger');
+    if (!button) {
+        return;
+    }
+
+    const workspace = button.closest('.charger-workspace');
+    const chargerId = Number(workspace.dataset.chargerId);
     try {
-        await postAction('/api/authorize', { ...currentCharger, rfid_token: formValues(tokenForm).rfid_token });
-        tokenForm.reset();
+        if (button.dataset.action === 'boot') {
+            const form = workspace.querySelector('[data-action="save"]');
+            await postAction('/api/boot', { ...formValues(form), charger_id: chargerId });
+        } else if (button.dataset.action === 'clear-log') {
+            await postAction('/api/log/clear', { charger_id: chargerId });
+        } else if (button.dataset.action === 'delete') {
+            await postAction('/api/charger/delete', { charger_id: chargerId });
+        }
     } catch (error) {
         await refreshState().catch(() => {});
         showNotice(error.message, true);
     }
 });
 
-document.querySelector('#clear-log').addEventListener('click', async () => {
+document.querySelector('#add-charger').addEventListener('click', async () => {
     try {
-        await postAction('/api/log/clear', {});
+        const result = await api('/api/charger/create', { method: 'POST', body: '{}' });
+        await refreshState();
+        showNotice(result.notice);
     } catch (error) {
         showNotice(error.message, true);
     }

@@ -14,7 +14,8 @@ $directory = sys_get_temp_dir() . '/charger-controller-' . bin2hex(random_bytes(
 mkdir($directory, 0775, true);
 $databasePath = $directory . '/emulator.sqlite';
 $database = Database::connect($databasePath);
-$controller = new StationController(new ChargerRepository($database), new ExchangeRepository($database));
+$chargers = new ChargerRepository($database);
+$controller = new StationController($chargers, new ExchangeRepository($database));
 $response = $controller->save(new Request('POST', '/api/charger', [], [], [
     'station_identity' => 'InvalidStation',
     'csms_url' => 'ws://localhost:9000/ocpp/InvalidStation',
@@ -41,6 +42,26 @@ $topologyResponse = $controller->save(new Request('POST', '/api/charger', [], []
 $chargerCount = (int) $database->query('SELECT COUNT(*) FROM charger')->fetchColumn();
 if ($topologyResponse->status !== 422 || $chargerCount !== 0) {
     throw new RuntimeException('Unknown outlet topology values should be rejected before persistence.');
+}
+
+$firstId = $chargers->createDefault();
+$secondId = $chargers->create([
+    'station_identity' => 'SecondCharger',
+    'csms_url' => 'ws://localhost:9000/ocpp/SecondCharger',
+    'vendor_name' => 'Vendor',
+    'model' => 'Model',
+    'serial_number' => 'SECOND-001',
+]);
+$duplicateIdentityResponse = $controller->save(new Request('POST', '/api/charger', [], [], [
+    'charger_id' => $firstId,
+    'station_identity' => 'SecondCharger',
+    'csms_url' => 'ws://localhost:9000/ocpp/DemoCharger',
+    'vendor_name' => 'Vendor',
+    'model' => 'Model',
+    'serial_number' => 'DEMO-001',
+]));
+if ($duplicateIdentityResponse->status !== 422 || $chargers->get($firstId)['station_identity'] === 'SecondCharger' || $chargers->get($secondId) === null) {
+    throw new RuntimeException('Duplicate station identities should return 422 without changing either charger.');
 }
 
 unset($controller, $database);

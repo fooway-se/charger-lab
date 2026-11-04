@@ -8,9 +8,9 @@ A standalone local emulator for developer testing against OCPP 2.0.1 CSMS implem
 docker compose up --build
 ```
 
-Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled fake CSMS. Press **Connect & Boot** to send a BootNotification; the Accepted response and both OCPP-J frames appear in the local log. The RFID form sends an Authorize request.
+Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled fake CSMS. Add as many charger cards as you need; each card has its own station identity, connection settings, status, outlet map, RFID token form, and communication log. Press **Connect & Boot** to send a BootNotification; the Accepted response and both OCPP-J frames appear in that charger's log. The RFID form sends an Authorize request for that charger.
 
-Charger settings and the exchange log persist in the `charger-data` Docker volume. To use a different CSMS, edit the WebSocket URL in the charger card. The app supports `ws://` and `wss://` endpoints that negotiate the `ocpp2.0.1` subprotocol.
+Charger settings and per-charger exchange logs persist in the `charger-data` Docker volume. To use a different CSMS, edit the WebSocket URL in the charger card. The app supports `ws://` and `wss://` endpoints that negotiate the `ocpp2.0.1` subprotocol. Existing single-charger databases migrate in place, preserving the configured station and its log.
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 
@@ -24,6 +24,8 @@ Run unit tests with PHP 8.5:
 php tests/BootNotificationExchangeTest.php
 php tests/OcppClientCallErrorTest.php
 php tests/StoragePersistenceTest.php
+php tests/MultiChargerPersistenceTest.php
+php tests/MultiChargerMigrationTest.php
 php tests/HttpRoutingTest.php
 php tests/StationControllerValidationTest.php
 php tests/FrontendSeparationTest.php

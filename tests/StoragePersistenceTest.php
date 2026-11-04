@@ -14,7 +14,7 @@ $database = Database::connect($databasePath);
 $chargers = new ChargerRepository($database);
 $logs = new ExchangeRepository($database);
 
-$chargers->save([
+$charger = [
     'station_identity' => 'TestStation',
     'csms_url' => 'ws://localhost:9000/ocpp/TestStation',
     'vendor_name' => 'Test Vendor',
@@ -22,9 +22,10 @@ $chargers->save([
     'serial_number' => 'SERIAL-001',
     'outlet_count' => 2,
     'outlet_topology' => 'shared',
-]);
-$chargers->setBootStatus('Accepted');
-$chargers->save([
+];
+$chargerId = $chargers->create($charger);
+$chargers->setBootStatus($chargerId, 'Accepted');
+$chargers->save($chargerId, [
     'station_identity' => 'TestStation',
     'csms_url' => 'ws://localhost:9000/ocpp/TestStation',
     'vendor_name' => 'Updated Vendor',
@@ -34,7 +35,7 @@ $chargers->save([
     'outlet_topology' => 'shared',
 ]);
 
-$persistedCharger = $chargers->get();
+$persistedCharger = $chargers->get($chargerId);
 if ($persistedCharger['station_identity'] !== 'TestStation'
     || $persistedCharger['vendor_name'] !== 'Updated Vendor'
     || $persistedCharger['boot_status'] !== 'Accepted'
@@ -45,9 +46,9 @@ if ($persistedCharger['station_identity'] !== 'TestStation'
 
 $outgoing = '[2,"call-1","BootNotification",{"reason":"PowerUp"}]';
 $incoming = '[3,"call-1",{"status":"Accepted"}]';
-$logs->record('outgoing', 'BootNotification', $outgoing);
-$logs->record('incoming', 'BootNotification', $incoming);
-$recent = $logs->recent();
+$logs->record($chargerId, 'outgoing', 'BootNotification', $outgoing);
+$logs->record($chargerId, 'incoming', 'BootNotification', $incoming);
+$recent = $logs->recent($chargerId);
 if (count($recent) !== 2
     || $recent[0]['message'] !== $outgoing
     || $recent[1]['message'] !== $incoming) {
