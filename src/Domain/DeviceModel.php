@@ -140,7 +140,14 @@ final class DeviceModel
         }
 
         if ($componentName === 'OCPPCommCtrlr'
-            && in_array($variableName, ['MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true)) {
+            && in_array($variableName, [
+                'MessageAttemptsTransactionEvent',
+                'MessageAttemptIntervalTransactionEvent',
+                'RetryBackOffWaitMinimum',
+                'RetryBackOffRandomRange',
+                'RetryBackOffRepeatTimes',
+                'HeartbeatInterval',
+            ], true)) {
             return $this->settings->get($this->chargerId, $variableName);
         }
 
@@ -252,7 +259,14 @@ final class DeviceModel
         }
 
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
-            && in_array($variable['name'] ?? null, ['MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true);
+            && in_array($variable['name'] ?? null, [
+                'MessageAttemptsTransactionEvent',
+                'MessageAttemptIntervalTransactionEvent',
+                'RetryBackOffWaitMinimum',
+                'RetryBackOffRandomRange',
+                'RetryBackOffRepeatTimes',
+                'HeartbeatInterval',
+            ], true);
     }
 
     /**
@@ -260,10 +274,19 @@ final class DeviceModel
      */
     private function isValidSetting(string $variable, string $value): bool
     {
-        if (in_array($variable, ['TxEndedInterval', 'TxUpdatedInterval', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true)) {
+        if (in_array($variable, [
+            'TxEndedInterval',
+            'TxUpdatedInterval',
+            'MessageAttemptsTransactionEvent',
+            'MessageAttemptIntervalTransactionEvent',
+            'RetryBackOffWaitMinimum',
+            'RetryBackOffRandomRange',
+            'RetryBackOffRepeatTimes',
+            'HeartbeatInterval',
+        ], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
                 && filter_var($value, FILTER_VALIDATE_INT) !== false
-                && ($variable !== 'MessageAttemptsTransactionEvent' || (int) $value > 0);
+                && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval'], true) || (int) $value > 0);
         }
 
         if (!in_array($variable, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {

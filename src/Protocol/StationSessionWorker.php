@@ -27,7 +27,7 @@ final class StationSessionWorker
     private const SIMULATED_PERIODIC_ENERGY_WH = 100;
 
     /**
-     * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float}>
+     * @var array<int, array{connection:?WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
      */
     private array $sessions = [];
 
@@ -45,6 +45,7 @@ final class StationSessionWorker
     {
         $this->commands->recoverInterrupted();
         $this->chargers->resetConnectionStatuses();
+        $this->restoreAcceptedSessions();
         while (true) {
             if (!$this->runOne() && !$this->pollSessions()) {
                 usleep($pollMicroseconds);
@@ -61,7 +62,8 @@ final class StationSessionWorker
         }
 
         $chargerId = $command['charger_id'];
-        $hadSession = isset($this->sessions[$chargerId]);
+        $hadSession = isset($this->sessions[$chargerId])
+            && $this->sessions[$chargerId]['connection'] instanceof WebSocketConnection;
         try {
             $charger = $this->chargers->get($chargerId);
             if ($charger === null) {
@@ -77,7 +79,8 @@ final class StationSessionWorker
             }
 
             $connectionUrl = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
-            if (!isset($this->sessions[$chargerId]) || $this->sessions[$chargerId]['url'] !== $connectionUrl) {
+            if (!isset($this->sessions[$chargerId]) || $this->sessions[$chargerId]['url'] !== $connectionUrl
+                || $this->sessions[$chargerId]['connection'] === null) {
                 unset($this->sessions[$chargerId]);
                 if ($command['action'] !== 'BootNotification') {
                     throw new RuntimeException('Connect the charger with BootNotification before sending other actions.');
@@ -90,6 +93,8 @@ final class StationSessionWorker
                     'next_heartbeat_at' => null,
                     'boot_payload' => [],
                     'next_boot_at' => null,
+                    'reconnect_attempt' => 0,
+                    'next_reconnect_at' => null,
                 ];
             }
 
@@ -143,7 +148,9 @@ final class StationSessionWorker
         } catch (Throwable $exception) {
             $csmsRejectedMessage = $this->isOcppCallError($exception);
             $retryWaiting = $exception instanceof TransactionEventRetryPendingException;
-            if (!$csmsRejectedMessage && !$retryWaiting) {
+            if (!$csmsRejectedMessage && !$retryWaiting && $command['action'] !== 'BootNotification' && $hadSession) {
+                $this->scheduleReconnect($chargerId);
+            } elseif (!$csmsRejectedMessage && !$retryWaiting) {
                 unset($this->sessions[$chargerId]);
             }
 
@@ -192,6 +199,19 @@ final class StationSessionWorker
     {
         foreach ($this->sessions as $chargerId => $session) {
             try {
+                if ($session['connection'] === null) {
+                    if ($session['next_reconnect_at'] === null || microtime(true) < $session['next_reconnect_at']) {
+                        continue;
+                    }
+
+                    $this->sessions[$chargerId]['connection'] = new WebSocketConnection($session['url']);
+                    $this->sessions[$chargerId]['reconnect_attempt'] = 0;
+                    $this->sessions[$chargerId]['next_reconnect_at'] = null;
+                    $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $session['heartbeat_interval'];
+                    $this->chargers->setConnectionStatus($chargerId, 'Connected');
+                    $session = $this->sessions[$chargerId];
+                }
+
                 if ($session['next_boot_at'] !== null && microtime(true) >= $session['next_boot_at']) {
                     $charger = $this->chargers->get($chargerId);
                     if ($charger === null) {
@@ -247,7 +267,7 @@ final class StationSessionWorker
             } catch (Throwable $exception) {
                 $this->logs->record($chargerId, 'system', 'Session', $exception->getMessage());
                 if (!$this->isOcppCallError($exception) && !($exception instanceof TransactionEventRetryPendingException)) {
-                    unset($this->sessions[$chargerId]);
+                    $this->scheduleReconnect($chargerId);
                     $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
                 }
 
@@ -256,6 +276,63 @@ final class StationSessionWorker
         }
 
         return false;
+    }
+
+    private function restoreAcceptedSessions(): void
+    {
+        foreach ($this->chargers->all() as $charger) {
+            if (($charger['boot_status'] ?? null) !== 'Accepted') {
+                continue;
+            }
+
+            $chargerId = (int) $charger['id'];
+            $url = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
+            $this->sessions[$chargerId] = [
+                'connection' => null,
+                'url' => $url,
+                'heartbeat_interval' => $this->deviceModelSettingInt($chargerId, 'HeartbeatInterval', 300, 1),
+                'next_heartbeat_at' => null,
+                'boot_payload' => [],
+                'next_boot_at' => null,
+                'reconnect_attempt' => 1,
+                'next_reconnect_at' => microtime(true) + $this->nextReconnectDelay($chargerId, 1),
+            ];
+        }
+    }
+
+    private function scheduleReconnect(int $chargerId): void
+    {
+        if (!isset($this->sessions[$chargerId])) {
+            return;
+        }
+
+        $attempt = $this->sessions[$chargerId]['reconnect_attempt'] + 1;
+        $this->sessions[$chargerId]['connection'] = null;
+        $this->sessions[$chargerId]['reconnect_attempt'] = $attempt;
+        $this->sessions[$chargerId]['next_reconnect_at'] = microtime(true) + $this->nextReconnectDelay($chargerId, $attempt);
+    }
+
+    private function nextReconnectDelay(int $chargerId, int $attempt): int
+    {
+        $minimumWait = $this->deviceModelSettingInt($chargerId, 'RetryBackOffWaitMinimum', 5, 1);
+        $randomRange = $this->deviceModelSettingInt($chargerId, 'RetryBackOffRandomRange', 5, 0);
+        $repeatTimes = $this->deviceModelSettingInt($chargerId, 'RetryBackOffRepeatTimes', 3, 0);
+        $randomSeconds = $randomRange === 0 ? 0 : random_int(0, $randomRange);
+
+        return NetworkReconnectBackoff::delaySeconds(
+            $minimumWait,
+            $randomRange,
+            $repeatTimes,
+            $attempt,
+            $randomSeconds,
+        );
+    }
+
+    private function deviceModelSettingInt(int $chargerId, string $variable, int $default, int $minimum): int
+    {
+        $value = filter_var($this->deviceModelSettings->get($chargerId, $variable), FILTER_VALIDATE_INT);
+
+        return is_int($value) && $value >= $minimum ? $value : $default;
     }
 
     /**
@@ -271,6 +348,7 @@ final class StationSessionWorker
             $this->sessions[$chargerId]['next_boot_at'] = null;
             $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
             $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
+            $this->deviceModelSettings->set($chargerId, 'HeartbeatInterval', (string) $interval);
             $this->chargers->setBootStatus($chargerId, $status);
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
             $this->reportAvailableOutlets($chargerId, $charger);
@@ -292,8 +370,13 @@ final class StationSessionWorker
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions, $this->transactionEvents);
 
+        $connection = $this->sessions[$chargerId]['connection'];
+        if (!$connection instanceof WebSocketConnection) {
+            throw new RuntimeException('The charger is waiting to reconnect to the CSMS.');
+        }
+
         return new OcppClient(
-            $this->sessions[$chargerId]['connection'],
+            $connection,
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },

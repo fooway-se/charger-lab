@@ -159,7 +159,7 @@ it('rejects invalid transaction meter sampling settings without changing saved v
         ->and(array_column($get['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register']);
 });
 
-it('reads and writes transaction event retry settings on OCPPCommCtrlr', function (): void {
+it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();
     $outletSessions = new OutletSessionRepository($database);
@@ -180,6 +180,22 @@ it('reads and writes transaction event retry settings on OCPPCommCtrlr', functio
                 'component' => ['name' => 'OCPPCommCtrlr'],
                 'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
             ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffWaitMinimum'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRandomRange'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRepeatTimes'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'HeartbeatInterval'],
+            ],
         ],
     ]);
     $set = $deviceModel->handle('SetVariables', [
@@ -194,6 +210,26 @@ it('reads and writes transaction event retry settings on OCPPCommCtrlr', functio
                 'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
                 'attributeValue' => '7',
             ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffWaitMinimum'],
+                'attributeValue' => '4',
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRandomRange'],
+                'attributeValue' => '2',
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRepeatTimes'],
+                'attributeValue' => '1',
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'HeartbeatInterval'],
+                'attributeValue' => '6',
+            ],
         ],
     ]);
     $updated = $deviceModel->handle('GetVariables', [
@@ -206,10 +242,26 @@ it('reads and writes transaction event retry settings on OCPPCommCtrlr', functio
                 'component' => ['name' => 'OCPPCommCtrlr'],
                 'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
             ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffWaitMinimum'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRandomRange'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'RetryBackOffRepeatTimes'],
+            ],
+            [
+                'component' => ['name' => 'OCPPCommCtrlr'],
+                'variable' => ['name' => 'HeartbeatInterval'],
+            ],
         ],
     ]);
 
-    expect(array_column($initial['getVariableResult'], 'attributeValue'))->toBe(['3', '60'])
-        ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted'])
-        ->and(array_column($updated['getVariableResult'], 'attributeValue'))->toBe(['4', '7']);
+    expect(array_column($initial['getVariableResult'], 'attributeValue'))->toBe(['3', '60', '5', '5', '3', '300'])
+        ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted', 'Accepted', 'Accepted', 'Accepted'])
+        ->and(array_column($updated['getVariableResult'], 'attributeValue'))->toBe(['4', '7', '4', '2', '1', '6']);
 });

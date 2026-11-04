@@ -20,6 +20,10 @@ final class DeviceModelSettingsRepository
         'TxEndedInterval' => '0',
         'MessageAttemptsTransactionEvent' => '3',
         'MessageAttemptIntervalTransactionEvent' => '60',
+        'RetryBackOffWaitMinimum' => '5',
+        'RetryBackOffRandomRange' => '5',
+        'RetryBackOffRepeatTimes' => '3',
+        'HeartbeatInterval' => '300',
     ];
 
     public function __construct(private readonly PDO $database)

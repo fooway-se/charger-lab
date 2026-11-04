@@ -758,6 +758,18 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($sharedCharger['outlets'][1]['evse_id'] ?? null) !== 1
             || ($sharedCharger['outlets'][1]['connector_id'] ?? null) !== 2)->toBeFalse('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
 
+        stopProcess($worker);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        $reconnectedOutput = waitForProcessOutput(
+            $fakeCsms,
+            'Connected GET /ocpp/UiIntegrationCharger HTTP/1.1',
+            4_000,
+        );
+        expect($reconnectedOutput)->toContain('Connected GET /ocpp/UiIntegrationCharger HTTP/1.1');
+
         $fakeCsmsOutput = $GLOBALS['capturedFakeCsmsOutput'] ?? '';
         foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
             if ($process === $fakeCsms) {

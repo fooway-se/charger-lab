@@ -222,6 +222,18 @@ function serveClient($client): void
                         'component' => ['name' => 'SampledDataCtrlr'],
                         'variable' => ['name' => 'TxEndedInterval'],
                         'attributeValue' => '1',
+                    ], [
+                        'component' => ['name' => 'OCPPCommCtrlr'],
+                        'variable' => ['name' => 'RetryBackOffWaitMinimum'],
+                        'attributeValue' => '1',
+                    ], [
+                        'component' => ['name' => 'OCPPCommCtrlr'],
+                        'variable' => ['name' => 'RetryBackOffRandomRange'],
+                        'attributeValue' => '0',
+                    ], [
+                        'component' => ['name' => 'OCPPCommCtrlr'],
+                        'variable' => ['name' => 'RetryBackOffRepeatTimes'],
+                        'attributeValue' => '0',
                     ]],
                 ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 writeFrame($client, 0x1, $meterSettingsCall);
