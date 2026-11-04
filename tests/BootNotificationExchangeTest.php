@@ -46,3 +46,18 @@ it('sends and validates a BootNotification exchange', function (): void {
     expect($result !== ['status' => 'Accepted', 'currentTime' => '2026-11-04T12:00:00Z', 'interval' => 300])->toBeFalse('Expected the matching Accepted CALLRESULT payload.');
 
 });
+
+it('uses a persisted message ID when retrying a TransactionEvent', function (): void {
+    $connection = new FakeCsmsConnection();
+    $client = new OcppClient($connection);
+    $messageId = 'persisted-transaction-event-id';
+    $payload = [
+        'eventType' => 'Updated',
+        'seqNo' => 4,
+        'transactionInfo' => ['transactionId' => 'transaction-4'],
+    ];
+
+    $client->request('TransactionEvent', $payload, $messageId);
+
+    expect($connection->receivedCall[1] ?? null)->toBe($messageId);
+});

@@ -14,6 +14,7 @@ use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use RuntimeException;
 use Throwable;
 
@@ -36,6 +37,7 @@ final class StationSessionWorker
         private readonly OcppCommandRepository $commands,
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $deviceModelSettings,
+        private readonly TransactionEventOutboxRepository $transactionEvents,
     ) {
     }
 
@@ -139,7 +141,12 @@ final class StationSessionWorker
 
             $this->commands->complete($command['id'], $result);
         } catch (Throwable $exception) {
-            unset($this->sessions[$chargerId]);
+            $csmsRejectedMessage = $this->isOcppCallError($exception);
+            $retryWaiting = $exception instanceof TransactionEventRetryPendingException;
+            if (!$csmsRejectedMessage && !$retryWaiting) {
+                unset($this->sessions[$chargerId]);
+            }
+
             $this->logs->record($chargerId, 'system', $command['action'], $exception->getMessage());
             if ($command['action'] === 'BootNotification') {
                 $retryStatus = $command['payload']['_retry_status'] ?? null;
@@ -150,7 +157,7 @@ final class StationSessionWorker
                     $this->chargers->setBootStatus($chargerId, 'Connection failed');
                 }
             }
-            if ($command['action'] === 'BootNotification' || $hadSession) {
+            if (!$csmsRejectedMessage && !$retryWaiting && ($command['action'] === 'BootNotification' || $hadSession)) {
                 $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
             }
 
@@ -211,11 +218,19 @@ final class StationSessionWorker
                     return true;
                 }
 
+                if ($this->deliverPendingTransactionEvent($chargerId)) {
+                    return true;
+                }
+
                 if ($this->sendPeriodicMeterValue($chargerId)) {
                     return true;
                 }
 
                 if ($this->sampleTransactionEndMeterValue($chargerId)) {
+                    return true;
+                }
+
+                if ($this->deliverPendingTransactionEvent($chargerId)) {
                     return true;
                 }
 
@@ -230,9 +245,11 @@ final class StationSessionWorker
                     return true;
                 }
             } catch (Throwable $exception) {
-                unset($this->sessions[$chargerId]);
                 $this->logs->record($chargerId, 'system', 'Session', $exception->getMessage());
-                $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
+                if (!$this->isOcppCallError($exception) && !($exception instanceof TransactionEventRetryPendingException)) {
+                    unset($this->sessions[$chargerId]);
+                    $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
+                }
 
                 return true;
             }
@@ -273,7 +290,7 @@ final class StationSessionWorker
         $deviceModel = new DeviceModel($this->outletSessions, $this->deviceModelSettings, $chargerId);
         $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
-        $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions);
+        $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions, $this->transactionEvents);
 
         return new OcppClient(
             $this->sessions[$chargerId]['connection'],
@@ -339,7 +356,6 @@ final class StationSessionWorker
 
         $transactionId = $this->chargers->nextTransactionId($chargerId);
         $meterWh = $session['meter_wh'];
-        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
         $transactionEvent = [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
@@ -353,8 +369,10 @@ final class StationSessionWorker
             $transactionEvent['meterValue'] = $meterValue;
         }
 
-        $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
 
         return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
     }
@@ -376,7 +394,6 @@ final class StationSessionWorker
         }
 
         $transactionId = $this->chargers->nextTransactionId($chargerId);
-        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
         $transactionEvent = [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
@@ -395,11 +412,7 @@ final class StationSessionWorker
             $transactionEvent['meterValue'] = $meterValue;
         }
 
-        $result = $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
-        if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
-            throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
-        }
-
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
         $this->outletSessions->attachToken(
             $chargerId,
@@ -409,6 +422,12 @@ final class StationSessionWorker
             $idToken['idToken'],
             0,
         );
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
+        $result = $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+        if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
+            $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $transactionId, $session['meter_wh']);
+            throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
+        }
 
         return ['status' => 'Started', 'transactionId' => $transactionId];
     }
@@ -430,7 +449,7 @@ final class StationSessionWorker
         }
 
         $sequence = $session['seq_no'] + 1;
-        $this->createClient($chargerId)->request('TransactionEvent', [
+        $transactionEvent = [
             'eventType' => 'Updated',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'RemoteStop',
@@ -440,8 +459,10 @@ final class StationSessionWorker
                 'chargingState' => 'EVConnected',
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
-        ]);
+        ];
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
         $this->outletSessions->markRemoteStopRequested($chargerId, $evseId, $connectorId, $transactionId, $sequence);
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
 
         return ['status' => 'StopRequested'];
     }
@@ -465,7 +486,6 @@ final class StationSessionWorker
 
         $sequence = $session['seq_no'] + 1;
         $meterWh = $session['meter_wh'] + self::SIMULATED_SESSION_ENERGY_WH;
-        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
         $transactionEvent = [
             'eventType' => 'Ended',
             'timestamp' => gmdate(DATE_ATOM),
@@ -487,8 +507,10 @@ final class StationSessionWorker
             $transactionEvent['meterValue'] = $meterValues;
         }
 
-        $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
         $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id'], $meterWh);
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
 
         return ['status' => 'Unplugged'];
     }
@@ -504,8 +526,32 @@ final class StationSessionWorker
             throw new RuntimeException('Plug in the selected outlet before presenting an RFID token.');
         }
 
+        if ($session['id_token'] === $idToken['idToken']) {
+            $chargingSequence = $session['seq_no'] + 1;
+            $chargingEvent = [
+                'eventType' => 'Updated',
+                'timestamp' => gmdate(DATE_ATOM),
+                'triggerReason' => 'ChargingStateChanged',
+                'seqNo' => $chargingSequence,
+                'transactionInfo' => ['transactionId' => $session['transaction_id'], 'chargingState' => 'Charging'],
+                'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
+            ];
+            $queuedEvent = $this->queueTransactionEvent($chargerId, $chargingEvent);
+            $this->outletSessions->attachToken(
+                $chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $session['transaction_id'],
+                $idToken['idToken'],
+                $chargingSequence,
+            );
+            $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+
+            return;
+        }
+
         $sequence = $session['seq_no'] + 1;
-        $authorizationResult = $this->createClient($chargerId)->request('TransactionEvent', [
+        $authorizationEvent = [
             'eventType' => 'Updated',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'Authorized',
@@ -513,21 +559,38 @@ final class StationSessionWorker
             'transactionInfo' => ['transactionId' => $session['transaction_id']],
             'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
             'idToken' => $idToken,
-        ]);
+        ];
+        $queuedAuthorization = $this->queueTransactionEvent($chargerId, $authorizationEvent);
+        $this->outletSessions->attachToken(
+            $chargerId,
+            $outlet['evse_id'],
+            $outlet['connector_id'],
+            $session['transaction_id'],
+            $idToken['idToken'],
+            $sequence,
+        );
+        $authorizationResult = $this->deliverTransactionEventsThrough($chargerId, $queuedAuthorization['id']);
         if (($authorizationResult['idTokenInfo']['status'] ?? null) !== 'Accepted') {
+            $this->outletSessions->clearToken(
+                $chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $session['transaction_id'],
+                $session['seq_no'],
+            );
             throw new OcppProtocolException('The CSMS did not accept the idToken in the TransactionEvent response.');
         }
 
         $chargingSequence = $sequence + 1;
-        $this->createClient($chargerId)->request('TransactionEvent', [
+        $chargingEvent = [
             'eventType' => 'Updated',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'ChargingStateChanged',
             'seqNo' => $chargingSequence,
             'transactionInfo' => ['transactionId' => $session['transaction_id'], 'chargingState' => 'Charging'],
             'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
-        ]);
-
+        ];
+        $queuedCharging = $this->queueTransactionEvent($chargerId, $chargingEvent);
         $this->outletSessions->attachToken(
             $chargerId,
             $outlet['evse_id'],
@@ -536,6 +599,7 @@ final class StationSessionWorker
             $idToken['idToken'],
             $chargingSequence,
         );
+        $this->deliverTransactionEventsThrough($chargerId, $queuedCharging['id']);
     }
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void
@@ -588,6 +652,88 @@ final class StationSessionWorker
         ]];
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}
+     */
+    private function queueTransactionEvent(int $chargerId, array $payload): array
+    {
+        return $this->transactionEvents->enqueue($chargerId, $payload);
+    }
+
+    private function deliverPendingTransactionEvent(int $chargerId): bool
+    {
+        $queuedEvent = $this->transactionEvents->nextPending($chargerId);
+        if ($queuedEvent === null) {
+            return false;
+        }
+
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+
+        return true;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function deliverTransactionEventsThrough(int $chargerId, int $targetId): array
+    {
+        $targetResponse = null;
+        while (($queuedEvent = $this->transactionEvents->nextPending($chargerId)) !== null) {
+            try {
+                $response = $this->createClient($chargerId)->request(
+                    'TransactionEvent',
+                    $queuedEvent['payload'],
+                    $queuedEvent['message_id'],
+                );
+                $this->transactionEvents->markDelivered($queuedEvent['id']);
+                if ($queuedEvent['id'] === $targetId) {
+                    $targetResponse = $response;
+                }
+            } catch (Throwable $exception) {
+                $this->transactionEvents->recordFailure(
+                    $queuedEvent['id'],
+                    $exception->getMessage(),
+                    $this->transactionEventMaxAttempts($chargerId),
+                    $this->transactionEventRetryIntervalSeconds($chargerId),
+                );
+                throw $exception;
+            }
+        }
+
+        if ($targetResponse === null) {
+            throw new TransactionEventRetryPendingException('The transaction event is queued until its retry interval expires.');
+        }
+
+        return $targetResponse;
+    }
+
+    private function transactionEventMaxAttempts(int $chargerId): int
+    {
+        $configuredValue = filter_var(
+            $this->deviceModelSettings->get($chargerId, 'MessageAttemptsTransactionEvent'),
+            FILTER_VALIDATE_INT,
+        );
+
+        return is_int($configuredValue) && $configuredValue > 0 ? $configuredValue : 3;
+    }
+
+    private function transactionEventRetryIntervalSeconds(int $chargerId): int
+    {
+        $configuredValue = filter_var(
+            $this->deviceModelSettings->get($chargerId, 'MessageAttemptIntervalTransactionEvent'),
+            FILTER_VALIDATE_INT,
+        );
+
+        return is_int($configuredValue) && $configuredValue >= 0 ? $configuredValue : 60;
+    }
+
+    private function isOcppCallError(Throwable $exception): bool
+    {
+        return $exception instanceof OcppProtocolException
+            && str_starts_with($exception->getMessage(), 'CSMS returned OCPP-J CALLERROR ');
+    }
+
     private function sendPeriodicMeterValue(int $chargerId): bool
     {
         $interval = filter_var(
@@ -615,7 +761,7 @@ final class StationSessionWorker
             $sequence = $session['seq_no'] + 1;
             $meterWh = $session['meter_wh'] + self::SIMULATED_PERIODIC_ENERGY_WH;
             $sampledAt = gmdate(DATE_ATOM);
-            $this->createClient($chargerId)->request('TransactionEvent', [
+            $transactionEvent = [
                 'eventType' => 'Updated',
                 'timestamp' => $sampledAt,
                 'triggerReason' => 'MeterValuePeriodic',
@@ -626,7 +772,8 @@ final class StationSessionWorker
                     'chargingState' => 'Charging',
                 ],
                 'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
-            ]);
+            ];
+            $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
             $this->outletSessions->recordMeterSample(
                 $chargerId,
                 $session['evse_id'],
@@ -636,6 +783,7 @@ final class StationSessionWorker
                 $sequence,
                 $sampledAt,
             );
+            $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
 
             return true;
         }

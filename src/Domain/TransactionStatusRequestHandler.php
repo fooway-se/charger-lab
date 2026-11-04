@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 
 /**
  * Answers CSMS transaction status requests from persisted outlet state.
@@ -14,10 +15,12 @@ final class TransactionStatusRequestHandler
     /**
      * @param int $chargerId The station that received the CSMS request.
      * @param OutletSessionRepository $outletSessions The station's persisted outlet sessions.
+     * @param TransactionEventOutboxRepository $transactionEvents The pending transaction event queue.
      */
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
+        private readonly TransactionEventOutboxRepository $transactionEvents,
     ) {
     }
 
@@ -30,7 +33,7 @@ final class TransactionStatusRequestHandler
         $transactionId = $payload['transactionId'] ?? null;
         $hasRequestedTransaction = array_key_exists('transactionId', $payload);
         if (!$hasRequestedTransaction) {
-            return ['messagesInQueue' => false];
+            return ['messagesInQueue' => $this->transactionEvents->hasPending($this->chargerId)];
         }
 
         if (!is_string($transactionId) || $transactionId === '' || strlen($transactionId) > 36) {
@@ -43,10 +46,16 @@ final class TransactionStatusRequestHandler
             }
 
             if ($session['transaction_id'] === $transactionId) {
-                return ['ongoingIndicator' => true, 'messagesInQueue' => false];
+                return [
+                    'ongoingIndicator' => true,
+                    'messagesInQueue' => $this->transactionEvents->hasPending($this->chargerId, $transactionId),
+                ];
             }
         }
 
-        return ['ongoingIndicator' => false, 'messagesInQueue' => false];
+        return [
+            'ongoingIndicator' => false,
+            'messagesInQueue' => $this->transactionEvents->hasPending($this->chargerId, $transactionId),
+        ];
     }
 }

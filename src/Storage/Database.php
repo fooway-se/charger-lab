@@ -34,6 +34,7 @@ final class Database
             self::migrateCommands($pdo);
             self::migrateOutletSessions($pdo);
             self::migrateDeviceModelSettings($pdo);
+            self::migrateTransactionEventOutbox($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -278,7 +279,7 @@ final class Database
     private static function migrateDeviceModelSettings(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
-        if ($schema !== false && str_contains((string) $schema, "'TxEndedInterval'")) {
+        if ($schema !== false && str_contains((string) $schema, "'MessageAttemptsTransactionEvent'")) {
             return;
         }
 
@@ -289,7 +290,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )
@@ -299,5 +300,26 @@ final class Database
             $pdo->exec('INSERT INTO device_model_setting (charger_id, variable, value) SELECT charger_id, variable, value FROM device_model_setting_legacy');
             $pdo->exec('DROP TABLE device_model_setting_legacy');
         }
+    }
+
+    private static function migrateTransactionEventOutbox(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS transaction_event_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                transaction_id TEXT NOT NULL,
+                seq_no INTEGER NOT NULL CHECK (seq_no >= 0),
+                message_id TEXT NOT NULL UNIQUE,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'discarded')),
+                attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+                next_attempt_at INTEGER,
+                last_error TEXT,
+                completed_at TEXT,
+                UNIQUE (charger_id, transaction_id, seq_no)
+            )
+            SQL);
+        $pdo->exec('CREATE INDEX IF NOT EXISTS transaction_event_outbox_pending ON transaction_event_outbox (charger_id, status, id)');
     }
 }

@@ -6,6 +6,7 @@ use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 
 it('reports whether a requested transaction or any transaction is ongoing', function (): void {
     $directory = sys_get_temp_dir() . '/charger-transaction-status-' . bin2hex(random_bytes(6));
@@ -19,7 +20,8 @@ it('reports whether a requested transaction or any transaction is ongoing', func
         ['number' => 2, 'evse_id' => 2, 'connector_id' => 1],
     ]);
     $sessions->markOccupied($chargerId, 1, 1, 'active-transaction');
-    $handler = new TransactionStatusRequestHandler($chargerId, $sessions);
+    $events = new TransactionEventOutboxRepository($database);
+    $handler = new TransactionStatusRequestHandler($chargerId, $sessions, $events);
 
     expect($handler->handle(['transactionId' => 'active-transaction']))
         ->toBe(['ongoingIndicator' => true, 'messagesInQueue' => false])
@@ -27,6 +29,16 @@ it('reports whether a requested transaction or any transaction is ongoing', func
         ->toBe(['ongoingIndicator' => false, 'messagesInQueue' => false])
         ->and($handler->handle([]))
         ->toBe(['messagesInQueue' => false]);
+
+    $events->enqueue($chargerId, [
+        'eventType' => 'Started',
+        'seqNo' => 0,
+        'transactionInfo' => ['transactionId' => 'active-transaction'],
+    ]);
+    expect($handler->handle(['transactionId' => 'active-transaction']))
+        ->toBe(['ongoingIndicator' => true, 'messagesInQueue' => true])
+        ->and($handler->handle([]))
+        ->toBe(['messagesInQueue' => true]);
 
     unset($handler, $sessions, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {

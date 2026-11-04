@@ -29,9 +29,13 @@ final class OcppClient
      * @param array<string, mixed>|\stdClass $payload
      * @return array<string, mixed>
      */
-    public function request(string $action, array|\stdClass $payload): array
+    public function request(string $action, array|\stdClass $payload, ?string $messageId = null): array
     {
-        $messageId = bin2hex(random_bytes(16));
+        $messageId ??= bin2hex(random_bytes(16));
+        if ($messageId === '') {
+            throw new OcppProtocolException('The OCPP-J message uniqueId cannot be empty.');
+        }
+
         $call = [2, $messageId, $action, $payload];
 
         $outgoing = json_encode($call, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

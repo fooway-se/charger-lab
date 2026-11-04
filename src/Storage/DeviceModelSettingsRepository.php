@@ -18,6 +18,8 @@ final class DeviceModelSettingsRepository
         'TxStartedMeasurands' => 'Energy.Active.Import.Register',
         'TxEndedMeasurands' => 'Energy.Active.Import.Register',
         'TxEndedInterval' => '0',
+        'MessageAttemptsTransactionEvent' => '3',
+        'MessageAttemptIntervalTransactionEvent' => '60',
     ];
 
     public function __construct(private readonly PDO $database)

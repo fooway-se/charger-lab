@@ -162,6 +162,25 @@ final class OutletSessionRepository
         }
     }
 
+    public function clearToken(int $chargerId, int $evseId, int $connectorId, string $transactionId, int $sequence): void
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE outlet_session SET id_token = NULL, seq_no = :seq_no
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Occupied' AND transaction_id = :transaction_id
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'seq_no' => $sequence,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The active outlet transaction changed before its rejected token was cleared.');
+        }
+    }
+
     public function markAvailable(int $chargerId, int $evseId, int $connectorId, string $transactionId, int $meterWh): void
     {
         $statement = $this->database->prepare(<<<'SQL'

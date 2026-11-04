@@ -139,6 +139,11 @@ final class DeviceModel
             return $this->settings->get($this->chargerId, $variableName);
         }
 
+        if ($componentName === 'OCPPCommCtrlr'
+            && in_array($variableName, ['MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true)) {
+            return $this->settings->get($this->chargerId, $variableName);
+        }
+
         if ($variableName === 'Available' && in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
             return 'true';
         }
@@ -207,7 +212,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'SampledDataCtrlr'], true)) {
+        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -242,8 +247,12 @@ final class DeviceModel
      */
     private function isWritable(array $component, array $variable): bool
     {
-        return ($component['name'] ?? null) === 'SampledDataCtrlr'
-            && in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
+        if (($component['name'] ?? null) === 'SampledDataCtrlr') {
+            return in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
+        }
+
+        return ($component['name'] ?? null) === 'OCPPCommCtrlr'
+            && in_array($variable['name'] ?? null, ['MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true);
     }
 
     /**
@@ -251,9 +260,10 @@ final class DeviceModel
      */
     private function isValidSetting(string $variable, string $value): bool
     {
-        if (in_array($variable, ['TxEndedInterval', 'TxUpdatedInterval'], true)) {
+        if (in_array($variable, ['TxEndedInterval', 'TxUpdatedInterval', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent'], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
-                && filter_var($value, FILTER_VALIDATE_INT) !== false;
+                && filter_var($value, FILTER_VALIDATE_INT) !== false
+                && ($variable !== 'MessageAttemptsTransactionEvent' || (int) $value > 0);
         }
 
         if (!in_array($variable, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {

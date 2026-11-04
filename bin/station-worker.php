@@ -12,6 +12,7 @@ use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 
 require __DIR__ . '/../src/autoload.php';
 
@@ -22,5 +23,6 @@ $worker = new StationSessionWorker(
     new OcppCommandRepository($database),
     new OutletSessionRepository($database),
     new DeviceModelSettingsRepository($database),
+    new TransactionEventOutboxRepository($database),
 );
 $worker->run();
