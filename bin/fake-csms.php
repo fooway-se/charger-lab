@@ -103,13 +103,14 @@ function serveClient($client): void
         }
 
         $action = $call[2] ?? '';
-        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat'], true)) {
+        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'StatusNotification'], true)) {
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
                 'BootNotification' => ['status' => 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => (int) (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)],
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
                 'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
+                'StatusNotification' => new stdClass(),
             };
             $replyFrame = [3, $call[1], $result];
         }
@@ -125,11 +126,23 @@ function serveClient($client): void
         }
 
         if ($action === 'BootNotification' && getenv('FAKE_CSMS_SEND_CALL') === '1') {
-            $serverCall = json_encode([2, 'fake-csms-call-' . $call[1], 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $serverCallId = 'fake-csms-call-' . $call[1];
+            $serverCall = json_encode([2, $serverCallId, 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             writeFrame($client, 0x1, $serverCall);
-            $stationResponse = readFrame($client);
-            if ($stationResponse !== null && $stationResponse[0] === 0x1) {
-                fwrite(STDOUT, 'Station response: ' . $stationResponse[1] . "\n");
+            while (($stationResponse = readFrame($client)) !== null) {
+                if ($stationResponse[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationResponse[1], true);
+                if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 4 && ($stationMessage[1] ?? null) === $serverCallId) {
+                    fwrite(STDOUT, 'Station response: ' . $stationResponse[1] . "\n");
+                    break;
+                }
+                if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                }
             }
         }
     }

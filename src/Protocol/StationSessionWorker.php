@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Protocol;
 
+use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -84,6 +85,9 @@ final class StationSessionWorker
                 $interval = is_int($interval) && $interval > 0 ? $interval : 300;
                 $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
                 $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
+                if (($result['status'] ?? null) === 'Accepted') {
+                    $this->reportAvailableOutlets($chargerId, $charger);
+                }
             }
 
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
@@ -146,5 +150,21 @@ final class StationSessionWorker
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
         );
+    }
+
+    /**
+     * @param array{outlet_count:int,outlet_topology:string} $charger
+     */
+    private function reportAvailableOutlets(int $chargerId, array $charger): void
+    {
+        $client = $this->createClient($chargerId);
+        foreach ((new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets() as $outlet) {
+            $client->request('StatusNotification', [
+                'timestamp' => gmdate(DATE_ATOM),
+                'connectorStatus' => 'Available',
+                'evseId' => $outlet['evse_id'],
+                'connectorId' => $outlet['connector_id'],
+            ]);
+        }
     }
 }

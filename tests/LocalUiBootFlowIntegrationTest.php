@@ -85,6 +85,30 @@ try {
         throw new RuntimeException('The BootNotification API should report the Accepted status.');
     }
 
+    [$bootStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $bootState = is_string($bootStateBody) ? json_decode($bootStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    $statusEntries = array_values(array_filter(
+        $bootState['chargers'][0]['entries'] ?? [],
+        static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification',
+    ));
+    $statusCalls = array_values(array_filter(
+        $statusEntries,
+        static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing',
+    ));
+    $statusPayloads = array_map(
+        static fn (array $entry): array => json_decode($entry['message'], true, flags: JSON_THROW_ON_ERROR)[3] ?? [],
+        $statusCalls,
+    );
+    if (count($statusCalls) !== 2
+        || ($statusPayloads[0]['evseId'] ?? null) !== 1
+        || ($statusPayloads[0]['connectorId'] ?? null) !== 1
+        || ($statusPayloads[0]['connectorStatus'] ?? null) !== 'Available'
+        || ($statusPayloads[1]['evseId'] ?? null) !== 2
+        || ($statusPayloads[1]['connectorId'] ?? null) !== 1
+        || ($statusPayloads[1]['connectorStatus'] ?? null) !== 'Available') {
+        throw new RuntimeException('An accepted charger boot should report Available for each configured outlet.');
+    }
+
     $incomingCallOutput = waitForProcessOutput($fakeCsms, 'Station response: ', 1_500);
     if (!str_contains($incomingCallOutput, '"NotImplemented"')) {
         throw new RuntimeException('The open session should answer a CSMS-initiated call while idle.');
@@ -249,6 +273,7 @@ try {
     $charger = $database->query('SELECT * FROM charger WHERE id = ' . $chargerId)->fetch();
     $bootCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification'")->fetchColumn();
     $authorizeCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Authorize'")->fetchColumn();
+    $statusNotificationCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'StatusNotification'")->fetchColumn();
     $heartbeatCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Heartbeat'")->fetchColumn();
     $serverCallCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'GetVariables'")->fetchColumn();
     if ($charger['boot_status'] !== 'Accepted'
@@ -256,6 +281,7 @@ try {
         || $charger['outlet_topology'] !== 'shared'
         || $bootCount !== 2
         || $authorizeCount !== 2
+        || $statusNotificationCount !== 4
         || $heartbeatCount < 2
         || $serverCallCount !== 2) {
         throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
