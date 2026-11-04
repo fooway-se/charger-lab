@@ -1,0 +1,80 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ChargerEmulator\Domain;
+
+use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\OutletSessionRepository;
+
+/**
+ * Validates CSMS remote-start requests and queues an available outlet action.
+ */
+final class RemoteStartRequestHandler
+{
+    /**
+     * @param int $chargerId The station that received the CSMS request.
+     */
+    public function __construct(
+        private readonly int $chargerId,
+        private readonly OutletSessionRepository $outletSessions,
+        private readonly OcppCommandRepository $commands,
+    ) {
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string}
+     */
+    public function handle(array $payload): array
+    {
+        $remoteStartId = $payload['remoteStartId'] ?? null;
+        $idToken = $payload['idToken'] ?? null;
+        $evseId = $payload['evseId'] ?? null;
+        if (!is_int($remoteStartId) || $remoteStartId < 0 || !$this->isIdToken($idToken)
+            || ($evseId !== null && (!is_int($evseId) || $evseId < 0))) {
+            return ['status' => 'Rejected'];
+        }
+
+        foreach ($this->outletSessions->allForCharger($this->chargerId) as $session) {
+            if ($session['connector_status'] !== 'Available'
+                || ($evseId !== null && $session['evse_id'] !== $evseId)) {
+                continue;
+            }
+
+            $this->commands->enqueue($this->chargerId, 'RemoteStart', [
+                'remoteStartId' => $remoteStartId,
+                'idToken' => $idToken,
+                'evseId' => $session['evse_id'],
+                'connectorId' => $session['connector_id'],
+            ]);
+
+            return ['status' => 'Accepted'];
+        }
+
+        return ['status' => 'Rejected'];
+    }
+
+    /**
+     * @param mixed $idToken
+     * @return bool
+     */
+    private function isIdToken(mixed $idToken): bool
+    {
+        if (!is_array($idToken) || !is_string($idToken['idToken'] ?? null) || $idToken['idToken'] === ''
+            || strlen($idToken['idToken']) > 36 || !is_string($idToken['type'] ?? null)) {
+            return false;
+        }
+
+        return in_array($idToken['type'], [
+            'Central',
+            'eMAID',
+            'ISO14443',
+            'ISO15693',
+            'KeyCode',
+            'Local',
+            'MacAddress',
+            'NoAuthorization',
+        ], true);
+    }
+}

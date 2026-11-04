@@ -197,7 +197,7 @@ final class Database
     private static function migrateCommands(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
-        $needsMigration = is_string($schema) && !str_contains($schema, "'PlugIn'");
+        $needsMigration = is_string($schema) && !str_contains($schema, "'RemoteStart'");
         if ($needsMigration) {
             $pdo->exec('DROP INDEX IF EXISTS ocpp_command_pending');
             $pdo->exec('ALTER TABLE ocpp_command RENAME TO ocpp_command_legacy');
@@ -207,7 +207,7 @@ final class Database
             CREATE TABLE IF NOT EXISTS ocpp_command (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug')),
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart')),
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
                 result TEXT,

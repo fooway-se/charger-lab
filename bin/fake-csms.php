@@ -80,6 +80,7 @@ function serveClient($client): void
     $bootCountPath = getenv('FAKE_CSMS_BOOT_COUNT_PATH') ?: '';
     $pendingBootCount = (int) (getenv('FAKE_CSMS_PENDING_BOOT_COUNT') ?: 0);
     $serverCallSent = false;
+    $remoteStartSent = false;
     while (true) {
         $frame = readFrame($client);
         if ($frame === null) {
@@ -195,6 +196,60 @@ function serveClient($client): void
                 if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
                     $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                     writeFrame($client, 0x1, $statusReply);
+                }
+            }
+
+            $remoteStartSentPath = getenv('FAKE_CSMS_REMOTE_START_SENT_PATH') ?: '';
+            if (getenv('FAKE_CSMS_SEND_REMOTE_START') === '1'
+                && !$remoteStartSent
+                && ($remoteStartSentPath === '' || !is_file($remoteStartSentPath))) {
+                $remoteStartSent = true;
+                if ($remoteStartSentPath !== '') {
+                    file_put_contents($remoteStartSentPath, 'sent', LOCK_EX);
+                }
+
+                $remoteStartCallId = 'fake-csms-remote-start-' . $call[1];
+                $remoteStartCall = json_encode([2, $remoteStartCallId, 'RequestStartTransaction', [
+                    'remoteStartId' => 42,
+                    'idToken' => ['idToken' => 'REMOTE-42', 'type' => 'ISO14443'],
+                    'evseId' => 1,
+                ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                writeFrame($client, 0x1, $remoteStartCall);
+                $requestAnswered = false;
+                $transactionStarted = false;
+                while ((!$requestAnswered || !$transactionStarted) && ($stationResponse = readFrame($client)) !== null) {
+                    if ($stationResponse[0] !== 0x1) {
+                        continue;
+                    }
+
+                    $stationMessage = json_decode($stationResponse[1], true);
+                    if (!is_array($stationMessage)) {
+                        continue;
+                    }
+
+                    if (($stationMessage[0] ?? null) === 3 && ($stationMessage[1] ?? null) === $remoteStartCallId) {
+                        fwrite(STDOUT, 'RemoteStart station response: ' . $stationResponse[1] . "\n");
+                        $requestAnswered = ($stationMessage[2]['status'] ?? null) === 'Accepted';
+                    } elseif (($stationMessage[0] ?? null) === 2) {
+                        $outgoingAction = $stationMessage[2] ?? '';
+                        $outgoingPayload = $stationMessage[3] ?? [];
+                        $outgoingResult = match ($outgoingAction) {
+                            'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
+                            'TransactionEvent' => isset($outgoingPayload['idToken'])
+                                ? ['idTokenInfo' => ['status' => 'Accepted']]
+                                : new stdClass(),
+                            default => new stdClass(),
+                        };
+                        if ($outgoingAction === 'TransactionEvent'
+                            && ($outgoingPayload['eventType'] ?? null) === 'Started'
+                            && ($outgoingPayload['triggerReason'] ?? null) === 'RemoteStart') {
+                            $transactionStarted = true;
+                            fwrite(STDOUT, 'RemoteStart TransactionEvent: ' . $stationResponse[1] . "\n");
+                        }
+
+                        $outgoingResponse = json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                        writeFrame($client, 0x1, $outgoingResponse);
+                    }
                 }
             }
         }

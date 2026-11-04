@@ -184,6 +184,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'FAKE_CSMS_REJECT_STATION' => 'UiIntegrationCharger',
         'FAKE_CSMS_SEND_CALL' => '1',
         'FAKE_CSMS_SEND_REJECTED_CALL' => '1',
+        'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
     ]);
 
     $worker = null;
@@ -302,7 +304,15 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $bootState = is_string($bootStateBody) ? json_decode($bootStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $statusEntries = array_values(array_filter(
             $bootState['chargers'][0]['entries'] ?? [],
-            static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification',
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'StatusNotification' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['connectorStatus'] ?? null) === 'Available';
+            },
         ));
         $statusCalls = array_values(array_filter(
             $statusEntries,
@@ -325,6 +335,14 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $setVariableOutput = waitForProcessOutput($fakeCsms, 'SetVariables station response: ', 1_500);
         $capturedDeviceModelOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $setVariableOutput;
         expect($capturedDeviceModelOutput)->toContain('"attributeStatus":"Rejected"');
+        $remoteStartOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($remoteStartOutput, 'RemoteStart station response: ')) {
+            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStart station response: ', 5_000);
+        }
+
+        expect($remoteStartOutput)->toContain('"status":"Accepted"');
+        expect(strpos($remoteStartOutput, 'RemoteStart station response: '))
+            ->toBeLessThan(strpos($remoteStartOutput, 'RemoteStart TransactionEvent: '));
         $heartbeatEntries = waitForHeartbeat($appPort, $chargerId, 7_000);
         $heartbeatCall = json_decode($heartbeatEntries[0]['message'] ?? 'null', false);
         expect(count($heartbeatEntries) < 2
@@ -442,8 +460,41 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
 
         $transactionEntries = array_values(array_filter(
             $updatedCharger['entries'] ?? [],
-            static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent',
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['evse']['id'] ?? null) === 2;
+            },
         ));
+        $remoteStartEntries = array_values(array_filter(
+            $updatedCharger['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['triggerReason'] ?? null) === 'RemoteStart';
+            },
+        ));
+        $remoteStartPayload = json_decode($remoteStartEntries[0]['message'] ?? 'null', true);
+        expect(count($remoteStartEntries) !== 1
+            || ($remoteStartPayload[3]['eventType'] ?? null) !== 'Started'
+            || ($remoteStartPayload[3]['transactionInfo']['remoteStartId'] ?? null) !== 42
+            || ($remoteStartPayload[3]['idToken']['idToken'] ?? null) !== 'REMOTE-42')->toBeFalse('An accepted remote start should produce a correlated Started TransactionEvent.');
+
+        [$remoteUnplugBody, $remoteUnplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($remoteUnplugHeaders[0] ?? '', '200') || !is_string($remoteUnplugBody))->toBeFalse('The UI should be able to end the remotely started simulated transaction.');
         $transactionCalls = array_values(array_filter(
             $transactionEntries,
             static fn (array $entry): bool => ($entry['direction'] ?? null) === 'outgoing',
@@ -484,7 +535,15 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $unpluggedState = is_string($unpluggedStateBody) ? json_decode($unpluggedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $finalTransactionCalls = array_values(array_filter(
             $unpluggedState['chargers'][0]['entries'] ?? [],
-            static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent' && ($entry['direction'] ?? null) === 'outgoing',
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['evse']['id'] ?? null) === 2;
+            },
         ));
         $endedPayload = json_decode($finalTransactionCalls[3]['message'] ?? 'null', true);
         $finalStatusCalls = array_values(array_filter(
@@ -605,10 +664,17 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $charger['outlet_topology'] !== 'shared'
             || $bootCount !== 4
             || $authorizeCount !== 2
-            || $statusNotificationCount !== 8
-            || $transactionEventCount !== 8
+            || $statusNotificationCount !== 12
+            || $transactionEventCount !== 12
             || $heartbeatCount < 2
-            || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
+            || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
+                'boot' => $bootCount,
+                'authorize' => $authorizeCount,
+                'status' => $statusNotificationCount,
+                'transaction' => $transactionEventCount,
+                'heartbeat' => $heartbeatCount,
+                'server' => $serverCallCount,
+            ]));
 
         [$deleteBody, $deleteHeaders] = request(
             "http://127.0.0.1:{$appPort}/api/charger/delete",
@@ -637,7 +703,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             stopProcess($worker);
         }
         stopProcess($fakeCsms);
-        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/fake-csms-boot-count'] as $path) {
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/fake-csms-boot-count', $directory . '/remote-start-sent'] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

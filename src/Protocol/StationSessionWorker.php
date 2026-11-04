@@ -6,6 +6,7 @@ namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\DeviceModel;
+use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -94,6 +95,13 @@ final class StationSessionWorker
 
             if ($command['action'] === 'Unplug') {
                 $result = $this->unplug($chargerId, $command['payload']);
+                $this->commands->complete($command['id'], $result);
+
+                return true;
+            }
+
+            if ($command['action'] === 'RemoteStart') {
+                $result = $this->remoteStart($chargerId, $command['payload']);
                 $this->commands->complete($command['id'], $result);
 
                 return true;
@@ -243,13 +251,21 @@ final class StationSessionWorker
     private function createClient(int $chargerId): OcppClient
     {
         $deviceModel = new DeviceModel($this->outletSessions, $chargerId);
+        $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
 
         return new OcppClient(
             $this->sessions[$chargerId]['connection'],
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            static fn (string $action, array $payload): ?array => $deviceModel->handle($action, $payload),
+            function (string $action, array $payload) use ($deviceModel, $remoteStart): ?array {
+                $deviceModelResponse = $deviceModel->handle($action, $payload);
+                if ($deviceModelResponse !== null) {
+                    return $deviceModelResponse;
+                }
+
+                return $action === 'RequestStartTransaction' ? $remoteStart->handle($payload) : null;
+            },
             function () use ($chargerId): ?string {
                 $charger = $this->chargers->get($chargerId);
 
@@ -306,6 +322,55 @@ final class StationSessionWorker
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
 
         return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string,transactionId:string}
+     */
+    private function remoteStart(int $chargerId, array $payload): array
+    {
+        $evseId = $this->requiredOutletId($payload, 'evseId');
+        $connectorId = $this->requiredOutletId($payload, 'connectorId');
+        $remoteStartId = $payload['remoteStartId'] ?? null;
+        $idToken = $payload['idToken'] ?? null;
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if ($session === null || $session['connector_status'] !== 'Available'
+            || !is_int($remoteStartId) || !is_array($idToken)) {
+            throw new RuntimeException('The accepted remote-start request is no longer valid for this outlet.');
+        }
+
+        $transactionId = $this->chargers->nextTransactionId($chargerId);
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
+        $result = $this->createClient($chargerId)->request('TransactionEvent', [
+            'eventType' => 'Started',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'RemoteStart',
+            'seqNo' => 0,
+            'meterValue' => $this->meterValue($session['meter_wh'], 'Transaction.Begin'),
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => 'Charging',
+                'remoteStartId' => $remoteStartId,
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+            'idToken' => $idToken,
+        ]);
+        if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
+            throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
+        }
+
+        $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
+        $this->outletSessions->attachToken(
+            $chargerId,
+            $evseId,
+            $connectorId,
+            $transactionId,
+            $idToken['idToken'],
+            0,
+        );
+
+        return ['status' => 'Started', 'transactionId' => $transactionId];
     }
 
     /**
