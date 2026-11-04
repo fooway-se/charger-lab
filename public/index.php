@@ -36,6 +36,7 @@ try {
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);
     $router->add('POST', '/api/settings/csms', [$controller, 'saveWorkspaceSettings']);
+    $router->add('POST', '/api/connection/test', [$controller, 'testConnection']);
     $router->add('POST', '/api/charger/create', [$controller, 'create']);
     $router->add('POST', '/api/charger', [$controller, 'save']);
     $router->add('POST', '/api/charger/delete', [$controller, 'delete']);

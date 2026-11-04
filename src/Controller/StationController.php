@@ -7,12 +7,15 @@ namespace ChargerEmulator\Controller;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Http\Response;
+use ChargerEmulator\Protocol\OcppConnectionUrl;
+use ChargerEmulator\Protocol\WebSocketConnection;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use InvalidArgumentException;
+use Throwable;
 
 /**
  * Coordinates station configuration, OCPP requests, and the local exchange log.
@@ -74,6 +77,46 @@ final class StationController
         $this->settings->saveCsmsUrl($url);
 
         return Response::json(200, ['notice' => 'Workspace CSMS URL saved.', 'default_csms_url' => $url]);
+    }
+
+    public function testConnection(Request $request): Response
+    {
+        try {
+            $chargerId = $this->chargerId($request->body());
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
+
+        $charger = $this->chargers->get($chargerId);
+        if ($charger === null) {
+            return Response::json(404, ['error' => 'The requested charger does not exist.']);
+        }
+        if ($charger['connection_status'] === 'Connected') {
+            return Response::json(409, [
+                'error' => 'The charger is already connected to a CSMS. Use the test bench, or reconnect after changing its setup.',
+            ]);
+        }
+
+        $endpoint = (bool) $charger['uses_default_csms']
+            ? $this->settings->getCsmsUrl()
+            : $charger['csms_url'];
+
+        try {
+            $connectionUrl = OcppConnectionUrl::fromEndpoint($endpoint, $charger['station_identity']);
+            $connection = new WebSocketConnection(
+                $connectionUrl,
+                timeoutSeconds: 5,
+                username: $charger['station_identity'],
+                password: $charger['csms_password'],
+            );
+            unset($connection);
+        } catch (Throwable $exception) {
+            return Response::json(502, ['error' => 'Connection test failed: ' . $exception->getMessage()]);
+        }
+
+        return Response::json(200, [
+            'notice' => 'WebSocket connection succeeded and negotiated ocpp2.0.1. No OCPP request was sent.',
+        ]);
     }
 
     public function create(Request $request): Response

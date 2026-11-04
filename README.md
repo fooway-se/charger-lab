@@ -8,9 +8,19 @@ A standalone local emulator for developer testing against OCPP 2.0.1 CSMS implem
 docker compose up --build
 ```
 
-Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled fake CSMS. Set the workspace CSMS URL once to use it for chargers that inherit the default, or give an individual card an override. Add as many charger cards as you need; each card has its own station identity, status, outlet map, RFID token form, and communication log. Press **Connect & Boot** to send a BootNotification; the Accepted response and both OCPP-J frames appear in that charger's log. The RFID form sends an Authorize request for that charger.
+Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled fake CSMS. Use **Setup** to edit the workspace CSMS URL and each charger's identity, password, endpoint, and outlets. **Test CSMS connection** checks the saved charger's WebSocket, TLS, Basic Authentication, and OCPP subprotocol without sending BootNotification. The **Test bench** keeps the charger cards, Connect & Boot, RFID controls, and communication logs together. Add as many charger cards as you need.
 
 Charger settings, the workspace CSMS default, and per-charger exchange logs persist in the `charger-data` Docker volume. Enter the OCPP-J endpoint URL without a station identity; the emulator appends each charger's percent-encoded identity when connecting. The app supports `ws://` and `wss://` endpoints that negotiate the `ocpp2.0.1` subprotocol. Existing databases migrate in place, preserving effective connection URLs; different endpoints become per-charger overrides.
+
+### Connecting to another CSMS in Docker
+
+The web app and station worker run in containers. `localhost` therefore refers to the current container, not another service or the host. For a CSMS in a separate Compose project, put both emulator containers on its Docker network with the optional overlay:
+
+```sh
+CSMS_DOCKER_NETWORK=allmeter-mono_default docker compose -f compose.yaml -f compose.external-csms.yaml up --build -d
+```
+
+Use the CSMS service name and its container port in **Setup** (for AllMeter, `wss://ocpp-gateway:8080/ocpp`). For a CSMS running directly on the host, use `host.docker.internal` and make sure its port is reachable from containers. TLS verification stays enabled: the certificate must match the URL host and the issuing CA must be trusted by the PHP containers.
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 

@@ -279,6 +279,21 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             'outlet_count' => 2,
             'outlet_topology' => 'independent',
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $payload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The charger configuration should save before testing its CSMS connection.');
+        [$connectionTestBody, $connectionTestHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/connection/test",
+            'POST',
+            json_encode(['charger_id' => $chargerId], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        $connectionTest = is_string($connectionTestBody) ? json_decode($connectionTestBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect(!str_contains($connectionTestHeaders[0] ?? '', '200')
+            || !str_contains($connectionTest['notice'] ?? '', 'WebSocket'))->toBeFalse('The setup screen should confirm the CSMS WebSocket without sending BootNotification.');
+        [$preBootStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $preBootState = is_string($preBootStateBody) ? json_decode($preBootStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($preBootState['chargers'][0]['entries'] ?? [])->toBeEmpty('Testing the connection should not add OCPP exchanges to the station log.');
+
         [$body, $headers] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $payload, 'application/json');
         expect(!str_contains($headers[0] ?? '', '200') || !is_string($body))->toBeFalse('The BootNotification API should return an accepted CSMS response; received ' . ($headers[0] ?? 'no HTTP status') . ' ' . (string) $body);
         $bootResponse = json_decode($body, true, flags: JSON_THROW_ON_ERROR);

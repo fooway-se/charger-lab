@@ -236,8 +236,18 @@ final class WebSocketConnection implements Connection
         $this->writeAll($request);
 
         $status = fgets($this->stream);
-        if (!is_string($status) || !preg_match('/^HTTP\/1\.\d 101\b/', $status)) {
-            throw new RuntimeException('CSMS rejected the WebSocket upgrade.');
+        if (!is_string($status)) {
+            throw new RuntimeException('CSMS did not return a WebSocket upgrade response.');
+        }
+        if (!preg_match('/^HTTP\/1\.\d\s+101\b/', $status)) {
+            $statusCode = preg_match('/^HTTP\/1\.\d\s+(\d{3})\b/', $status, $statusMatches) === 1
+                ? $statusMatches[1]
+                : null;
+            $message = is_string($statusCode)
+                ? "CSMS rejected the WebSocket upgrade with HTTP {$statusCode}."
+                : 'CSMS rejected the WebSocket upgrade.';
+
+            throw new RuntimeException($message);
         }
 
         $headers = [];

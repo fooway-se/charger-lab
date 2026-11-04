@@ -1,0 +1,15 @@
+services:
+  app:
+    networks:
+      - default
+      - csms
+
+  station-worker:
+    networks:
+      - default
+      - csms
+
+networks:
+  csms:
+    external: true
+    name: ${CSMS_DOCKER_NETWORK:?Set CSMS_DOCKER_NETWORK to the external CSMS Docker network}

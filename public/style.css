@@ -55,7 +55,27 @@ h1 { margin-bottom: 6px; font: 700 30px var(--display); letter-spacing: -1.1px; 
 .notice-error { border-color: #f0cfcc; background: #fff5f4; color: #94433e; }
 .notice-error > span:first-child { background: #f6dfdc; }
 .notice span { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #d8f0e3; font-size: 10px; font-weight: 700; }
-.workspace-settings { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 16px 20px; margin-bottom: 25px; border: 1px solid #e5ebea; border-radius: 8px; background: #fff; }
+.screen-navigation { display: flex; gap: 5px; padding: 4px; margin-bottom: 22px; border: 1px solid #e5ebea; border-radius: 6px; background: #eaf0ee; width: fit-content; }
+.screen-navigation button { padding: 8px 14px; border: 0; border-radius: 4px; background: transparent; color: #73817c; cursor: pointer; font: 700 10px var(--sans); }
+.screen-navigation button[aria-pressed="true"] { background: white; color: #1d6f5e; box-shadow: 0 1px 3px rgb(24 48 40 / 10%); }
+.screen-panel[hidden] { display: none; }
+.network-test-panel { display: grid; grid-template-columns: minmax(250px, 1fr) minmax(280px, .9fr); gap: 18px 30px; align-items: center; padding: 20px; margin-bottom: 25px; border: 1px solid #e5ebea; border-radius: 8px; background: #fff; }
+.network-test-panel h2 { margin-bottom: 5px; }
+.network-test-panel p { margin-bottom: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.network-test-panel form { display: flex; align-items: flex-end; gap: 10px; }
+.network-test-panel label { flex: 1; margin: 0; }
+.network-test-panel .button { flex: 0 0 auto; }
+.network-test-result { grid-column: 1 / -1; padding: 10px 12px; border: 1px solid #cce7dc; border-radius: 5px; background: #f0faf5; color: #286b55; font-size: 11px; line-height: 1.5; }
+.network-test-result.result-error { border-color: #f0cfcc; background: #fff5f4; color: #94433e; }
+.charger-list-slot { display: grid; gap: 22px; }
+body[data-active-screen="setup-screen"] .charger-workspace { grid-template-columns: minmax(0, 1fr); }
+body[data-active-screen="setup-screen"] .log-column,
+body[data-active-screen="setup-screen"] .token-panel,
+body[data-active-screen="setup-screen"] .connect-button { display: none; }
+body[data-active-screen="testing-screen"] .config-form,
+body[data-active-screen="testing-screen"] .remove-charger { display: none; }
+.connect-button { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
+.workspace-settings { display: flex; align-items: center; justify-content: space-between; gap: 28px; padding: 16px 20px; margin-bottom: 18px; border: 1px solid #e5ebea; border-radius: 8px; background: #fff; }
 .workspace-settings h2 { margin-bottom: 4px; }
 .workspace-settings p { margin: 0; color: var(--muted); font-size: 10px; }
 .workspace-settings form { display: flex; align-items: flex-end; gap: 10px; width: min(100%, 610px); }
@@ -86,7 +106,7 @@ h2 { margin: 0; font: 700 16px var(--display); letter-spacing: -.35px; }
 .charger-port { width: 13px; height: 17px; border: 2px solid #788884; border-radius: 4px; background: #293c3a; box-shadow: inset 0 0 0 2px #405957; }
 .charger-card[data-outlet-count="1"] .charger-port:nth-child(2) { display: none; }
 .charger-foot { position: absolute; bottom: 1px; left: 17px; width: 40px; height: 8px; border-radius: 2px; background: #c4ceca; }
-.charger-summary { min-width: 0; }
+.charger-summary { min-width: 0; flex: 1; }
 .device-type { color: #91a09a; font-size: 8px; }
 .charger-summary h3 { margin: 7px 0 4px; font: 700 18px var(--display); letter-spacing: -.45px; overflow-wrap: anywhere; }
 .charger-summary p { margin: 0 0 11px; color: #73817e; font-size: 11px; }
@@ -186,6 +206,8 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
     .charger-workspace { grid-template-columns: 1fr; gap: 18px; }
     .workspace-settings { align-items: stretch; flex-direction: column; gap: 12px; }
     .workspace-settings form { width: 100%; }
+    .network-test-panel { grid-template-columns: 1fr; gap: 14px; }
+    .network-test-panel form { align-items: stretch; flex-direction: column; }
     .session-label { display: none; }
     .log-card { min-height: 400px; }
 }
@@ -195,6 +217,8 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
     .page-shell { padding-right: 14px; padding-left: 14px; }
     h1 { font-size: 26px; }
     .workspace-settings form { align-items: stretch; flex-direction: column; }
+    .screen-navigation { width: 100%; }
+    .screen-navigation button { flex: 1; }
     .charger-card-top { gap: 15px; padding: 19px 16px; }
     .config-form, .token-panel, .outlet-map { padding-right: 16px; padding-left: 16px; }
     .form-row { grid-template-columns: 1fr; gap: 0; }

@@ -19,14 +19,35 @@
         <div class="session-label"><span class="session-icon">◉</span> PRIVATE LOCAL SESSION</div>
     </section>
     <div id="notice" class="notice" role="status" hidden></div>
-    <section class="workspace-settings">
-        <div><span class="section-kicker">WORKSPACE DEFAULT</span><h2>CSMS connection</h2><p>Chargers inherit this endpoint unless you set an override on a card. Station identity is appended when connecting.</p></div>
-        <form id="workspace-csms-form"><label>Default OCPP-J endpoint URL<input name="default_csms_url" spellcheck="false" required></label><button class="button button-quiet" type="submit">Save workspace URL</button></form>
+    <nav id="screen-navigation" class="screen-navigation" aria-label="Workspace screens">
+        <button type="button" data-screen-target="testing-screen" aria-pressed="true">Test bench</button>
+        <button type="button" data-screen-target="setup-screen" aria-pressed="false">Setup</button>
+    </nav>
+    <section id="setup-screen" class="screen-panel" hidden>
+        <section class="workspace-settings">
+            <div><span class="section-kicker">WORKSPACE DEFAULT</span><h2>CSMS connection</h2><p>Chargers inherit this endpoint unless you set an override on a charger. Station identity is appended when connecting.</p></div>
+            <form id="workspace-csms-form"><label>Default OCPP-J endpoint URL<input name="default_csms_url" spellcheck="false" required></label><button class="button button-quiet" type="submit">Save workspace URL</button></form>
+        </section>
+        <section class="network-test-panel">
+            <div><span class="section-kicker">NETWORK CHECK</span><h2>Test CSMS connection</h2><p>Opens a WebSocket and checks TLS, authentication, and the OCPP 2.0.1 subprotocol. It does not send BootNotification.</p><p class="network-help">In Docker, localhost means this container. For a CSMS in another Compose project, attach both app and station-worker to its network and use its service name and container port. For a host CSMS, use host.docker.internal. The TLS certificate must match the URL host and its CA must be trusted.</p></div>
+            <form id="network-test-form">
+                <label>Charger credentials<select name="network_test_charger_id" required></select></label>
+                <button class="button button-primary" data-action="test-connection" type="submit">Test connection</button>
+            </form>
+            <div id="network-test-result" class="network-test-result" role="status" aria-live="polite" hidden></div>
+        </section>
+        <section class="station-column">
+            <div class="section-heading"><div><span class="section-kicker">CONFIGURATION</span><h2>Charger setup <span id="charger-count" class="count-pill">00</span></h2></div><button id="add-charger" class="button button-primary" type="button">＋ Add charger</button></div>
+            <div id="setup-charger-list" class="charger-list-slot"><div id="charger-list" class="charger-list"></div></div>
+            <p class="local-note"><span>ⓘ</span> Configuration and credentials stay in this local app.</p>
+        </section>
     </section>
-    <section class="station-column">
-        <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging stations <span id="charger-count" class="count-pill">00</span></h2></div><button id="add-charger" class="button button-primary" type="button">＋ Add charger</button></div>
-        <div id="charger-list" class="charger-list"></div>
-        <p class="local-note"><span>ⓘ</span> Charger settings and individual message logs stay in this local app.</p>
+    <section id="testing-screen" class="screen-panel">
+        <section class="station-column">
+            <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging stations <span data-role="test-bench-charger-count" class="count-pill">00</span></h2></div></div>
+            <div id="test-bench-charger-list" class="charger-list-slot"></div>
+            <p class="local-note"><span>ⓘ</span> Connect, simulate vehicles, present RFID tokens, and inspect OCPP exchanges.</p>
+        </section>
     </section>
     <div class="profile-note"><span class="profile-note-icon">⌘</span><p><strong>Developer testing aid</strong><br>This simulator helps you inspect CSMS behavior. It is not a certification tool.</p></div>
     <footer class="page-footer"><span>CHARGERLAB <b>·</b> OPEN DEVELOPER TOOL</span><span>NO CLOUD ACCOUNT REQUIRED</span></footer>
@@ -38,6 +59,7 @@
                 <div class="charger-illustration" aria-hidden="true"><div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-ports"><i class="charger-port"></i><i class="charger-port"></i></div></div><div class="charger-foot"></div></div>
                 <div class="charger-summary"><span data-role="device-type" class="device-type">AC · 1 OUTLET</span><h3 data-role="station-identity"></h3><p><span data-role="vendor-name"></span> <span class="dot-sep">·</span> <span data-role="model-name"></span></p><div data-role="boot-status" class="status-chip status-idle"><i></i><span data-role="boot-status-text"></span></div></div>
                 <button class="text-button remove-charger" data-action="delete" type="button">Remove</button>
+                <button class="button button-primary connect-button" data-action="boot" type="button">Connect &amp; Boot</button>
             </div>
             <section class="outlet-map"><div class="outlet-map-heading"><span>OUTLET MAP</span><span data-role="outlet-count"></span></div><div data-role="outlet-list" class="outlet-list"></div></section>
             <form data-action="save" class="config-form">
@@ -50,7 +72,7 @@
                 <div class="form-row"><label>Vendor<input name="vendor_name" required></label><label>Model<input name="model" required></label></div>
                 <div class="form-row"><label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" required></label><label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small data-role="topology-hint"></small></label></div>
                 <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number"></label>
-                <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button><button data-action="boot" class="button button-primary" type="button"><span>↗</span> Connect &amp; Boot</button></div>
+                <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button></div>
             </form>
             <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Plug in a vehicle first to attach the token to its transaction.</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><select name="outlet_number" aria-label="Occupied outlet"><option value="">Authorization only</option></select><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
         </article>

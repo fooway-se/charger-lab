@@ -3,6 +3,11 @@
 const chargerList = document.querySelector('#charger-list');
 const chargerTemplate = document.querySelector('#charger-template');
 const notice = document.querySelector('#notice');
+const screenNavigation = document.querySelector('#screen-navigation');
+const setupScreen = document.querySelector('#setup-screen');
+const testingScreen = document.querySelector('#testing-screen');
+const networkTestForm = document.querySelector('#network-test-form');
+const networkTestResult = document.querySelector('#network-test-result');
 
 function formValues(form) {
     return Object.fromEntries(new FormData(form).entries());
@@ -198,6 +203,30 @@ function renderState(state) {
     document.querySelector('#workspace-csms-form').elements.namedItem('default_csms_url').value = state.settings.default_csms_url;
     chargerList.replaceChildren(...state.chargers.map(renderCharger));
     document.querySelector('#charger-count').textContent = String(state.chargers.length).padStart(2, '0');
+    document.querySelector('[data-role="test-bench-charger-count"]').textContent = String(state.chargers.length).padStart(2, '0');
+    const selectedChargerId = networkTestForm.elements.namedItem('network_test_charger_id').value;
+    const chargerOptions = state.chargers.map((charger) => {
+        const option = document.createElement('option');
+        option.value = String(charger.id);
+        option.textContent = charger.station_identity;
+        return option;
+    });
+    networkTestForm.elements.namedItem('network_test_charger_id').replaceChildren(...chargerOptions);
+    if (state.chargers.some((charger) => String(charger.id) === selectedChargerId)) {
+        networkTestForm.elements.namedItem('network_test_charger_id').value = selectedChargerId;
+    }
+}
+
+function showScreen(screenId) {
+    const selectedScreen = screenId === 'setup-screen' ? setupScreen : testingScreen;
+    const listSlot = selectedScreen.querySelector('.charger-list-slot');
+    listSlot.append(chargerList);
+    setupScreen.hidden = selectedScreen !== setupScreen;
+    testingScreen.hidden = selectedScreen !== testingScreen;
+    document.body.dataset.activeScreen = selectedScreen.id;
+    for (const button of screenNavigation.querySelectorAll('[data-screen-target]')) {
+        button.setAttribute('aria-pressed', String(button.dataset.screenTarget === selectedScreen.id));
+    }
 }
 
 async function refreshState() {
@@ -232,6 +261,34 @@ chargerList.addEventListener('submit', async (event) => {
     } catch (error) {
         await refreshState().catch(() => {});
         showNotice(error.message, true);
+    }
+});
+
+screenNavigation.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-screen-target]');
+    if (button) {
+        showScreen(button.dataset.screenTarget);
+    }
+});
+
+networkTestForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = networkTestForm.querySelector('[data-action="test-connection"]');
+    button.disabled = true;
+    networkTestResult.hidden = false;
+    networkTestResult.classList.remove('result-error');
+    networkTestResult.textContent = 'Opening a WebSocket and checking TLS and OCPP negotiation…';
+    try {
+        const result = await api('/api/connection/test', {
+            method: 'POST',
+            body: JSON.stringify({ charger_id: Number(networkTestForm.elements.namedItem('network_test_charger_id').value) }),
+        });
+        networkTestResult.textContent = result.notice;
+    } catch (error) {
+        networkTestResult.classList.add('result-error');
+        networkTestResult.textContent = error.message;
+    } finally {
+        button.disabled = false;
     }
 });
 
@@ -292,4 +349,5 @@ document.querySelector('#add-charger').addEventListener('click', async () => {
     }
 });
 
+showScreen('testing-screen');
 refreshState().catch((error) => showNotice(error.message, true));

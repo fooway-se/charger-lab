@@ -85,6 +85,12 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
 
         unset($client);
 
+        expect(fn () => new WebSocketConnection(
+            "ws://127.0.0.1:{$port}/ocpp/IntegrationCharger",
+            username: 'IntegrationCharger',
+            password: 'incorrect-password',
+        ))->toThrow(RuntimeException::class, 'HTTP 401');
+
         $unsupportedClient = new OcppClient(new WebSocketConnection(
             "ws://127.0.0.1:{$port}/ocpp/IntegrationCharger",
             username: 'IntegrationCharger',
