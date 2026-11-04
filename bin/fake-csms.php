@@ -103,12 +103,13 @@ function serveClient($client): void
         }
 
         $action = $call[2] ?? '';
-        if (!in_array($action, ['BootNotification', 'Authorize'], true)) {
+        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat'], true)) {
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
-                'BootNotification' => ['status' => 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => 300],
+                'BootNotification' => ['status' => 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => (int) (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)],
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
+                'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
             };
             $replyFrame = [3, $call[1], $result];
         }
@@ -121,6 +122,15 @@ function serveClient($client): void
             writeFrame($client, 0x0, substr($reply, $splitAt));
         } else {
             writeFrame($client, 0x1, $reply);
+        }
+
+        if ($action === 'BootNotification' && getenv('FAKE_CSMS_SEND_CALL') === '1') {
+            $serverCall = json_encode([2, 'fake-csms-call-' . $call[1], 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            writeFrame($client, 0x1, $serverCall);
+            $stationResponse = readFrame($client);
+            if ($stationResponse !== null && $stationResponse[0] === 0x1) {
+                fwrite(STDOUT, 'Station response: ' . $stationResponse[1] . "\n");
+            }
         }
     }
 }

@@ -52,8 +52,8 @@ try {
     $exchanges = [];
     $client = new OcppClient(
         new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"),
-        static function (string $direction, string $message) use (&$exchanges): void {
-            $exchanges[] = [$direction, json_decode($message, true, flags: JSON_THROW_ON_ERROR)];
+        static function (string $direction, string $action, string $message) use (&$exchanges): void {
+            $exchanges[] = [$direction, $action, json_decode($message, true, flags: JSON_THROW_ON_ERROR)];
         },
     );
     $result = $client->request('BootNotification', [
@@ -67,10 +67,12 @@ try {
     if (count($exchanges) !== 2 || $exchanges[0][0] !== 'outgoing' || $exchanges[1][0] !== 'incoming') {
         throw new RuntimeException('Expected outgoing and incoming OCPP messages to be observable for logging.');
     }
-    if (($exchanges[0][1][2] ?? null) !== 'BootNotification' || ($exchanges[1][1][0] ?? null) !== 3) {
+    if (($exchanges[0][1] ?? null) !== 'BootNotification'
+        || ($exchanges[0][2][2] ?? null) !== 'BootNotification'
+        || ($exchanges[1][2][0] ?? null) !== 3) {
         throw new RuntimeException('Expected a BootNotification CALL and CALLRESULT in the exchange log.');
     }
-    if (($exchanges[0][1][1] ?? null) !== ($exchanges[1][1][1] ?? null)) {
+    if (($exchanges[0][2][1] ?? null) !== ($exchanges[1][2][1] ?? null)) {
         throw new RuntimeException('Expected the CALLRESULT to correlate with the BootNotification CALL.');
     }
 

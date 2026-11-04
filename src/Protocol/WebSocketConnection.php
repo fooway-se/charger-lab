@@ -17,6 +17,12 @@ final class WebSocketConnection implements Connection
      */
     private $stream;
 
+    private string $readBuffer = '';
+
+    private ?string $fragmentedPayload = null;
+
+    private bool $streamClosed = false;
+
     public function __construct(string $url, private readonly int $timeoutSeconds = 8)
     {
         $parts = parse_url($url);
@@ -43,6 +49,7 @@ final class WebSocketConnection implements Connection
 
         try {
             $this->handshake($parts, $host, $port, $secure);
+            stream_set_blocking($this->stream, false);
         } catch (Throwable $exception) {
             fclose($this->stream);
             throw $exception;
@@ -56,24 +63,73 @@ final class WebSocketConnection implements Connection
 
     public function receive(): string
     {
-        $fragmentedPayload = null;
-
         while (true) {
-            $header = $this->readExact(2);
-            $first = ord($header[0]);
-            $second = ord($header[1]);
-            $isFinal = ($first & 0x80) !== 0;
-            $opcode = $first & 0x0f;
-            $length = $second & 0x7f;
-
-            if (($second & 0x80) !== 0) {
-                throw new OcppProtocolException('CSMS WebSocket frames must be unmasked.');
+            $message = $this->receiveAvailable();
+            if ($message !== null) {
+                return $message;
             }
 
+            $read = [$this->stream];
+            $write = [];
+            $except = [];
+            $ready = stream_select($read, $write, $except, $this->timeoutSeconds);
+            if ($ready === false) {
+                throw new RuntimeException('Could not wait for a CSMS WebSocket frame.');
+            }
+            if ($ready === 0) {
+                throw new RuntimeException('Timed out waiting for CSMS.');
+            }
+        }
+    }
+
+    public function receiveAvailable(): ?string
+    {
+        while (true) {
+            $chunk = fread($this->stream, 8192);
+            if ($chunk === false) {
+                throw new RuntimeException('Could not read from the CSMS WebSocket.');
+            }
+            if ($chunk !== '') {
+                $this->readBuffer .= $chunk;
+            }
+            if (feof($this->stream)) {
+                $this->streamClosed = true;
+            }
+            if ($chunk === '') {
+                break;
+            }
+        }
+
+        while (true) {
+            if (strlen($this->readBuffer) < 2) {
+                if ($this->streamClosed) {
+                    throw new RuntimeException('CSMS closed the connection.');
+                }
+
+                return null;
+            }
+
+            $first = ord($this->readBuffer[0]);
+            $second = ord($this->readBuffer[1]);
+            $isFinal = ($first & 0x80) !== 0;
+            $opcode = $first & 0x0f;
+            $isMasked = ($second & 0x80) !== 0;
+            $length = $second & 0x7f;
+            $headerLength = 2;
             if ($length === 126) {
-                $length = unpack('n', $this->readExact(2))[1];
+                $headerLength += 2;
+                if (strlen($this->readBuffer) < $headerLength) {
+                    return $this->throwIfClosedOrReturnNull();
+                }
+
+                $length = unpack('n', substr($this->readBuffer, 2, 2))[1];
             } elseif ($length === 127) {
-                $wideLength = unpack('Nhigh/Nlow', $this->readExact(8));
+                $headerLength += 8;
+                if (strlen($this->readBuffer) < $headerLength) {
+                    return $this->throwIfClosedOrReturnNull();
+                }
+
+                $wideLength = unpack('Nhigh/Nlow', substr($this->readBuffer, 2, 8));
                 if ($wideLength['high'] !== 0) {
                     throw new OcppProtocolException('CSMS WebSocket frame is too large.');
                 }
@@ -81,13 +137,20 @@ final class WebSocketConnection implements Connection
                 $length = $wideLength['low'];
             }
 
+            if ($isMasked) {
+                throw new OcppProtocolException('CSMS WebSocket frames must be unmasked.');
+            }
             if ($length > 1_048_576) {
                 throw new OcppProtocolException('CSMS WebSocket frame exceeds the 1 MiB limit.');
             }
+            if (strlen($this->readBuffer) < $headerLength + $length) {
+                return $this->throwIfClosedOrReturnNull();
+            }
 
-            $payload = $this->readExact($length);
-
+            $payload = substr($this->readBuffer, $headerLength, $length);
+            $this->readBuffer = substr($this->readBuffer, $headerLength + $length);
             if ($opcode === 0x8) {
+                $this->writeFrame(0x8, $payload);
                 throw new RuntimeException('CSMS closed the WebSocket connection.');
             }
 
@@ -99,37 +162,44 @@ final class WebSocketConnection implements Connection
                 $this->writeFrame(0xA, $payload);
                 continue;
             }
-
             if ($opcode === 0xA) {
                 continue;
             }
-
             if ($opcode === 0x1) {
-                if ($fragmentedPayload !== null) {
+                if ($this->fragmentedPayload !== null) {
                     throw new OcppProtocolException('CSMS started a new message before completing a fragmented one.');
                 }
-
                 if ($isFinal) {
                     return $payload;
                 }
 
-                $fragmentedPayload = $payload;
+                $this->fragmentedPayload = $payload;
                 continue;
             }
-
-            if ($opcode !== 0x0 || $fragmentedPayload === null) {
+            if ($opcode !== 0x0 || $this->fragmentedPayload === null) {
                 throw new OcppProtocolException('Expected a text WebSocket message from the CSMS.');
             }
 
-            $fragmentedPayload .= $payload;
-            if (strlen($fragmentedPayload) > 1_048_576) {
+            $this->fragmentedPayload .= $payload;
+            if (strlen($this->fragmentedPayload) > 1_048_576) {
                 throw new OcppProtocolException('CSMS WebSocket message exceeds the 1 MiB limit.');
             }
-
             if ($isFinal) {
-                return $fragmentedPayload;
+                $message = $this->fragmentedPayload;
+                $this->fragmentedPayload = null;
+
+                return $message;
             }
         }
+    }
+
+    private function throwIfClosedOrReturnNull(): ?string
+    {
+        if ($this->streamClosed) {
+            throw new RuntimeException('CSMS closed in the middle of a WebSocket frame.');
+        }
+
+        return null;
     }
 
     private function handshake(array $parts, string $host, int $port, bool $secure): void
@@ -195,29 +265,23 @@ final class WebSocketConnection implements Connection
         $this->writeAll($frame);
     }
 
-    private function readExact(int $length): string
-    {
-        $data = '';
-        while (strlen($data) < $length) {
-            $chunk = fread($this->stream, $length - strlen($data));
-            if (!is_string($chunk) || $chunk === '') {
-                $meta = stream_get_meta_data($this->stream);
-                throw new RuntimeException(($meta['timed_out'] ?? false) ? 'Timed out waiting for CSMS.' : 'CSMS closed the connection.');
-            }
-
-            $data .= $chunk;
-        }
-
-        return $data;
-    }
-
     private function writeAll(string $data): void
     {
         $offset = 0;
         while ($offset < strlen($data)) {
             $written = fwrite($this->stream, substr($data, $offset));
-            if ($written === false || $written === 0) {
+            if ($written === false) {
                 throw new RuntimeException('Could not write to the CSMS connection.');
+            }
+            if ($written === 0) {
+                $read = [];
+                $write = [$this->stream];
+                $except = [];
+                if (stream_select($read, $write, $except, $this->timeoutSeconds) !== 1) {
+                    throw new RuntimeException('Timed out writing to the CSMS connection.');
+                }
+
+                continue;
             }
 
             $offset += $written;

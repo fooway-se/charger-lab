@@ -11,6 +11,8 @@ $overrideEndpoint = "ws://127.0.0.1:{$fakeCsmsPort}/ocpp";
 $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
     'PATH' => (string) getenv('PATH'),
     'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+    'FAKE_CSMS_HEARTBEAT_INTERVAL' => '1',
+    'FAKE_CSMS_SEND_CALL' => '1',
 ]);
 $worker = null;
 $app = null;
@@ -83,6 +85,17 @@ try {
         throw new RuntimeException('The BootNotification API should report the Accepted status.');
     }
 
+    $incomingCallOutput = waitForProcessOutput($fakeCsms, 'Station response: ', 1_500);
+    if (!str_contains($incomingCallOutput, '"NotImplemented"')) {
+        throw new RuntimeException('The open session should answer a CSMS-initiated call while idle.');
+    }
+    $heartbeatEntries = waitForHeartbeat($appPort, $chargerId, 2_500);
+    if (count($heartbeatEntries) < 2
+        || ($heartbeatEntries[0]['direction'] ?? null) !== 'outgoing'
+        || ($heartbeatEntries[1]['direction'] ?? null) !== 'incoming') {
+        throw new RuntimeException('The station should send Heartbeat and record the CSMS response using the returned interval.');
+    }
+
     [$stateBody, $stateHeaders] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
     if (!str_contains($stateHeaders[0] ?? '', '200')) {
         throw new RuntimeException('A bodyless state request should succeed even if the browser sends a JSON content type.');
@@ -90,12 +103,15 @@ try {
     $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
     $charger = $state['chargers'][0] ?? [];
     $secondCharger = $state['chargers'][1] ?? [];
+    $bootEntries = array_values(array_filter($charger['entries'] ?? [], static fn (array $entry): bool => ($entry['action'] ?? null) === 'BootNotification'));
+    $heartbeatStateEntries = array_values(array_filter($charger['entries'] ?? [], static fn (array $entry): bool => ($entry['action'] ?? null) === 'Heartbeat'));
+    $serverCallEntries = array_values(array_filter($charger['entries'] ?? [], static fn (array $entry): bool => ($entry['action'] ?? null) === 'GetVariables'));
     if (count($state['chargers'] ?? []) !== 2
         || ($charger['boot_status'] ?? null) !== 'Accepted'
         || ($charger['connection_status'] ?? null) !== 'Connected'
-        || count($charger['entries'] ?? []) !== 2
-        || ($charger['entries'][0]['action'] ?? null) !== 'BootNotification'
-        || ($charger['entries'][1]['action'] ?? null) !== 'BootNotification'
+        || count($bootEntries) !== 2
+        || count($heartbeatStateEntries) < 2
+        || count($serverCallEntries) !== 2
         || ($charger['outlets'][0]['evse_id'] ?? null) !== 1
         || ($charger['outlets'][0]['connector_id'] ?? null) !== 1
         || ($charger['outlets'][1]['evse_id'] ?? null) !== 2
@@ -134,9 +150,9 @@ try {
     $updatedState = is_string($updatedStateBody) ? json_decode($updatedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
     $updatedCharger = $updatedState['chargers'][0] ?? [];
     $updatedSecondCharger = $updatedState['chargers'][1] ?? [];
-    $authorizeCall = json_decode($updatedCharger['entries'][2]['message'] ?? 'null', true);
-    if (count($updatedCharger['entries'] ?? []) !== 4
-        || ($updatedCharger['entries'][2]['action'] ?? null) !== 'Authorize'
+    $authorizeEntries = array_values(array_filter($updatedCharger['entries'] ?? [], static fn (array $entry): bool => ($entry['action'] ?? null) === 'Authorize' && ($entry['direction'] ?? null) === 'outgoing'));
+    $authorizeCall = json_decode($authorizeEntries[0]['message'] ?? 'null', true);
+    if (count($authorizeEntries) !== 1
         || ($authorizeCall[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4'
         || ($authorizeCall[3]['idToken']['type'] ?? null) !== 'ISO14443'
         || count($updatedSecondCharger['entries'] ?? []) !== 0) {
@@ -215,10 +231,10 @@ try {
         throw new RuntimeException('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
     }
 
-    $fakeCsmsOutput = '';
+    $fakeCsmsOutput = $GLOBALS['capturedFakeCsmsOutput'] ?? '';
     foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
         if ($process === $fakeCsms) {
-            $fakeCsmsOutput = stream_get_contents($pipes[1]);
+            $fakeCsmsOutput .= stream_get_contents($pipes[1]);
             break;
         }
     }
@@ -231,11 +247,17 @@ try {
 
     $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
     $charger = $database->query('SELECT * FROM charger WHERE id = ' . $chargerId)->fetch();
-    $messageCount = (int) $database->query('SELECT COUNT(*) FROM exchange_log')->fetchColumn();
+    $bootCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification'")->fetchColumn();
+    $authorizeCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Authorize'")->fetchColumn();
+    $heartbeatCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Heartbeat'")->fetchColumn();
+    $serverCallCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'GetVariables'")->fetchColumn();
     if ($charger['boot_status'] !== 'Accepted'
         || (int) $charger['outlet_count'] !== 2
         || $charger['outlet_topology'] !== 'shared'
-        || $messageCount !== 6) {
+        || $bootCount !== 2
+        || $authorizeCount !== 2
+        || $heartbeatCount < 2
+        || $serverCallCount !== 2) {
         throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
     }
 
@@ -335,6 +357,55 @@ function waitUntilDatabaseReady(string $databasePath): void
     }
 
     throw new RuntimeException('The station session worker did not initialize its command queue.');
+}
+
+function waitForProcessOutput($process, string $expected, int $timeoutMilliseconds): string
+{
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    $output = '';
+    while (microtime(true) < $deadline) {
+        foreach ($GLOBALS['testProcesses'] as [$candidate, $pipes]) {
+            if ($candidate === $process) {
+                $output .= stream_get_contents($pipes[1]);
+                break;
+            }
+        }
+        if (str_contains($output, $expected)) {
+            $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+
+            return $output;
+        }
+
+        usleep(20_000);
+    }
+
+    $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+
+    return $output;
+}
+
+function waitForHeartbeat(int $appPort, int $chargerId, int $timeoutMilliseconds): array
+{
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    do {
+        [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+        foreach ($state['chargers'] ?? [] as $charger) {
+            if ((int) ($charger['id'] ?? 0) === $chargerId) {
+                $heartbeats = array_values(array_filter(
+                    $charger['entries'] ?? [],
+                    static fn (array $entry): bool => ($entry['action'] ?? null) === 'Heartbeat',
+                ));
+                if ($heartbeats !== []) {
+                    return $heartbeats;
+                }
+            }
+        }
+
+        usleep(20_000);
+    } while (microtime(true) < $deadline);
+
+    return [];
 }
 
 function request(string $url, string $method = 'GET', string $content = '', string $contentType = 'application/x-www-form-urlencoded'): array

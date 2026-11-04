@@ -16,7 +16,7 @@ use Throwable;
 final class StationSessionWorker
 {
     /**
-     * @var array<int, array{connection:WebSocketConnection, url:string}>
+     * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float}>
      */
     private array $sessions = [];
 
@@ -32,7 +32,7 @@ final class StationSessionWorker
         $this->commands->recoverInterrupted();
         $this->chargers->resetConnectionStatuses();
         while (true) {
-            if (!$this->runOne()) {
+            if (!$this->runOne() && !$this->pollSessions()) {
                 usleep($pollMicroseconds);
             }
         }
@@ -71,19 +71,19 @@ final class StationSessionWorker
                 $this->sessions[$chargerId] = [
                     'connection' => new WebSocketConnection($connectionUrl),
                     'url' => $connectionUrl,
+                    'heartbeat_interval' => 300,
+                    'next_heartbeat_at' => null,
                 ];
             }
 
-            $connection = $this->sessions[$chargerId]['connection'];
-            $client = new OcppClient(
-                $connection,
-                function (string $direction, string $message) use ($chargerId, $command): void {
-                    $this->logs->record($chargerId, $direction, $command['action'], $message);
-                },
-            );
+            $client = $this->createClient($chargerId);
             $result = $client->request($command['action'], $command['payload']);
             if ($command['action'] === 'BootNotification') {
                 $this->chargers->setBootStatus($chargerId, (string) ($result['status'] ?? 'Unknown response'));
+                $interval = $result['interval'] ?? 300;
+                $interval = is_int($interval) && $interval > 0 ? $interval : 300;
+                $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
+                $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
             }
 
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
@@ -102,5 +102,49 @@ final class StationSessionWorker
         }
 
         return true;
+    }
+
+    private function pollSessions(): bool
+    {
+        foreach ($this->sessions as $chargerId => $session) {
+            try {
+                if ($session['next_heartbeat_at'] !== null && microtime(true) >= $session['next_heartbeat_at']) {
+                    $result = $this->createClient($chargerId)->request('Heartbeat', []);
+                    $interval = $this->sessions[$chargerId]['heartbeat_interval'];
+                    $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
+                    $this->chargers->setConnectionStatus($chargerId, 'Connected');
+                    if (!isset($result['currentTime']) || !is_string($result['currentTime'])) {
+                        throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
+                    }
+
+                    return true;
+                }
+
+                $message = $session['connection']->receiveAvailable();
+                if ($message !== null) {
+                    $this->createClient($chargerId)->answerIncomingCallMessage($message);
+
+                    return true;
+                }
+            } catch (Throwable $exception) {
+                unset($this->sessions[$chargerId]);
+                $this->logs->record($chargerId, 'system', 'Session', $exception->getMessage());
+                $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function createClient(int $chargerId): OcppClient
+    {
+        return new OcppClient(
+            $this->sessions[$chargerId]['connection'],
+            function (string $direction, string $action, string $message) use ($chargerId): void {
+                $this->logs->record($chargerId, $direction, $action, $message);
+            },
+        );
     }
 }
