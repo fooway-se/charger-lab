@@ -43,6 +43,7 @@ final class StationSessionWorker
 
     public function runOne(): bool
     {
+        $this->queueDueBootRetries();
         $command = $this->commands->claimNext();
         if ($command === null) {
             return false;
@@ -96,6 +97,7 @@ final class StationSessionWorker
             }
 
             $payload = $command['payload'];
+            unset($payload['_retry_status']);
             $outlet = $payload['_outlet'] ?? null;
             unset($payload['_outlet']);
             if ($command['action'] === 'BootNotification') {
@@ -117,7 +119,13 @@ final class StationSessionWorker
             unset($this->sessions[$chargerId]);
             $this->logs->record($chargerId, 'system', $command['action'], $exception->getMessage());
             if ($command['action'] === 'BootNotification') {
-                $this->chargers->setBootStatus($chargerId, 'Connection failed');
+                $retryStatus = $command['payload']['_retry_status'] ?? null;
+                if (is_string($retryStatus) && in_array($retryStatus, ['Pending', 'Rejected'], true)) {
+                    $retryAt = gmdate(DATE_ATOM, time() + 300);
+                    $this->chargers->setBootStatus($chargerId, $retryStatus, $retryAt);
+                } else {
+                    $this->chargers->setBootStatus($chargerId, 'Connection failed');
+                }
             }
             if ($command['action'] === 'BootNotification' || $hadSession) {
                 $this->chargers->setConnectionStatus($chargerId, 'Connection failed');
@@ -127,6 +135,27 @@ final class StationSessionWorker
         }
 
         return true;
+    }
+
+    private function queueDueBootRetries(): void
+    {
+        foreach ($this->chargers->dueBootRetries() as $charger) {
+            $chargerId = (int) $charger['id'];
+            if ($this->commands->hasPendingBootNotification($chargerId)) {
+                continue;
+            }
+
+            $payload = [
+                'chargingStation' => array_filter([
+                    'model' => $charger['model'],
+                    'vendorName' => $charger['vendor_name'],
+                    'serialNumber' => $charger['serial_number'] !== '' ? $charger['serial_number'] : null,
+                ], static fn (mixed $value): bool => $value !== null),
+                'reason' => 'PowerUp',
+                '_retry_status' => $charger['boot_status'],
+            ];
+            $this->commands->enqueue($chargerId, 'BootNotification', $payload);
+        }
     }
 
     private function pollSessions(): bool
@@ -161,7 +190,11 @@ final class StationSessionWorker
 
                 $message = $session['connection']->receiveAvailable();
                 if ($message !== null) {
-                    $this->createClient($chargerId)->answerIncomingCallMessage($message);
+                    $charger = $this->chargers->get($chargerId);
+                    $bootStatus = is_array($charger) && is_string($charger['boot_status'] ?? null)
+                        ? $charger['boot_status']
+                        : null;
+                    $this->createClient($chargerId)->answerIncomingCallMessage($message, $bootStatus);
 
                     return true;
                 }

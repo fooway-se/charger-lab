@@ -73,15 +73,18 @@ final class OcppClient
         return $reply[2];
     }
 
-    public function answerIncomingCallMessage(string $message): void
+    /**
+     * @param string|null $bootStatus Current BootNotification status for this station.
+     */
+    public function answerIncomingCallMessage(string $message, ?string $bootStatus = null): void
     {
-        $this->answerIncomingCall($this->decode($message), $message);
+        $this->answerIncomingCall($this->decode($message), $message, $bootStatus);
     }
 
     /**
      * @param mixed $reply
      */
-    private function answerIncomingCall(mixed $reply, string $message): void
+    private function answerIncomingCall(mixed $reply, string $message, ?string $bootStatus = null): void
     {
         if (!is_array($reply) || count($reply) !== 4 || ($reply[0] ?? null) !== 2
             || !is_string($reply[1] ?? null) || !is_string($reply[2] ?? null) || !is_array($reply[3] ?? null)) {
@@ -90,11 +93,14 @@ final class OcppClient
 
         $action = $reply[2];
         $this->observe('incoming', $action, $message);
+        $rejected = $bootStatus === 'Rejected';
         $error = json_encode([
             4,
             $reply[1],
-            'NotImplemented',
-            'Action not supported by this emulator: ' . $action,
+            $rejected ? 'SecurityError' : 'NotImplemented',
+            $rejected
+                ? 'The charging station has not been accepted by the CSMS.'
+                : 'Action not supported by this emulator: ' . $action,
             new \stdClass(),
         ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $this->connection->send($error);

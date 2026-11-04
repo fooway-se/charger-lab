@@ -2,15 +2,14 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/../src/autoload.php';
-
 use ChargerEmulator\Protocol\OcppConnectionUrl;
 
-$connectionUrl = OcppConnectionUrl::fromEndpoint('wss://csms.example/ocpp?tenant=dev', 'Station 01');
-$endpointUrl = OcppConnectionUrl::endpointFromConnectionUrl($connectionUrl, 'Station 01');
-if ($connectionUrl !== 'wss://csms.example/ocpp/Station%2001?tenant=dev'
-    || $endpointUrl !== 'wss://csms.example/ocpp?tenant=dev') {
-    throw new RuntimeException('OCPP-J connection URLs should append the encoded station identity and retain endpoint query parameters.');
-}
+it('derives encoded station connection URLs', function (): void {
+    $connectionUrl = OcppConnectionUrl::fromEndpoint('wss://csms.example/ocpp?tenant=dev', 'Station 01');
 
-echo "OCPP connection URL derivation: PASS\n";
+    $endpointUrl = OcppConnectionUrl::endpointFromConnectionUrl($connectionUrl, 'Station 01');
+
+    expect($connectionUrl !== 'wss://csms.example/ocpp/Station%2001?tenant=dev'
+        || $endpointUrl !== 'wss://csms.example/ocpp?tenant=dev')->toBeFalse('OCPP-J connection URLs should append the encoded station identity and retain endpoint query parameters.');
+
+});

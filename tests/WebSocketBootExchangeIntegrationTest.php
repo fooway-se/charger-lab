@@ -2,102 +2,92 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/../src/autoload.php';
-
 use ChargerEmulator\Protocol\OcppClient;
 use ChargerEmulator\Protocol\OcppProtocolException;
 use ChargerEmulator\Protocol\WebSocketConnection;
 
-$reservation = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorMessage);
-if (!is_resource($reservation)) {
-    throw new RuntimeException('Could not reserve an integration-test port.');
-}
-$address = stream_socket_get_name($reservation, false);
-fclose($reservation);
-if (!is_string($address) || !str_contains($address, ':')) {
-    throw new RuntimeException('Could not determine the integration-test port.');
-}
-$port = (int) substr(strrchr($address, ':'), 1);
+it('exchanges OCPP frames over a WebSocket connection', function (): void {
+    $reservation = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $errorMessage);
 
-$environment = [
-    'PATH' => (string) getenv('PATH'),
-    'FAKE_CSMS_PORT' => (string) $port,
-    'FAKE_CSMS_FRAGMENT_RESPONSE' => '1',
-];
-$process = proc_open(
-    [PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'],
-    [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']],
-    $pipes,
-    dirname(__DIR__),
-    $environment,
-);
-if (!is_resource($process)) {
-    throw new RuntimeException('Could not start the fake CSMS integration fixture.');
-}
+    expect(!is_resource($reservation))->toBeFalse('Could not reserve an integration-test port.');
 
-try {
-    stream_set_blocking($pipes[1], false);
-    stream_set_blocking($pipes[2], false);
-    $ready = false;
-    $deadline = microtime(true) + 3;
-    while (microtime(true) < $deadline) {
-        $probe = @stream_socket_client("tcp://127.0.0.1:{$port}", $probeErrorNumber, $probeErrorMessage, 0.1);
-        if (is_resource($probe)) {
-            fclose($probe);
-            $ready = true;
-            break;
-        }
+    $address = stream_socket_get_name($reservation, false);
 
-        usleep(20_000);
-    }
-    if (!$ready) {
-        throw new RuntimeException('The fake CSMS did not open its listening port.');
-    }
+    fclose($reservation);
 
-    $exchanges = [];
-    $client = new OcppClient(
-        new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"),
-        static function (string $direction, string $action, string $message) use (&$exchanges): void {
-            $exchanges[] = [$direction, $action, json_decode($message, true, flags: JSON_THROW_ON_ERROR)];
-        },
+    expect(!is_string($address) || !str_contains($address, ':'))->toBeFalse('Could not determine the integration-test port.');
+
+    $port = (int) substr(strrchr($address, ':'), 1);
+
+    $environment = [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $port,
+        'FAKE_CSMS_FRAGMENT_RESPONSE' => '1',
+    ];
+
+    $process = proc_open(
+        [PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'],
+        [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']],
+        $pipes,
+        dirname(__DIR__),
+        $environment,
     );
-    $result = $client->request('BootNotification', [
-        'chargingStation' => ['model' => 'Integration', 'vendorName' => 'Test'],
-        'reason' => 'PowerUp',
-    ]);
 
-    if (($result['status'] ?? null) !== 'Accepted') {
-        throw new RuntimeException('The fake CSMS did not accept BootNotification.');
-    }
-    if (count($exchanges) !== 2 || $exchanges[0][0] !== 'outgoing' || $exchanges[1][0] !== 'incoming') {
-        throw new RuntimeException('Expected outgoing and incoming OCPP messages to be observable for logging.');
-    }
-    if (($exchanges[0][1] ?? null) !== 'BootNotification'
-        || ($exchanges[0][2][2] ?? null) !== 'BootNotification'
-        || ($exchanges[1][2][0] ?? null) !== 3) {
-        throw new RuntimeException('Expected a BootNotification CALL and CALLRESULT in the exchange log.');
-    }
-    if (($exchanges[0][2][1] ?? null) !== ($exchanges[1][2][1] ?? null)) {
-        throw new RuntimeException('Expected the CALLRESULT to correlate with the BootNotification CALL.');
-    }
-
-    unset($client);
+    expect(!is_resource($process))->toBeFalse('Could not start the fake CSMS integration fixture.');
 
     try {
-        $unsupportedClient = new OcppClient(new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"));
-        $unsupportedClient->request('GetVariables', []);
-        throw new RuntimeException('Expected the fake CSMS to reject an unsupported action.');
-    } catch (OcppProtocolException $exception) {
-        if (!str_contains($exception->getMessage(), 'NotImplemented')) {
-            throw new RuntimeException('Expected an OCPP-J NotImplemented CALLERROR.', previous: $exception);
-        }
-    }
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $ready = false;
+        $deadline = microtime(true) + 3;
+        while (microtime(true) < $deadline) {
+            set_error_handler(static fn (): bool => true);
+            try {
+                $probe = stream_socket_client("tcp://127.0.0.1:{$port}", $probeErrorNumber, $probeErrorMessage, 0.1);
+            } finally {
+                restore_error_handler();
+            }
 
-    echo "WebSocket BootNotification integration: PASS\n";
-} finally {
-    proc_terminate($process);
-    fclose($pipes[0]);
-    fclose($pipes[1]);
-    fclose($pipes[2]);
-    proc_close($process);
-}
+            if (is_resource($probe)) {
+                fclose($probe);
+                $ready = true;
+                break;
+            }
+
+            usleep(20_000);
+        }
+        expect(!$ready)->toBeFalse('The fake CSMS did not open its listening port.');
+
+        $exchanges = [];
+        $client = new OcppClient(
+            new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"),
+            static function (string $direction, string $action, string $message) use (&$exchanges): void {
+                $exchanges[] = [$direction, $action, json_decode($message, true, flags: JSON_THROW_ON_ERROR)];
+            },
+        );
+        $result = $client->request('BootNotification', [
+            'chargingStation' => ['model' => 'Integration', 'vendorName' => 'Test'],
+            'reason' => 'PowerUp',
+        ]);
+
+        expect(($result['status'] ?? null) !== 'Accepted')->toBeFalse('The fake CSMS did not accept BootNotification.');
+        expect(count($exchanges) !== 2 || $exchanges[0][0] !== 'outgoing' || $exchanges[1][0] !== 'incoming')->toBeFalse('Expected outgoing and incoming OCPP messages to be observable for logging.');
+        expect(($exchanges[0][1] ?? null) !== 'BootNotification'
+            || ($exchanges[0][2][2] ?? null) !== 'BootNotification'
+            || ($exchanges[1][2][0] ?? null) !== 3)->toBeFalse('Expected a BootNotification CALL and CALLRESULT in the exchange log.');
+        expect(($exchanges[0][2][1] ?? null) !== ($exchanges[1][2][1] ?? null))->toBeFalse('Expected the CALLRESULT to correlate with the BootNotification CALL.');
+
+        unset($client);
+
+        $unsupportedClient = new OcppClient(new WebSocketConnection("ws://127.0.0.1:{$port}/ocpp/IntegrationCharger"));
+        expect(fn () => $unsupportedClient->request('GetVariables', []))
+            ->toThrow(OcppProtocolException::class, 'NotImplemented');
+
+    } finally {
+        proc_terminate($process);
+        fclose($pipes[0]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+    }
+})->group('integration');

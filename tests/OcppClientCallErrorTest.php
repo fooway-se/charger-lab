@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/../src/autoload.php';
-
 use ChargerEmulator\Protocol\Connection;
 use ChargerEmulator\Protocol\OcppClient;
 use ChargerEmulator\Protocol\OcppProtocolException;
@@ -30,16 +28,39 @@ final class CallErrorConnection implements Connection
     }
 }
 
-$client = new OcppClient(new CallErrorConnection());
+final class IncomingCallConnection implements Connection
+{
+    public ?string $sentMessage = null;
 
-try {
-    $client->request('Authorize', ['idToken' => ['idToken' => 'A1B2', 'type' => 'ISO14443']]);
-    throw new RuntimeException('Expected the OCPP-J CALLERROR to be reported.');
-} catch (OcppProtocolException $exception) {
-    if (!str_contains($exception->getMessage(), 'NotImplemented')
-        || !str_contains($exception->getMessage(), 'Authorize is not supported')) {
-        throw new RuntimeException('Expected CALLERROR details to be available to the caller.', previous: $exception);
+    public function send(string $message): void
+    {
+        $this->sentMessage = $message;
+    }
+
+    public function receive(): string
+    {
+        throw new RuntimeException('No response is expected.');
     }
 }
 
-echo "OCPP-J CALLERROR: PASS\n";
+it('propagates correlated OCPP-J CALLERROR responses', function (): void {
+    $client = new OcppClient(new CallErrorConnection());
+
+    expect(fn () => $client->request('Authorize', ['idToken' => ['idToken' => 'A1B2', 'type' => 'ISO14443']]))
+        ->toThrow(OcppProtocolException::class, 'NotImplemented')
+        ->toThrow(OcppProtocolException::class, 'Authorize is not supported');
+});
+
+it('returns SecurityError for CSMS calls while boot status is Rejected', function (): void {
+    $connection = new IncomingCallConnection();
+    $client = new OcppClient($connection);
+
+    $client->answerIncomingCallMessage('[2,"rejected-call","GetVariables",{}]', 'Rejected');
+
+    $response = json_decode((string) $connection->sentMessage, false, flags: JSON_THROW_ON_ERROR);
+    expect($response[0])->toBe(4);
+    expect($response[1])->toBe('rejected-call');
+    expect($response[2])->toBe('SecurityError');
+    expect($response[3])->toBe('The charging station has not been accepted by the CSMS.');
+    expect($response[4])->toBeInstanceOf(stdClass::class);
+});

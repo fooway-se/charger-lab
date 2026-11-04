@@ -43,6 +43,23 @@ final class ChargerRepository
         return $charger === false ? null : $charger;
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function dueBootRetries(): array
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            SELECT * FROM charger
+            WHERE boot_status IN ('Pending', 'Rejected')
+                AND boot_retry_at IS NOT NULL
+                AND boot_retry_at <= :now
+            ORDER BY id
+            SQL);
+        $statement->execute(['now' => gmdate(DATE_ATOM)]);
+
+        return $statement->fetchAll();
+    }
+
     public function identityInUse(string $identity, int $exceptId): bool
     {
         $statement = $this->database->prepare('SELECT 1 FROM charger WHERE station_identity = :identity AND id <> :id');

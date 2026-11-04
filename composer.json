@@ -1,0 +1,18 @@
+{
+    "require-dev": {
+        "pestphp/pest": "^5.0"
+    },
+    "scripts": {
+        "test:unit": "vendor/bin/pest --exclude-group=integration",
+        "test:integration": "vendor/bin/pest --group=integration",
+        "test": [
+            "@test:unit",
+            "@test:integration"
+        ]
+    },
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
+}

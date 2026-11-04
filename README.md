@@ -14,34 +14,22 @@ Charger settings, the workspace CSMS default, and per-charger exchange logs pers
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 
-The GUI is static HTML/CSS/JavaScript. Plug in a vehicle on a connected outlet to report `Occupied` and send `TransactionEvent Started` with `CablePluggedIn` and `EVConnected`; present an RFID token to send `Authorize`, then `TransactionEvent Updated` events for `Authorized` and `ChargingStateChanged`; unplug to end with `EVDisconnected` and report `Available`. The worker persists outlet state and unique transaction IDs in SQLite. It sends Heartbeat at the accepted BootNotification interval and keeps the retry deadline for `Pending` or `Rejected` boot responses across worker restarts. Until BootNotification is Accepted, it sends no Heartbeat, status, authorization, or simulated vehicle events, and the UI rejects those actions. Heartbeat uses the required empty JSON object payload. CSMS-initiated actions the emulator does not implement receive `NotImplemented`.
+The GUI is static HTML/CSS/JavaScript. Plug in a vehicle on a connected outlet to report `Occupied` and send `TransactionEvent Started` with `CablePluggedIn` and `EVConnected`; present an RFID token to send `Authorize`, then `TransactionEvent Updated` events for `Authorized` and `ChargingStateChanged`; unplug to end with `EVDisconnected` and report `Available`. The worker persists outlet state and unique transaction IDs in SQLite. It sends Heartbeat at the accepted BootNotification interval and retries `Pending` or `Rejected` BootNotification responses at the saved interval, including after a worker restart. Until BootNotification is Accepted, it sends no Heartbeat, status, authorization, or simulated vehicle events, and the UI rejects those actions. Heartbeat uses the required empty JSON object payload. Unsupported CSMS-initiated actions receive `NotImplemented`; while BootNotification is `Rejected`, incoming CSMS calls receive `SecurityError`.
 
 This remains a deliberately partial Core Profile slice: meter values, device model configuration calls, remote start/stop, and other Core messages are not implemented. OCPP 2.0.1 flows are checked incrementally against its schemas and use cases; this does not provide certification or full-profile conformance.
 
 ## Tests
 
-Run unit tests with PHP 8.5:
+Pest is a development-only dependency. Install it and run unit checks before integration checks:
 
 ```sh
-php tests/BootNotificationExchangeTest.php
-php tests/OcppClientCallErrorTest.php
-php tests/OcppConnectionUrlTest.php
-php tests/OcppCommandQueueTest.php
-php tests/OcppCommandMigrationTest.php
-php tests/StoragePersistenceTest.php
-php tests/MultiChargerPersistenceTest.php
-php tests/MultiChargerMigrationTest.php
-php tests/WorkspaceCsmsSettingsTest.php
-php tests/HttpRoutingTest.php
-php tests/StationControllerValidationTest.php
-php tests/FrontendSeparationTest.php
-php tests/OutletMapTest.php
-php tests/OutletTopologyMigrationTest.php
+composer install
+composer test:unit
+composer test:integration
 ```
 
-The WebSocket and local UI integration tests start local TCP services, so run them in an environment that permits localhost sockets:
+`composer test` runs both groups in order. The integration tests start local TCP services, so run them in an environment that permits localhost sockets.
 
 ```sh
-php tests/WebSocketBootExchangeIntegrationTest.php
-php tests/LocalUiBootFlowIntegrationTest.php
+composer test
 ```

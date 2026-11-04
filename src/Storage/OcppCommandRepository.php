@@ -36,6 +36,20 @@ final class OcppCommandRepository
         return (int) $this->database->lastInsertId();
     }
 
+    public function hasPendingBootNotification(int $chargerId): bool
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            SELECT 1 FROM ocpp_command
+            WHERE charger_id = :charger_id
+                AND action = 'BootNotification'
+                AND status IN ('pending', 'processing')
+            LIMIT 1
+            SQL);
+        $statement->execute(['charger_id' => $chargerId]);
+
+        return $statement->fetchColumn() !== false;
+    }
+
     /**
      * @return array{id:int,charger_id:int,action:string,payload:array<string, mixed>}|null
      */

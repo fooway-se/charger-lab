@@ -2,8 +2,6 @@
 
 declare(strict_types=1);
 
-require __DIR__ . '/../src/autoload.php';
-
 use ChargerEmulator\Protocol\Connection;
 use ChargerEmulator\Protocol\OcppClient;
 
@@ -18,9 +16,7 @@ final class FakeCsmsConnection implements Connection
 
     public function receive(): string
     {
-        if ($this->receivedCall === null) {
-            throw new RuntimeException('The emulator did not send a request.');
-        }
+        expect($this->receivedCall === null)->toBeFalse('The emulator did not send a request.');
 
         return json_encode([
             3,
@@ -30,24 +26,23 @@ final class FakeCsmsConnection implements Connection
     }
 }
 
-$connection = new FakeCsmsConnection();
-$client = new OcppClient($connection);
-$payload = [
-    'chargingStation' => ['model' => 'Demo', 'vendorName' => 'Local'],
-    'reason' => 'PowerUp',
-];
+it('sends and validates a BootNotification exchange', function (): void {
+    $connection = new FakeCsmsConnection();
 
-$result = $client->request('BootNotification', $payload);
+    $client = new OcppClient($connection);
 
-if ($connection->receivedCall === null
-    || $connection->receivedCall[0] !== 2
-    || $connection->receivedCall[2] !== 'BootNotification'
-    || $connection->receivedCall[3] !== $payload) {
-    throw new RuntimeException('Expected a valid OCPP-J BootNotification CALL with the configured payload.');
-}
+    $payload = [
+        'chargingStation' => ['model' => 'Demo', 'vendorName' => 'Local'],
+        'reason' => 'PowerUp',
+    ];
 
-if ($result !== ['status' => 'Accepted', 'currentTime' => '2026-11-04T12:00:00Z', 'interval' => 300]) {
-    throw new RuntimeException('Expected the matching Accepted CALLRESULT payload.');
-}
+    $result = $client->request('BootNotification', $payload);
 
-echo "BootNotification exchange: PASS\n";
+    expect($connection->receivedCall === null
+        || $connection->receivedCall[0] !== 2
+        || $connection->receivedCall[2] !== 'BootNotification'
+        || $connection->receivedCall[3] !== $payload)->toBeFalse('Expected a valid OCPP-J BootNotification CALL with the configured payload.');
+
+    expect($result !== ['status' => 'Accepted', 'currentTime' => '2026-11-04T12:00:00Z', 'interval' => 300])->toBeFalse('Expected the matching Accepted CALLRESULT payload.');
+
+});

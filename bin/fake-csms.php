@@ -52,6 +52,8 @@ function serveClient($client): void
     }
 
     $headers = [];
+    $requestParts = explode(' ', trim($requestLine));
+    $stationKey = $requestParts[1] ?? '/';
     while (($line = fgets($client)) !== false && $line !== "\r\n" && $line !== "\n") {
         if (str_contains($line, ':')) {
             [$name, $value] = explode(':', $line, 2);
@@ -75,6 +77,7 @@ function serveClient($client): void
     fwrite(STDOUT, 'Connected ' . trim($requestLine) . "\n");
 
     $bootNotifications = 0;
+    $bootCountPath = getenv('FAKE_CSMS_BOOT_COUNT_PATH') ?: '';
     $pendingBootCount = (int) (getenv('FAKE_CSMS_PENDING_BOOT_COUNT') ?: 0);
     $serverCallSent = false;
     while (true) {
@@ -106,11 +109,20 @@ function serveClient($client): void
         }
 
         $action = $call[2] ?? '';
+        $bootStatus = $action === 'BootNotification'
+            ? nextBootStatus($bootNotifications, $pendingBootCount, $bootCountPath, $stationKey)
+            : null;
         if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'StatusNotification', 'TransactionEvent'], true)) {
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
-                'BootNotification' => ['status' => ++$bootNotifications <= $pendingBootCount ? 'Pending' : 'Accepted', 'currentTime' => gmdate('Y-m-d\TH:i:s\Z'), 'interval' => (int) (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)],
+                'BootNotification' => [
+                    'status' => $bootStatus,
+                    'currentTime' => gmdate('Y-m-d\TH:i:s\Z'),
+                    'interval' => (int) ($bootStatus === 'Pending'
+                        ? (getenv('FAKE_CSMS_PENDING_BOOT_INTERVAL') ?: getenv('FAKE_CSMS_BOOT_INTERVAL') ?: 300)
+                        : (getenv('FAKE_CSMS_HEARTBEAT_INTERVAL') ?: 300)),
+                ],
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
                 'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
                 'StatusNotification' => new stdClass(),
@@ -155,7 +167,64 @@ function serveClient($client): void
                 }
             }
         }
+
+        if ($action === 'BootNotification'
+            && ($result['status'] ?? null) === 'Rejected'
+            && getenv('FAKE_CSMS_SEND_REJECTED_CALL') === '1') {
+            $serverCallId = 'fake-csms-rejected-call-' . $call[1];
+            $serverCall = json_encode([2, $serverCallId, 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            writeFrame($client, 0x1, $serverCall);
+            while (($stationResponse = readFrame($client)) !== null) {
+                if ($stationResponse[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationResponse[1], true);
+                if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 4 && ($stationMessage[1] ?? null) === $serverCallId) {
+                    fwrite(STDOUT, 'Rejected station response: ' . $stationResponse[1] . "\n");
+                    break;
+                }
+            }
+        }
     }
+}
+
+function nextBootStatus(int &$bootNotifications, int $pendingBootCount, string $bootCountPath, string $stationKey): string
+{
+    $rejectedStation = getenv('FAKE_CSMS_REJECT_STATION') ?: '';
+    if ($bootCountPath === '') {
+        $bootNotifications++;
+        $attempt = $bootNotifications;
+    } else {
+        $counter = fopen($bootCountPath, 'c+');
+        if (!is_resource($counter)) {
+            throw new RuntimeException('Could not lock the fake CSMS BootNotification counter.');
+        }
+
+        if (!flock($counter, LOCK_EX)) {
+            fclose($counter);
+            throw new RuntimeException('Could not lock the fake CSMS BootNotification counter.');
+        }
+
+        $storedCount = stream_get_contents($counter);
+        $counts = json_decode(is_string($storedCount) && $storedCount !== '' ? $storedCount : '{}', true, flags: JSON_THROW_ON_ERROR);
+        $attempt = (int) ($counts[$stationKey] ?? 0) + 1;
+        $counts[$stationKey] = $attempt;
+        ftruncate($counter, 0);
+        rewind($counter);
+        fwrite($counter, json_encode($counts, JSON_THROW_ON_ERROR));
+        fflush($counter);
+        flock($counter, LOCK_UN);
+        fclose($counter);
+    }
+
+    if ($rejectedStation !== ''
+        && str_ends_with(rawurldecode($stationKey), $rejectedStation)
+        && $attempt === 1) {
+        return 'Rejected';
+    }
+
+    return $attempt <= $pendingBootCount ? 'Pending' : 'Accepted';
 }
 
 function readFrame($stream): ?array
