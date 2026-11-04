@@ -31,24 +31,33 @@
     <div class="workspace-grid">
         <section class="station-column">
             <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging station <span class="count-pill">01</span></h2></div><span class="more-mark">•••</span></div>
-            <article class="charger-card">
+            <article id="charger-card" class="charger-card" data-outlet-count="1">
                 <div class="charger-card-top">
                     <div class="charger-illustration" aria-hidden="true">
-                        <div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-port"></div></div><div class="charger-foot"></div>
+                        <div class="charger-screen"><span>⚡</span><i></i><i></i></div><div class="charger-body"><div class="charger-light"></div><div class="charger-ports"><i class="charger-port"></i><i class="charger-port"></i></div></div><div class="charger-foot"></div>
                     </div>
                     <div class="charger-summary">
-                        <span class="device-type">AC · SINGLE PORT</span>
+                        <span id="device-type" class="device-type">AC · 1 OUTLET</span>
                         <h3 id="station-identity">DemoCharger</h3>
                         <p><span id="vendor-name">Local Emulator</span> <span class="dot-sep">·</span> <span id="model-name">Developer Charger</span></p>
                         <div id="boot-status" class="status-chip status-idle"><i></i><span id="boot-status-text">Not connected</span></div>
                     </div>
                 </div>
 
+                <section class="outlet-map" aria-labelledby="outlet-map-title">
+                    <div class="outlet-map-heading"><span id="outlet-map-title">OUTLET MAP</span><span id="outlet-map-count">1 OUTLET</span></div>
+                    <div id="outlet-list" class="outlet-list"></div>
+                </section>
+
                 <form id="charger-form" class="config-form">
                     <div class="form-heading"><span>STATION CONFIGURATION</span><span class="saved-hint">Saved in local SQLite</span></div>
                     <label>Station identity<input name="station_identity" value="DemoCharger" required></label>
                     <label>CSMS WebSocket URL<input name="csms_url" value="ws://fake-csms:9000/ocpp/DemoCharger" spellcheck="false" required><small>Try the bundled fake CSMS or enter your own ws:// or wss:// endpoint.</small></label>
                     <div class="form-row"><label>Vendor<input name="vendor_name" value="Local Emulator" required></label><label>Model<input name="model" value="Developer Charger" required></label></div>
+                    <div class="form-row">
+                        <label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" value="1" required></label>
+                        <label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small id="topology-hint">Separate EVSE IDs for each outlet.</small></label>
+                    </div>
                     <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number" value="DEMO-001"></label>
                     <div class="form-actions"><button class="button button-quiet" type="submit">Save settings</button><button id="boot-button" class="button button-primary" type="button"><span>↗</span> Connect &amp; Boot</button></div>
                 </form>

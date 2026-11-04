@@ -72,7 +72,9 @@ h2 { margin: 0; font: 700 16px var(--display); letter-spacing: -.35px; }
 .charger-screen i { width: 22px; height: 2px; margin-top: 2px; border-radius: 3px; background: #5d937a; }
 .charger-body { position: absolute; top: 38px; left: 9px; width: 56px; height: 57px; border: 1px solid #cfd8d2; border-radius: 4px 4px 7px 7px; background: linear-gradient(100deg, #fff 0%, #e9eeeb 100%); }
 .charger-light { width: 4px; height: 4px; margin: 9px auto 0; border-radius: 50%; background: #51bd88; box-shadow: 0 0 5px #6ee4a2; }
-.charger-port { width: 18px; height: 20px; margin: 8px auto; border: 3px solid #788884; border-radius: 5px; background: #293c3a; box-shadow: inset 0 0 0 3px #405957; }
+.charger-ports { display: flex; justify-content: center; gap: 4px; margin-top: 8px; }
+.charger-port { width: 13px; height: 17px; border: 2px solid #788884; border-radius: 4px; background: #293c3a; box-shadow: inset 0 0 0 2px #405957; }
+.charger-card[data-outlet-count="1"] .charger-port:nth-child(2) { display: none; }
 .charger-foot { position: absolute; bottom: 1px; left: 17px; width: 40px; height: 8px; border-radius: 2px; background: #c4ceca; }
 .charger-summary { min-width: 0; }
 .device-type { color: #91a09a; font-size: 8px; }
@@ -86,11 +88,22 @@ h2 { margin: 0; font: 700 16px var(--display); letter-spacing: -.35px; }
 .status-error { color: #a44942; background: #fbedeb; }
 
 .config-form { padding: 20px 23px 18px; }
+.outlet-map { padding: 12px 23px 14px; border-bottom: 1px solid #edf1ef; }
+.outlet-map-heading { display: flex; justify-content: space-between; margin-bottom: 9px; color: #87958f; font: 500 8px var(--mono); letter-spacing: .8px; }
+.outlet-map-heading span:last-child { color: #9ca8a3; }
+.outlet-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 7px; }
+.outlet-tile { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid #e9efec; border-radius: 5px; background: #fbfdfb; }
+.outlet-marker { display: grid; place-items: center; width: 27px; height: 27px; flex: 0 0 auto; border-radius: 5px; background: #edf5f0; color: #35775c; font: 500 9px var(--mono); }
+.outlet-details { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.outlet-details strong { color: #52635c; font-size: 9px; }
+.outlet-details small { color: #8b9993; font: 400 8px var(--mono); white-space: nowrap; }
+.outlet-tag { margin-left: auto; padding: 4px 5px; border-radius: 3px; background: #edf5f0; color: #56806d; font: 500 7px var(--mono); letter-spacing: .3px; }
 .form-heading { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 15px; color: #72837d; font-size: 8px; }
 .saved-hint { color: #a0aaa7; font: 400 9px var(--sans); letter-spacing: 0; }
 label { display: block; margin-bottom: 12px; color: #566561; font-size: 10px; font-weight: 700; }
-input { width: 100%; height: 36px; margin-top: 5px; padding: 0 10px; border: 1px solid #dfe7e4; border-radius: 4px; outline: none; background: #fff; color: #273431; font: 500 11px var(--sans); transition: border-color .15s, box-shadow .15s; }
+input, select { width: 100%; height: 36px; margin-top: 5px; padding: 0 10px; border: 1px solid #dfe7e4; border-radius: 4px; outline: none; background: #fff; color: #273431; font: 500 11px var(--sans); transition: border-color .15s, box-shadow .15s; }
 input:focus { border-color: #56a58a; box-shadow: 0 0 0 3px rgb(60 155 117 / 11%); }
+select:focus { border-color: #56a58a; box-shadow: 0 0 0 3px rgb(60 155 117 / 11%); }
 input[name="csms_url"], .token-form input { font-family: var(--mono); font-size: 10px; }
 label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; font-weight: 400; }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -162,7 +175,7 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
     .page-shell { padding-right: 14px; padding-left: 14px; }
     h1 { font-size: 26px; }
     .charger-card-top { gap: 15px; padding: 19px 16px; }
-    .config-form, .token-panel { padding-right: 16px; padding-left: 16px; }
+    .config-form, .token-panel, .outlet-map { padding-right: 16px; padding-left: 16px; }
     .form-row { grid-template-columns: 1fr; gap: 0; }
     .form-actions { flex-direction: column-reverse; }
     .token-form { flex-direction: column; }

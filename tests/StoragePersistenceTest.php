@@ -20,6 +20,8 @@ $chargers->save([
     'vendor_name' => 'Test Vendor',
     'model' => 'Test Model',
     'serial_number' => 'SERIAL-001',
+    'outlet_count' => 2,
+    'outlet_topology' => 'shared',
 ]);
 $chargers->setBootStatus('Accepted');
 $chargers->save([
@@ -28,12 +30,16 @@ $chargers->save([
     'vendor_name' => 'Updated Vendor',
     'model' => 'Test Model',
     'serial_number' => 'SERIAL-001',
+    'outlet_count' => 2,
+    'outlet_topology' => 'shared',
 ]);
 
 $persistedCharger = $chargers->get();
 if ($persistedCharger['station_identity'] !== 'TestStation'
     || $persistedCharger['vendor_name'] !== 'Updated Vendor'
-    || $persistedCharger['boot_status'] !== 'Accepted') {
+    || $persistedCharger['boot_status'] !== 'Accepted'
+    || (int) $persistedCharger['outlet_count'] !== 2
+    || $persistedCharger['outlet_topology'] !== 'shared') {
     throw new RuntimeException('Station configuration should persist without overwriting its BootNotification status.');
 }
 

@@ -31,10 +31,21 @@ final class Database
                 vendor_name TEXT NOT NULL,
                 model TEXT NOT NULL,
                 serial_number TEXT NOT NULL DEFAULT '',
+                outlet_count INTEGER NOT NULL DEFAULT 1 CHECK (outlet_count BETWEEN 1 AND 16),
+                outlet_topology TEXT NOT NULL DEFAULT 'independent' CHECK (outlet_topology IN ('independent', 'shared')),
                 boot_status TEXT NOT NULL DEFAULT 'Not connected',
                 updated_at TEXT NOT NULL
             )
             SQL);
+
+        $chargerColumns = $pdo->query('PRAGMA table_info(charger)')->fetchAll(PDO::FETCH_COLUMN, 1);
+        if (!in_array('outlet_count', $chargerColumns, true)) {
+            $pdo->exec('ALTER TABLE charger ADD COLUMN outlet_count INTEGER NOT NULL DEFAULT 1');
+        }
+        if (!in_array('outlet_topology', $chargerColumns, true)) {
+            $pdo->exec("ALTER TABLE charger ADD COLUMN outlet_topology TEXT NOT NULL DEFAULT 'independent'");
+        }
+
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS exchange_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

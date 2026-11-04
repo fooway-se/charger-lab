@@ -100,6 +100,41 @@ function renderLog(entries) {
     content.append(list);
 }
 
+function renderOutlets(outlets, topology) {
+    const list = document.querySelector('#outlet-list');
+    const count = document.querySelector('#outlet-map-count');
+    const chargerCard = document.querySelector('#charger-card');
+    const deviceType = document.querySelector('#device-type');
+    const topologyHint = document.querySelector('#topology-hint');
+    list.replaceChildren();
+    chargerCard.dataset.outletCount = String(outlets.length);
+    count.textContent = `${outlets.length} OUTLET${outlets.length === 1 ? '' : 'S'}`;
+    deviceType.textContent = `AC · ${outlets.length} OUTLET${outlets.length === 1 ? '' : 'S'}`;
+    topologyHint.textContent = topology === 'shared'
+        ? 'One EVSE with shared charging hardware.'
+        : 'Separate EVSE IDs for each outlet.';
+
+    for (const outlet of outlets) {
+        const card = document.createElement('article');
+        card.className = 'outlet-tile';
+        const marker = document.createElement('span');
+        marker.className = 'outlet-marker';
+        marker.textContent = String(outlet.number).padStart(2, '0');
+        const details = document.createElement('span');
+        details.className = 'outlet-details';
+        const title = document.createElement('strong');
+        title.textContent = `Outlet ${outlet.number}`;
+        const ids = document.createElement('small');
+        ids.textContent = `EVSE ${outlet.evse_id} · Connector ${outlet.connector_id}`;
+        details.append(title, ids);
+        const badge = document.createElement('span');
+        badge.className = 'outlet-tag';
+        badge.textContent = 'MAPPED';
+        card.append(marker, details, badge);
+        list.append(card);
+    }
+}
+
 function renderState(state) {
     const charger = state.charger;
     currentCharger = charger;
@@ -113,6 +148,7 @@ function renderState(state) {
     document.querySelector('#vendor-name').textContent = charger.vendor_name;
     document.querySelector('#model-name').textContent = charger.model;
     document.querySelector('#boot-status-text').textContent = charger.boot_status;
+    renderOutlets(state.outlets, charger.outlet_topology);
 
     const status = document.querySelector('#boot-status');
     status.classList.toggle('status-online', charger.boot_status === 'Accepted');

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Controller;
 
+use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Http\Response;
 use ChargerEmulator\Protocol\OcppClient;
@@ -26,7 +27,14 @@ final class StationController
 
     public function state(Request $request): Response
     {
-        return Response::json(200, ['charger' => $this->chargers->get(), 'entries' => $this->logs->recent()]);
+        $charger = $this->chargers->get();
+        $outlets = new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']);
+
+        return Response::json(200, [
+            'charger' => $charger,
+            'outlets' => $outlets->outlets(),
+            'entries' => $this->logs->recent(),
+        ]);
     }
 
     public function save(Request $request): Response
@@ -112,7 +120,7 @@ final class StationController
 
     /**
      * @param array<string, mixed> $input
-     *  @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string}
+     *  @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string}
      */
     private function validatedCharger(array $input): array
     {
@@ -123,6 +131,8 @@ final class StationController
             'vendor_name' => $this->stringValue($input, 'vendor_name', $current['vendor_name']),
             'model' => $this->stringValue($input, 'model', $current['model']),
             'serial_number' => $this->stringValue($input, 'serial_number', $current['serial_number']),
+            'outlet_count' => $this->integerValue($input, 'outlet_count', (int) $current['outlet_count']),
+            'outlet_topology' => $this->stringValue($input, 'outlet_topology', $current['outlet_topology']),
         ];
 
         if ($charger['station_identity'] === '' || $charger['vendor_name'] === '' || $charger['model'] === '') {
@@ -133,6 +143,8 @@ final class StationController
         if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
             throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
         }
+
+        new OutletMap($charger['outlet_count'], $charger['outlet_topology']);
 
         return $charger;
     }
@@ -151,6 +163,26 @@ final class StationController
         }
 
         return trim($input[$key]);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function integerValue(array $input, string $key, int $fallback): int
+    {
+        if (!array_key_exists($key, $input)) {
+            return $fallback;
+        }
+
+        $value = $input[$key];
+        if (is_int($value)) {
+            return $value;
+        }
+        if (is_string($value) && ctype_digit($value)) {
+            return (int) $value;
+        }
+
+        throw new InvalidArgumentException("{$key} must be a whole number.");
     }
 
     /**

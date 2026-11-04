@@ -32,6 +32,8 @@ try {
         'vendor_name' => 'UI Test Vendor',
         'model' => 'UI Test Model',
         'serial_number' => 'UI-001',
+        'outlet_count' => 2,
+        'outlet_topology' => 'independent',
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     [$body, $headers] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $payload, 'application/json');
     if (!str_contains($headers[0] ?? '', '200') || !is_string($body)) {
@@ -50,8 +52,12 @@ try {
     if (($state['charger']['boot_status'] ?? null) !== 'Accepted'
         || count($state['entries'] ?? []) !== 2
         || ($state['entries'][0]['action'] ?? null) !== 'BootNotification'
-        || ($state['entries'][1]['action'] ?? null) !== 'BootNotification') {
-        throw new RuntimeException('The local UI state should expose the accepted status and exchange log.');
+        || ($state['entries'][1]['action'] ?? null) !== 'BootNotification'
+        || ($state['outlets'][0]['evse_id'] ?? null) !== 1
+        || ($state['outlets'][0]['connector_id'] ?? null) !== 1
+        || ($state['outlets'][1]['evse_id'] ?? null) !== 2
+        || ($state['outlets'][1]['connector_id'] ?? null) !== 1) {
+        throw new RuntimeException('The local UI state should expose two independent EVSEs and the BootNotification log.');
     }
 
     $authorizePayload = json_encode([
@@ -60,6 +66,8 @@ try {
         'vendor_name' => 'UI Test Vendor',
         'model' => 'UI Test Model',
         'serial_number' => 'UI-001',
+        'outlet_count' => 2,
+        'outlet_topology' => 'independent',
         'rfid_token' => '04A1B2C3D4',
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     [$authorizeBody, $authorizeHeaders] = request(
@@ -84,11 +92,41 @@ try {
         throw new RuntimeException('The local log should persist the presented RFID token as an ISO14443 Authorize call.');
     }
 
+    $sharedTopology = json_encode([
+        'station_identity' => 'UiIntegrationCharger',
+        'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
+        'vendor_name' => 'UI Test Vendor',
+        'model' => 'UI Test Model',
+        'serial_number' => 'UI-001',
+        'outlet_count' => 2,
+        'outlet_topology' => 'shared',
+    ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    [$sharedBody, $sharedHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/charger",
+        'POST',
+        $sharedTopology,
+        'application/json',
+    );
+    if (!str_contains($sharedHeaders[0] ?? '', '200') || !is_string($sharedBody)) {
+        throw new RuntimeException('The local API should save a shared EVSE topology.');
+    }
+    [$sharedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $sharedState = is_string($sharedStateBody) ? json_decode($sharedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    if (($sharedState['outlets'][0]['evse_id'] ?? null) !== 1
+        || ($sharedState['outlets'][0]['connector_id'] ?? null) !== 1
+        || ($sharedState['outlets'][1]['evse_id'] ?? null) !== 1
+        || ($sharedState['outlets'][1]['connector_id'] ?? null) !== 2) {
+        throw new RuntimeException('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
+    }
+
     $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
     $charger = $database->query('SELECT * FROM charger WHERE id = 1')->fetch();
     $messageCount = (int) $database->query('SELECT COUNT(*) FROM exchange_log')->fetchColumn();
-    if ($charger['boot_status'] !== 'Accepted' || $messageCount !== 4) {
-        throw new RuntimeException('The accepted status and both OCPP exchanges should persist in SQLite.');
+    if ($charger['boot_status'] !== 'Accepted'
+        || (int) $charger['outlet_count'] !== 2
+        || $charger['outlet_topology'] !== 'shared'
+        || $messageCount !== 4) {
+        throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
     }
 
     echo "Local UI BootNotification flow: PASS\n";

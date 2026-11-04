@@ -29,6 +29,20 @@ if ($response->status !== 422 || !isset($responseBody['error']) || $chargerCount
     throw new RuntimeException('Invalid station details should return 422 without persisting a charger.');
 }
 
+$topologyResponse = $controller->save(new Request('POST', '/api/charger', [], [], [
+    'station_identity' => 'InvalidTopology',
+    'csms_url' => 'ws://localhost:9000/ocpp/InvalidTopology',
+    'vendor_name' => 'Vendor',
+    'model' => 'Model',
+    'serial_number' => '',
+    'outlet_count' => 2,
+    'outlet_topology' => 'parallel',
+]));
+$chargerCount = (int) $database->query('SELECT COUNT(*) FROM charger')->fetchColumn();
+if ($topologyResponse->status !== 422 || $chargerCount !== 0) {
+    throw new RuntimeException('Unknown outlet topology values should be rejected before persistence.');
+}
+
 unset($controller, $database);
 foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
     if (is_file($path)) {
