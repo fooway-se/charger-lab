@@ -14,10 +14,14 @@ final class OcppClient
 {
     /**
      * @param null|Closure(string, string, string): void $exchangeObserver Receives direction, action, and raw OCPP-J JSON.
+     * @param null|Closure(string, array<string, mixed>): ?array<string, mixed> $incomingCallHandler Handles supported CSMS calls.
+     * @param null|Closure(): ?string $bootStatusProvider Reads the latest station BootNotification status.
      */
     public function __construct(
         private readonly Connection $connection,
         private readonly ?Closure $exchangeObserver = null,
+        private readonly ?Closure $incomingCallHandler = null,
+        private readonly ?Closure $bootStatusProvider = null,
     ) {
     }
 
@@ -93,18 +97,27 @@ final class OcppClient
 
         $action = $reply[2];
         $this->observe('incoming', $action, $message);
+        $bootStatus ??= $this->bootStatusProvider === null ? null : ($this->bootStatusProvider)();
         $rejected = $bootStatus === 'Rejected';
-        $error = json_encode([
-            4,
-            $reply[1],
-            $rejected ? 'SecurityError' : 'NotImplemented',
-            $rejected
-                ? 'The charging station has not been accepted by the CSMS.'
-                : 'Action not supported by this emulator: ' . $action,
-            new \stdClass(),
-        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        $this->connection->send($error);
-        $this->observe('outgoing', $action, $error);
+        $response = $rejected
+            ? null
+            : ($this->incomingCallHandler === null ? null : ($this->incomingCallHandler)($action, $reply[3]));
+        if (is_array($response)) {
+            $outgoing = json_encode([3, $reply[1], $response], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        } else {
+            $outgoing = json_encode([
+                4,
+                $reply[1],
+                $rejected ? 'SecurityError' : 'NotImplemented',
+                $rejected
+                    ? 'The charging station has not been accepted by the CSMS.'
+                    : 'Action not supported by this emulator: ' . $action,
+                new \stdClass(),
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        }
+
+        $this->connection->send($outgoing);
+        $this->observe('outgoing', $action, $outgoing);
     }
 
     /**

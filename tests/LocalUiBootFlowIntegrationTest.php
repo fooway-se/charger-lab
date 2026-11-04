@@ -321,7 +321,10 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($statusPayloads[1]['connectorStatus'] ?? null) !== 'Available')->toBeFalse('An accepted charger boot should report Available for each configured outlet.');
 
         $incomingCallOutput = waitForProcessOutput($fakeCsms, 'Station response: ', 1_500);
-        expect(!str_contains($incomingCallOutput, '"NotImplemented"'))->toBeFalse('The open session should answer a CSMS-initiated call while idle.');
+        expect($incomingCallOutput)->toContain('"attributeValue":"false"');
+        $setVariableOutput = waitForProcessOutput($fakeCsms, 'SetVariables station response: ', 1_500);
+        $capturedDeviceModelOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $setVariableOutput;
+        expect($capturedDeviceModelOutput)->toContain('"attributeStatus":"Rejected"');
         $heartbeatEntries = waitForHeartbeat($appPort, $chargerId, 7_000);
         $heartbeatCall = json_decode($heartbeatEntries[0]['message'] ?? 'null', false);
         expect(count($heartbeatEntries) < 2

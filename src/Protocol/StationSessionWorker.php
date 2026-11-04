@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Domain\OutletMap;
+use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -223,9 +224,9 @@ final class StationSessionWorker
             $this->sessions[$chargerId]['next_boot_at'] = null;
             $this->sessions[$chargerId]['heartbeat_interval'] = $interval;
             $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
-            $this->reportAvailableOutlets($chargerId, $charger);
             $this->chargers->setBootStatus($chargerId, $status);
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
+            $this->reportAvailableOutlets($chargerId, $charger);
 
             return;
         }
@@ -239,10 +240,20 @@ final class StationSessionWorker
 
     private function createClient(int $chargerId): OcppClient
     {
+        $deviceModel = new DeviceModel($this->outletSessions, $chargerId);
+
         return new OcppClient(
             $this->sessions[$chargerId]['connection'],
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
+            },
+            static fn (string $action, array $payload): ?array => $deviceModel->handle($action, $payload),
+            function () use ($chargerId): ?string {
+                $charger = $this->chargers->get($chargerId);
+
+                return is_array($charger) && is_string($charger['boot_status'] ?? null)
+                    ? $charger['boot_status']
+                    : null;
             },
         );
     }

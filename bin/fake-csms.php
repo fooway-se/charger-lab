@@ -149,7 +149,12 @@ function serveClient($client): void
             && getenv('FAKE_CSMS_SEND_CALL') === '1') {
             $serverCallSent = true;
             $serverCallId = 'fake-csms-call-' . $call[1];
-            $serverCall = json_encode([2, $serverCallId, 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $serverCall = json_encode([2, $serverCallId, 'GetVariables', [
+                'getVariableData' => [[
+                    'component' => ['name' => 'AuthCtrlr'],
+                    'variable' => ['name' => 'AuthorizeRemoteStart'],
+                ]],
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             writeFrame($client, 0x1, $serverCall);
             while (($stationResponse = readFrame($client)) !== null) {
                 if ($stationResponse[0] !== 0x1) {
@@ -157,8 +162,34 @@ function serveClient($client): void
                 }
 
                 $stationMessage = json_decode($stationResponse[1], true);
-                if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 4 && ($stationMessage[1] ?? null) === $serverCallId) {
+                if (is_array($stationMessage) && in_array($stationMessage[0] ?? null, [3, 4], true) && ($stationMessage[1] ?? null) === $serverCallId) {
                     fwrite(STDOUT, 'Station response: ' . $stationResponse[1] . "\n");
+                    break;
+                }
+                if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                }
+            }
+
+            $setVariableCallId = 'fake-csms-set-call-' . $call[1];
+            $setVariableCall = json_encode([2, $setVariableCallId, 'SetVariables', [
+                'setVariableData' => [[
+                    'component' => ['name' => 'AuthCtrlr'],
+                    'variable' => ['name' => 'AuthorizeRemoteStart'],
+                    'attributeType' => 'Actual',
+                    'attributeValue' => 'true',
+                ]],
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            writeFrame($client, 0x1, $setVariableCall);
+            while (($stationResponse = readFrame($client)) !== null) {
+                if ($stationResponse[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationResponse[1], true);
+                if (is_array($stationMessage) && in_array($stationMessage[0] ?? null, [3, 4], true) && ($stationMessage[1] ?? null) === $setVariableCallId) {
+                    fwrite(STDOUT, 'SetVariables station response: ' . $stationResponse[1] . "\n");
                     break;
                 }
                 if (is_array($stationMessage) && ($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
@@ -172,7 +203,12 @@ function serveClient($client): void
             && ($result['status'] ?? null) === 'Rejected'
             && getenv('FAKE_CSMS_SEND_REJECTED_CALL') === '1') {
             $serverCallId = 'fake-csms-rejected-call-' . $call[1];
-            $serverCall = json_encode([2, $serverCallId, 'GetVariables', ['getVariableData' => []]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $serverCall = json_encode([2, $serverCallId, 'GetVariables', [
+                'getVariableData' => [[
+                    'component' => ['name' => 'AuthCtrlr'],
+                    'variable' => ['name' => 'AuthorizeRemoteStart'],
+                ]],
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             writeFrame($client, 0x1, $serverCall);
             while (($stationResponse = readFrame($client)) !== null) {
                 if ($stationResponse[0] !== 0x1) {
