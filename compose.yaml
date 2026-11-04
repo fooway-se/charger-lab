@@ -1,0 +1,23 @@
+services:
+  app:
+    build: .
+    command: ["php", "-S", "0.0.0.0:8080", "-t", "public", "public/router.php"]
+    ports:
+      - "8080:8080"
+    environment:
+      DATA_PATH: /app/data/emulator.sqlite
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - charger-data:/app/data
+    depends_on:
+      - fake-csms
+
+  fake-csms:
+    build: .
+    command: ["php", "bin/fake-csms.php"]
+    ports:
+      - "9000:9000"
+
+volumes:
+  charger-data:

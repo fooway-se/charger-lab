@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+/**
+ * Loads the emulator's dependency-free PSR-4-style source classes.
+ */
 spl_autoload_register(static function (string $class): void {
     $prefix = 'ChargerEmulator\\';
     if (!str_starts_with($class, $prefix)) {
