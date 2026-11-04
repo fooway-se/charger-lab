@@ -9,6 +9,7 @@ use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
@@ -21,6 +22,7 @@ use Throwable;
 final class StationSessionWorker
 {
     private const SIMULATED_SESSION_ENERGY_WH = 1000;
+    private const SIMULATED_PERIODIC_ENERGY_WH = 100;
 
     /**
      * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float}>
@@ -32,6 +34,7 @@ final class StationSessionWorker
         private readonly ExchangeRepository $logs,
         private readonly OcppCommandRepository $commands,
         private readonly OutletSessionRepository $outletSessions,
+        private readonly DeviceModelSettingsRepository $deviceModelSettings,
     ) {
     }
 
@@ -207,6 +210,10 @@ final class StationSessionWorker
                     return true;
                 }
 
+                if ($this->sendPeriodicMeterValue($chargerId)) {
+                    return true;
+                }
+
                 $message = $session['connection']->receiveAvailable();
                 if ($message !== null) {
                     $charger = $this->chargers->get($chargerId);
@@ -258,7 +265,7 @@ final class StationSessionWorker
 
     private function createClient(int $chargerId): OcppClient
     {
-        $deviceModel = new DeviceModel($this->outletSessions, $chargerId);
+        $deviceModel = new DeviceModel($this->outletSessions, $this->deviceModelSettings, $chargerId);
         $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
 
@@ -526,6 +533,61 @@ final class StationSessionWorker
                 'unitOfMeasure' => ['unit' => 'Wh'],
             ]],
         ]];
+    }
+
+    private function sendPeriodicMeterValue(int $chargerId): bool
+    {
+        $interval = filter_var(
+            $this->deviceModelSettings->get($chargerId, 'TxUpdatedInterval'),
+            FILTER_VALIDATE_INT,
+        );
+        if (!is_int($interval) || $interval < 1
+            || $this->deviceModelSettings->get($chargerId, 'TxUpdatedMeasurands') !== 'Energy.Active.Import.Register') {
+            return false;
+        }
+
+        foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
+            if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
+                || $session['id_token'] === null || $session['stop_reason'] !== null) {
+                continue;
+            }
+
+            $lastSampleAt = $session['meter_updated_at'] === null
+                ? false
+                : strtotime($session['meter_updated_at']);
+            if ($lastSampleAt !== false && time() < $lastSampleAt + $interval) {
+                continue;
+            }
+
+            $sequence = $session['seq_no'] + 1;
+            $meterWh = $session['meter_wh'] + self::SIMULATED_PERIODIC_ENERGY_WH;
+            $sampledAt = gmdate(DATE_ATOM);
+            $this->createClient($chargerId)->request('TransactionEvent', [
+                'eventType' => 'Updated',
+                'timestamp' => $sampledAt,
+                'triggerReason' => 'MeterValuePeriodic',
+                'seqNo' => $sequence,
+                'meterValue' => $this->meterValue($meterWh, 'Sample.Periodic'),
+                'transactionInfo' => [
+                    'transactionId' => $session['transaction_id'],
+                    'chargingState' => 'Charging',
+                ],
+                'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+            ]);
+            $this->outletSessions->recordMeterSample(
+                $chargerId,
+                $session['evse_id'],
+                $session['connector_id'],
+                $session['transaction_id'],
+                $meterWh,
+                $sequence,
+                $sampledAt,
+            );
+
+            return true;
+        }
+
+        return false;
     }
 
     /**

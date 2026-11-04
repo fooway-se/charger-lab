@@ -6,6 +6,7 @@ use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
 it('reports supported device model variables and current outlet state', function (): void {
@@ -14,7 +15,7 @@ it('reports supported device model variables and current outlet state', function
     $chargerId = $chargers->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(2, 'independent'))->outlets());
-    $deviceModel = new DeviceModel($outletSessions, $chargerId);
+    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
 
     $response = $deviceModel->handle('GetVariables', [
         'getVariableData' => [
@@ -57,7 +58,7 @@ it('returns Device Model status codes for unknown and read-only variables', func
     $chargerId = $chargers->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
-    $deviceModel = new DeviceModel($outletSessions, $chargerId);
+    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
 
     $getResponse = $deviceModel->handle('GetVariables', [
         'getVariableData' => [

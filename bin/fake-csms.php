@@ -199,6 +199,50 @@ function serveClient($client): void
                 }
             }
 
+            if (getenv('FAKE_CSMS_SET_METER_SETTINGS') === '1') {
+                $meterSettingsCallId = 'fake-csms-meter-settings-' . $call[1];
+                $meterSettingsCall = json_encode([2, $meterSettingsCallId, 'SetVariables', [
+                    'setVariableData' => [[
+                        'component' => ['name' => 'SampledDataCtrlr'],
+                        'variable' => ['name' => 'TxUpdatedInterval'],
+                        'attributeValue' => '1',
+                    ], [
+                        'component' => ['name' => 'SampledDataCtrlr'],
+                        'variable' => ['name' => 'TxUpdatedMeasurands'],
+                        'attributeValue' => 'Energy.Active.Import.Register',
+                    ]],
+                ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                writeFrame($client, 0x1, $meterSettingsCall);
+                while (($stationResponse = readFrame($client)) !== null) {
+                    if ($stationResponse[0] !== 0x1) {
+                        continue;
+                    }
+
+                    $stationMessage = json_decode($stationResponse[1], true);
+                    if (!is_array($stationMessage)) {
+                        continue;
+                    }
+
+                    if (in_array($stationMessage[0] ?? null, [3, 4], true)
+                        && ($stationMessage[1] ?? null) === $meterSettingsCallId) {
+                        fwrite(STDOUT, 'Meter settings station response: ' . $stationResponse[1] . "\n");
+                        break;
+                    }
+
+                    if (($stationMessage[0] ?? null) === 2) {
+                        $outgoingResult = match ($stationMessage[2] ?? '') {
+                            'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
+                            'TransactionEvent' => isset($stationMessage[3]['idToken'])
+                                ? ['idTokenInfo' => ['status' => 'Accepted']]
+                                : new stdClass(),
+                            default => new stdClass(),
+                        };
+                        $outgoingResponse = json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                        writeFrame($client, 0x1, $outgoingResponse);
+                    }
+                }
+            }
+
             $remoteStartSentPath = getenv('FAKE_CSMS_REMOTE_START_SENT_PATH') ?: '';
             if (getenv('FAKE_CSMS_SEND_REMOTE_START') === '1'
                 && !$remoteStartSent

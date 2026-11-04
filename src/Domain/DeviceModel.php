@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 
 /**
- * Answers the supported read-only OCPP Device Model variables for one charger.
+ * Answers the supported OCPP Device Model variables for one charger.
  */
 final class DeviceModel
 {
     public function __construct(
         private readonly OutletSessionRepository $outletSessions,
+        private readonly DeviceModelSettingsRepository $settings,
         private readonly int $chargerId,
     ) {
     }
@@ -87,6 +89,14 @@ final class DeviceModel
                 $status = $this->unknownStatus($component);
             } elseif ($attributeType !== 'Actual') {
                 $status = 'NotSupportedAttributeType';
+            } elseif ($this->isWritable($component, $variable)) {
+                $value = $request['attributeValue'] ?? null;
+                if (is_string($value) && $this->isValidSetting($variable['name'], $value)) {
+                    $this->settings->set($this->chargerId, $variable['name'], $value);
+                    $status = 'Accepted';
+                } else {
+                    $status = 'Rejected';
+                }
             } else {
                 $status = 'Rejected';
             }
@@ -123,6 +133,10 @@ final class DeviceModel
                 'AuthorizeRemoteStart' => 'false',
                 default => null,
             };
+        }
+
+        if ($componentName === 'SampledDataCtrlr') {
+            return $this->settings->get($this->chargerId, $variableName);
         }
 
         if ($variableName === 'Available' && in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
@@ -193,7 +207,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation'], true)) {
+        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'SampledDataCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -219,5 +233,37 @@ final class DeviceModel
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $component
+     * @param array<string, mixed> $variable
+     * @return bool
+     */
+    private function isWritable(array $component, array $variable): bool
+    {
+        return ($component['name'] ?? null) === 'SampledDataCtrlr'
+            && in_array($variable['name'] ?? null, ['TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
+    }
+
+    /**
+     * @return bool
+     */
+    private function isValidSetting(string $variable, string $value): bool
+    {
+        if ($variable === 'TxUpdatedInterval') {
+            return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
+                && filter_var($value, FILTER_VALIDATE_INT) !== false;
+        }
+
+        if ($variable !== 'TxUpdatedMeasurands') {
+            return false;
+        }
+
+        if ($value === '') {
+            return true;
+        }
+
+        return $value === 'Energy.Active.Import.Register';
     }
 }

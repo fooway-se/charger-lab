@@ -109,6 +109,36 @@ function waitForBootStatus(int $appPort, int $chargerId, string $status, int $ti
     throw new RuntimeException("The station did not reach BootNotification status {$status}.");
 }
 
+function waitForMeterValuePeriodic(int $appPort, int $chargerId, int $evseId, int $timeoutMilliseconds): ?array
+{
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    while (microtime(true) < $deadline) {
+        [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+        foreach ($state['chargers'] ?? [] as $charger) {
+            if ((int) ($charger['id'] ?? 0) !== $chargerId) {
+                continue;
+            }
+
+            foreach ($charger['entries'] ?? [] as $entry) {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    continue;
+                }
+
+                $call = json_decode($entry['message'], true);
+                if (($call[3]['triggerReason'] ?? null) === 'MeterValuePeriodic'
+                    && ($call[3]['evse']['id'] ?? null) === $evseId) {
+                    return $call[3];
+                }
+            }
+        }
+
+        usleep(20_000);
+    }
+
+    return null;
+}
+
 function waitForHeartbeat(int $appPort, int $chargerId, int $timeoutMilliseconds): array
 {
     $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
@@ -185,6 +215,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'FAKE_CSMS_SEND_CALL' => '1',
         'FAKE_CSMS_SEND_REJECTED_CALL' => '1',
         'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
         'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
     ]);
 
@@ -335,6 +366,12 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $setVariableOutput = waitForProcessOutput($fakeCsms, 'SetVariables station response: ', 1_500);
         $capturedDeviceModelOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $setVariableOutput;
         expect($capturedDeviceModelOutput)->toContain('"attributeStatus":"Rejected"');
+        $meterSettingsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($meterSettingsOutput, 'Meter settings station response: ')) {
+            $meterSettingsOutput .= waitForProcessOutput($fakeCsms, 'Meter settings station response: ', 5_000);
+        }
+
+        expect($meterSettingsOutput)->toContain('"attributeStatus":"Accepted"');
         $remoteStartOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
         if (!str_contains($remoteStartOutput, 'RemoteStart station response: ')) {
             $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStart station response: ', 5_000);
@@ -386,9 +423,9 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         expect(count($state['chargers'] ?? []) !== 2
             || ($charger['boot_status'] ?? null) !== 'Accepted'
             || ($charger['connection_status'] ?? null) !== 'Connected'
-            || count($bootEntries) !== 4
+            || count($bootEntries) < 2
             || count($heartbeatStateEntries) < 2
-            || count($serverCallEntries) !== 4
+            || count($serverCallEntries) < 2
             || ($charger['outlets'][0]['evse_id'] ?? null) !== 1
             || ($charger['outlets'][0]['connector_id'] ?? null) !== 1
             || ($charger['outlets'][1]['evse_id'] ?? null) !== 2
@@ -466,6 +503,13 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $authorizeResponse = is_string($authorizeBody) ? json_decode($authorizeBody, true, flags: JSON_THROW_ON_ERROR) : [];
         expect(!str_contains($authorizeHeaders[0] ?? '', '200')
             || ($authorizeResponse['result']['idTokenInfo']['status'] ?? null) !== 'Accepted')->toBeFalse('The RFID token form should send Authorize and show its Accepted response; received ' . ($authorizeHeaders[0] ?? 'no HTTP status') . ' ' . (string) $authorizeBody);
+
+        $periodicMeterPayload = waitForMeterValuePeriodic($appPort, $chargerId, 2, 4_000);
+        expect($periodicMeterPayload)->toBeArray()
+            ->and($periodicMeterPayload['eventType'] ?? null)->toBe('Updated')
+            ->and($periodicMeterPayload['seqNo'] ?? null)->toBe(3)
+            ->and($periodicMeterPayload['meterValue'][0]['sampledValue'][0]['context'] ?? null)->toBe('Sample.Periodic')
+            ->and($periodicMeterPayload['meterValue'][0]['sampledValue'][0]['measurand'] ?? null)->toBe('Energy.Active.Import.Register');
 
         [$updatedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $updatedState = is_string($updatedStateBody) ? json_decode($updatedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
@@ -546,7 +590,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $startedPayload = json_decode($transactionCalls[0]['message'] ?? 'null', true);
         $authorizedPayload = json_decode($transactionCalls[1]['message'] ?? 'null', true);
         $chargingPayload = json_decode($transactionCalls[2]['message'] ?? 'null', true);
-        expect(count($transactionCalls) !== 3
+        expect(count($transactionCalls) < 4
             || ($startedPayload[3]['eventType'] ?? null) !== 'Started'
             || ($startedPayload[3]['triggerReason'] ?? null) !== 'CablePluggedIn'
             || ($startedPayload[3]['seqNo'] ?? null) !== 0
@@ -566,7 +610,9 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($chargingPayload[3]['eventType'] ?? null) !== 'Updated'
             || ($chargingPayload[3]['triggerReason'] ?? null) !== 'ChargingStateChanged'
             || ($chargingPayload[3]['seqNo'] ?? null) !== 2
-            || ($chargingPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Charging')->toBeFalse('The plug-first flow should start a transaction, then attach its accepted RFID token.');
+            || ($chargingPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Charging'
+            || ($transactionCalls[3]['direction'] ?? null) !== 'outgoing'
+            || ($periodicMeterPayload['triggerReason'] ?? null) !== 'MeterValuePeriodic')->toBeFalse('The plug-first flow should start a transaction, attach its accepted RFID token, and send its configured periodic sample.');
 
         [$unplugBody, $unplugHeaders] = request(
             "http://127.0.0.1:{$appPort}/api/outlet/unplug",
@@ -589,7 +635,21 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
                 return ($call[3]['evse']['id'] ?? null) === 2;
             },
         ));
-        $endedPayload = json_decode($finalTransactionCalls[3]['message'] ?? 'null', true);
+        $endedCall = null;
+        foreach ($finalTransactionCalls as $transactionCall) {
+            $payload = json_decode($transactionCall['message'], true);
+            if (($payload[3]['eventType'] ?? null) === 'Ended') {
+                $endedCall = $transactionCall;
+            }
+        }
+        $endedPayload = is_array($endedCall) ? json_decode($endedCall['message'], true) : [];
+        $periodicCalls = array_filter($finalTransactionCalls, static function (array $transactionCall): bool {
+            $payload = json_decode($transactionCall['message'], true);
+
+            return ($payload[3]['triggerReason'] ?? null) === 'MeterValuePeriodic';
+        });
+        $expectedEndedSequence = 3 + count($periodicCalls);
+        $expectedEndedMeterWh = 1000 + (100 * count($periodicCalls));
         $finalStatusCalls = array_values(array_filter(
             $unpluggedState['chargers'][0]['entries'] ?? [],
             static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing',
@@ -601,14 +661,14 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($unpluggedState['chargers'][0]['outlets'][1]['connector_status'] ?? null) !== 'Available'
             || ($unpluggedState['chargers'][0]['outlets'][1]['transaction_id'] ?? null) !== null
             || ($endedPayload[3]['eventType'] ?? null) !== 'Ended'
-            || ($endedPayload[3]['seqNo'] ?? null) !== 3
+            || ($endedPayload[3]['seqNo'] ?? null) !== $expectedEndedSequence
             || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
             || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
             || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null) !== 'Transaction.End'
             || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null) !== 'Energy.Active.Import.Register'
             || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['unitOfMeasure']['unit'] ?? null) !== 'Wh'
-            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== 1000
+            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== $expectedEndedMeterWh
             || ($availableStatusPayload[3]['connectorStatus'] ?? null) !== 'Available'
             || ($availableStatusPayload[3]['evseId'] ?? null) !== 2)->toBeFalse('Unplugging an outlet should end its transaction and restore Available status.');
         [, $duplicateUnplugHeaders] = request(
@@ -701,6 +761,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $authorizeCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Authorize'")->fetchColumn();
         $statusNotificationCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'StatusNotification'")->fetchColumn();
         $transactionEventCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'TransactionEvent'")->fetchColumn();
+        $periodicTransactionEventCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'TransactionEvent' AND message LIKE '%MeterValuePeriodic%'")->fetchColumn();
         $heartbeatCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'Heartbeat'")->fetchColumn();
         $serverCallCount = (int) $database->query("SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'GetVariables'")->fetchColumn();
         expect($charger['boot_status'] !== 'Accepted'
@@ -709,13 +770,14 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $bootCount !== 4
             || $authorizeCount !== 2
             || $statusNotificationCount !== 12
-            || $transactionEventCount !== 14
+            || $transactionEventCount !== 14 + (2 * $periodicTransactionEventCount)
             || $heartbeatCount < 2
             || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
                 'boot' => $bootCount,
                 'authorize' => $authorizeCount,
                 'status' => $statusNotificationCount,
                 'transaction' => $transactionEventCount,
+                'periodic_transaction' => $periodicTransactionEventCount,
                 'heartbeat' => $heartbeatCount,
                 'server' => $serverCallCount,
             ]));

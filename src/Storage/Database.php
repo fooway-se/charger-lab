@@ -33,6 +33,7 @@ final class Database
             self::migrateLogs($pdo);
             self::migrateCommands($pdo);
             self::migrateOutletSessions($pdo);
+            self::migrateDeviceModelSettings($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -242,6 +243,7 @@ final class Database
                 seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
                 meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
                 stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote'),
+                meter_updated_at TEXT,
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
                 CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
@@ -257,5 +259,21 @@ final class Database
         if (!in_array('stop_reason', $columns, true)) {
             $pdo->exec("ALTER TABLE outlet_session ADD COLUMN stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote')");
         }
+
+        if (!in_array('meter_updated_at', $columns, true)) {
+            $pdo->exec('ALTER TABLE outlet_session ADD COLUMN meter_updated_at TEXT');
+        }
+    }
+
+    private static function migrateDeviceModelSettings(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS device_model_setting (
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                variable TEXT NOT NULL CHECK (variable IN ('TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                value TEXT NOT NULL,
+                PRIMARY KEY (charger_id, variable)
+            )
+            SQL);
     }
 }
