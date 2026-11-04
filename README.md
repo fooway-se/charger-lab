@@ -14,7 +14,7 @@ Charger settings, the workspace CSMS default, and per-charger exchange logs pers
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 
-The GUI is static HTML/CSS/JavaScript. PHP serves the JSON API, connects to the CSMS with native streams, and stores state in SQLite. No Composer packages or external font assets are required.
+The GUI is static HTML/CSS/JavaScript. PHP serves the JSON API and queues OCPP actions in SQLite. A long-running PHP worker owns one open WebSocket session per charger and reuses it for later actions. The worker updates the displayed session status, recovers interrupted BootNotification requests after restart, and closes a station session when its card is removed. No Composer packages or external font assets are required.
 
 ## Tests
 
@@ -24,6 +24,7 @@ Run unit tests with PHP 8.5:
 php tests/BootNotificationExchangeTest.php
 php tests/OcppClientCallErrorTest.php
 php tests/OcppConnectionUrlTest.php
+php tests/OcppCommandQueueTest.php
 php tests/StoragePersistenceTest.php
 php tests/MultiChargerPersistenceTest.php
 php tests/MultiChargerMigrationTest.php

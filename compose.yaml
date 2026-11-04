@@ -12,6 +12,17 @@ services:
       - charger-data:/app/data
     depends_on:
       - fake-csms
+      - station-worker
+
+  station-worker:
+    build: .
+    command: ["php", "bin/station-worker.php"]
+    environment:
+      DATA_PATH: /app/data/emulator.sqlite
+    volumes:
+      - charger-data:/app/data
+    depends_on:
+      - fake-csms
 
   fake-csms:
     build: .

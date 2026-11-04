@@ -115,6 +115,17 @@ final class ChargerRepository
         $statement->execute(['status' => $status, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id]);
     }
 
+    public function setConnectionStatus(int $id, string $status): void
+    {
+        $statement = $this->database->prepare('UPDATE charger SET connection_status = :status, updated_at = :updated_at WHERE id = :id');
+        $statement->execute(['status' => $status, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id]);
+    }
+
+    public function resetConnectionStatuses(): void
+    {
+        $this->database->exec("UPDATE charger SET connection_status = 'Not connected'");
+    }
+
     public function delete(int $id): void
     {
         $statement = $this->database->prepare('DELETE FROM charger WHERE id = :id');

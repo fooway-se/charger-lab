@@ -7,14 +7,11 @@ namespace ChargerEmulator\Controller;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Http\Response;
-use ChargerEmulator\Protocol\OcppClient;
-use ChargerEmulator\Protocol\OcppConnectionUrl;
-use ChargerEmulator\Protocol\WebSocketConnection;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
+use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use InvalidArgumentException;
-use Throwable;
 
 /**
  * Coordinates station configuration, OCPP requests, and the local exchange log.
@@ -25,6 +22,7 @@ final class StationController
         private readonly ChargerRepository $chargers,
         private readonly ExchangeRepository $logs,
         private readonly WorkspaceSettingsRepository $settings,
+        private readonly OcppCommandRepository $commands,
     ) {
     }
 
@@ -117,6 +115,15 @@ final class StationController
             return Response::json(409, ['error' => 'Keep at least one charger in the workspace.']);
         }
 
+        $disconnectId = $this->commands->enqueue($id, 'Disconnect', []);
+        $disconnect = $this->commands->waitForCompletion($disconnectId);
+        if ($disconnect === null || in_array($disconnect['status'], ['pending', 'processing'], true)) {
+            return Response::json(504, ['error' => 'The station session worker did not respond in time.']);
+        }
+        if ($disconnect['status'] === 'failed') {
+            return Response::json(502, ['error' => $disconnect['error'] ?? 'The charger could not be disconnected.']);
+        }
+
         $this->chargers->delete($id);
 
         return Response::json(200, ['notice' => 'Charger removed.']);
@@ -149,30 +156,24 @@ final class StationController
             ]
             : ['idToken' => ['idToken' => $token, 'type' => 'ISO14443']];
 
-        try {
-            $client = new OcppClient(
-                new WebSocketConnection(OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity'])),
-                function (string $direction, string $message) use ($action, $id): void {
-                    $this->logs->record($id, $direction, $action, $message);
-                },
-            );
-            $result = $client->request($action, $payload);
-            if ($action === 'BootNotification') {
-                $this->chargers->setBootStatus($id, (string) ($result['status'] ?? 'Unknown response'));
-                $notice = 'BootNotification received: ' . (string) ($result['status'] ?? 'unknown') . '.';
-            } else {
-                $notice = 'RFID token response: ' . (string) ($result['idTokenInfo']['status'] ?? 'Unknown response') . '.';
-            }
-
-            return Response::json(200, ['notice' => $notice, 'result' => $result]);
-        } catch (Throwable $exception) {
-            $this->logs->record($id, 'system', $action, $exception->getMessage());
-            if ($action === 'BootNotification') {
-                $this->chargers->setBootStatus($id, 'Connection failed');
-            }
-
-            return Response::json(502, ['error' => $exception->getMessage()]);
+        $commandId = $this->commands->enqueue($id, $action, $payload);
+        $command = $this->commands->waitForCompletion($commandId);
+        if ($command === null || in_array($command['status'], ['pending', 'processing'], true)) {
+            return Response::json(504, ['error' => 'The station session worker did not respond in time.']);
         }
+
+        if ($command['status'] === 'failed') {
+            return Response::json(502, ['error' => $command['error'] ?? 'The OCPP request failed.']);
+        }
+
+        $result = is_array($command['result']) ? $command['result'] : [];
+        if ($action === 'BootNotification') {
+            $notice = 'BootNotification received: ' . (string) ($result['status'] ?? 'unknown') . '.';
+        } else {
+            $notice = 'RFID token response: ' . (string) ($result['idTokenInfo']['status'] ?? 'Unknown response') . '.';
+        }
+
+        return Response::json(200, ['notice' => $notice, 'result' => $result]);
     }
 
     /**

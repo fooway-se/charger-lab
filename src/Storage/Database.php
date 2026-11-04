@@ -31,6 +31,7 @@ final class Database
             $csmsModeAdded = self::migrateChargers($pdo);
             self::migrateWorkspaceSettings($pdo, $csmsModeAdded);
             self::migrateLogs($pdo);
+            self::migrateCommands($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -57,6 +58,7 @@ final class Database
                 outlet_count INTEGER NOT NULL DEFAULT 1 CHECK (outlet_count BETWEEN 1 AND 16),
                 outlet_topology TEXT NOT NULL DEFAULT 'independent' CHECK (outlet_topology IN ('independent', 'shared')),
                 uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
+                connection_status TEXT NOT NULL DEFAULT 'Not connected',
                 boot_status TEXT NOT NULL DEFAULT 'Not connected',
                 updated_at TEXT NOT NULL
             )
@@ -76,6 +78,10 @@ final class Database
             $pdo->exec('ALTER TABLE charger ADD COLUMN uses_default_csms INTEGER NOT NULL DEFAULT 1');
         }
 
+        if (!in_array('connection_status', $columns, true)) {
+            $pdo->exec("ALTER TABLE charger ADD COLUMN connection_status TEXT NOT NULL DEFAULT 'Not connected'");
+        }
+
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'charger'")->fetchColumn();
         if (is_string($schema) && preg_match('/CHECK\s*\(\s*id\s*=\s*1\s*\)/i', $schema) === 1) {
             $pdo->exec(<<<'SQL'
@@ -89,11 +95,12 @@ final class Database
                     outlet_count INTEGER NOT NULL DEFAULT 1 CHECK (outlet_count BETWEEN 1 AND 16),
                     outlet_topology TEXT NOT NULL DEFAULT 'independent' CHECK (outlet_topology IN ('independent', 'shared')),
                     uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
+                    connection_status TEXT NOT NULL DEFAULT 'Not connected',
                     boot_status TEXT NOT NULL DEFAULT 'Not connected',
                     updated_at TEXT NOT NULL
                 )
                 SQL);
-            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, boot_status, updated_at FROM charger');
+            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, connection_status, boot_status, updated_at FROM charger');
             $pdo->exec('DROP TABLE charger');
             $pdo->exec('ALTER TABLE charger_multi RENAME TO charger');
         }
@@ -172,5 +179,23 @@ final class Database
             $pdo->exec('DROP TABLE exchange_log');
             $pdo->exec('ALTER TABLE exchange_log_multi RENAME TO exchange_log');
         }
+    }
+
+    private static function migrateCommands(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS ocpp_command (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect')),
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+                result TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT
+            )
+            SQL);
+        $pdo->exec('CREATE INDEX IF NOT EXISTS ocpp_command_pending ON ocpp_command (status, id)');
     }
 }

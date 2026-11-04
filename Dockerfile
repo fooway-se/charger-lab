@@ -1,7 +1,7 @@
 FROM php:8.5-cli-alpine
 
 RUN apk add --no-cache sqlite-dev \
-    && docker-php-ext-install pdo_sqlite
+    && docker-php-ext-install pcntl pdo_sqlite
 
 WORKDIR /app
 COPY . .

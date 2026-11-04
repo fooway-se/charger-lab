@@ -12,10 +12,16 @@ $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
     'PATH' => (string) getenv('PATH'),
     'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
 ]);
+$worker = null;
 $app = null;
 
 try {
     waitUntilAvailable($fakeCsmsPort);
+    $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'DATA_PATH' => $databasePath,
+    ]);
+    waitUntilDatabaseReady($databasePath);
     $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
         'PATH' => (string) getenv('PATH'),
         'DATA_PATH' => $databasePath,
@@ -86,6 +92,7 @@ try {
     $secondCharger = $state['chargers'][1] ?? [];
     if (count($state['chargers'] ?? []) !== 2
         || ($charger['boot_status'] ?? null) !== 'Accepted'
+        || ($charger['connection_status'] ?? null) !== 'Connected'
         || count($charger['entries'] ?? []) !== 2
         || ($charger['entries'][0]['action'] ?? null) !== 'BootNotification'
         || ($charger['entries'][1]['action'] ?? null) !== 'BootNotification'
@@ -120,7 +127,7 @@ try {
     $authorizeResponse = is_string($authorizeBody) ? json_decode($authorizeBody, true, flags: JSON_THROW_ON_ERROR) : [];
     if (!str_contains($authorizeHeaders[0] ?? '', '200')
         || ($authorizeResponse['result']['idTokenInfo']['status'] ?? null) !== 'Accepted') {
-        throw new RuntimeException('The RFID token form should send Authorize and show its Accepted response.');
+        throw new RuntimeException('The RFID token form should send Authorize and show its Accepted response; received ' . ($authorizeHeaders[0] ?? 'no HTTP status') . ' ' . (string) $authorizeBody);
     }
 
     [$updatedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
@@ -149,6 +156,33 @@ try {
         || ($overrideState['chargers'][0]['csms_url'] ?? null) !== $overrideEndpoint
         || ($overrideState['chargers'][1]['csms_url'] ?? null) !== $updatedWorkspaceUrl) {
         throw new RuntimeException('Changing the workspace default should leave a charger override unchanged.');
+    }
+
+    request(
+        "http://127.0.0.1:{$appPort}/api/settings/csms",
+        'POST',
+        json_encode(['default_csms_url' => $overrideEndpoint], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [$secondBootBody, $secondBootHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/boot",
+        'POST',
+        json_encode([
+            'charger_id' => $secondChargerId,
+            'uses_default_csms' => true,
+            'station_identity' => 'DemoCharger 2',
+            'vendor_name' => 'Local Emulator',
+            'model' => 'Developer Charger',
+            'serial_number' => 'DEMO-002',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    $secondBootResult = is_string($secondBootBody) ? json_decode($secondBootBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    if (!str_contains($secondBootHeaders[0] ?? '', '200')
+        || ($secondBootResult['result']['status'] ?? null) !== 'Accepted') {
+        throw new RuntimeException('The session worker should keep multiple charger connections active against the fake CSMS.');
     }
 
     $sharedTopology = json_encode([
@@ -188,8 +222,11 @@ try {
             break;
         }
     }
-    if (!str_contains($fakeCsmsOutput, 'GET /ocpp/UiIntegrationCharger HTTP/1.1')) {
-        throw new RuntimeException('The OCPP-J handshake should append the charger identity to the configured endpoint.');
+    if (substr_count($fakeCsmsOutput, 'GET /ocpp/UiIntegrationCharger HTTP/1.1') !== 1) {
+        throw new RuntimeException('BootNotification and Authorize should reuse one open OCPP-J session for the charger.');
+    }
+    if (!str_contains($fakeCsmsOutput, 'GET /ocpp/DemoCharger%202 HTTP/1.1')) {
+        throw new RuntimeException('The fake CSMS should accept simultaneous station sessions with distinct identities.');
     }
 
     $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
@@ -198,14 +235,38 @@ try {
     if ($charger['boot_status'] !== 'Accepted'
         || (int) $charger['outlet_count'] !== 2
         || $charger['outlet_topology'] !== 'shared'
-        || $messageCount !== 4) {
+        || $messageCount !== 6) {
         throw new RuntimeException('The accepted status, topology, and both OCPP exchanges should persist in SQLite.');
+    }
+
+    [$deleteBody, $deleteHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/charger/delete",
+        'POST',
+        json_encode(['charger_id' => $chargerId], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [$remainingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $remainingState = is_string($remainingStateBody) ? json_decode($remainingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
+        if ($process === $fakeCsms) {
+            $fakeCsmsOutput .= stream_get_contents($pipes[1]);
+            break;
+        }
+    }
+    if (!str_contains($deleteHeaders[0] ?? '', '200')
+        || count($remainingState['chargers'] ?? []) !== 1
+        || ($remainingState['chargers'][0]['id'] ?? null) !== $secondChargerId
+        || !str_contains($fakeCsmsOutput, 'Disconnected GET /ocpp/UiIntegrationCharger HTTP/1.1')) {
+        throw new RuntimeException('Removing a charger should close its persistent session and preserve the other station.');
     }
 
     echo "Local UI BootNotification flow: PASS\n";
 } finally {
     if (is_resource($app)) {
         stopProcess($app);
+    }
+    if (is_resource($worker)) {
+        stopProcess($worker);
     }
     stopProcess($fakeCsms);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
@@ -253,6 +314,27 @@ function waitUntilAvailable(int $port): void
     }
 
     throw new RuntimeException("Service on port {$port} did not start.");
+}
+
+function waitUntilDatabaseReady(string $databasePath): void
+{
+    $deadline = microtime(true) + 4;
+    while (microtime(true) < $deadline) {
+        if (is_file($databasePath)) {
+            try {
+                $database = new PDO('sqlite:' . $databasePath);
+                $ready = $database->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
+                if ($ready !== false) {
+                    return;
+                }
+            } catch (Throwable) {
+            }
+        }
+
+        usleep(20_000);
+    }
+
+    throw new RuntimeException('The station session worker did not initialize its command queue.');
 }
 
 function request(string $url, string $method = 'GET', string $content = '', string $contentType = 'application/x-www-form-urlencoded'): array

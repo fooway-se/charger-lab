@@ -15,13 +15,32 @@ if (!is_resource($server)) {
 fwrite(STDOUT, "Fake CSMS listening on 0.0.0.0:{$port} (ocpp2.0.1)\n");
 
 while ($client = @stream_socket_accept($server, -1)) {
-    stream_set_timeout($client, 30);
+    if (function_exists('pcntl_fork')) {
+        $processId = pcntl_fork();
+        if ($processId > 0) {
+            fclose($client);
+            while (pcntl_waitpid(-1, $status, WNOHANG) > 0) {
+            }
+
+            continue;
+        }
+
+        if ($processId === 0) {
+            fclose($server);
+        }
+    }
+
+    stream_set_timeout($client, 86_400);
     try {
         serveClient($client);
     } catch (Throwable $exception) {
         fwrite(STDERR, 'Fake CSMS client error: ' . $exception->getMessage() . "\n");
     } finally {
         fclose($client);
+    }
+
+    if (function_exists('pcntl_fork') && $processId === 0) {
+        exit(0);
     }
 }
 
@@ -58,6 +77,7 @@ function serveClient($client): void
     while (true) {
         $frame = readFrame($client);
         if ($frame === null) {
+            fwrite(STDOUT, 'Disconnected ' . trim($requestLine) . "\n");
             return;
         }
 

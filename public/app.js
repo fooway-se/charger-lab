@@ -157,11 +157,14 @@ function renderCharger(charger) {
     workspace.querySelector('[data-role="station-identity"]').textContent = charger.station_identity;
     workspace.querySelector('[data-role="vendor-name"]').textContent = charger.vendor_name;
     workspace.querySelector('[data-role="model-name"]').textContent = charger.model;
-    workspace.querySelector('[data-role="boot-status-text"]').textContent = charger.boot_status;
+    const connectionStatus = charger.connection_status;
+    workspace.querySelector('[data-role="boot-status-text"]').textContent = connectionStatus === 'Connected'
+        ? `Connected · Boot ${charger.boot_status}`
+        : connectionStatus;
     const status = workspace.querySelector('[data-role="boot-status"]');
-    status.classList.toggle('status-online', charger.boot_status === 'Accepted');
-    status.classList.toggle('status-error', charger.boot_status === 'Connection failed');
-    status.classList.toggle('status-idle', charger.boot_status !== 'Accepted' && charger.boot_status !== 'Connection failed');
+    status.classList.toggle('status-online', connectionStatus === 'Connected');
+    status.classList.toggle('status-error', connectionStatus === 'Connection failed');
+    status.classList.toggle('status-idle', connectionStatus === 'Not connected');
     renderOutlets(workspace, charger.outlets, charger.outlet_topology);
     renderLog(workspace, charger.entries);
 

@@ -12,6 +12,7 @@ use ChargerEmulator\Http\Router;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
+use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 require __DIR__ . '/../src/autoload.php';
@@ -28,6 +29,7 @@ try {
         new ChargerRepository($database),
         new ExchangeRepository($database),
         new WorkspaceSettingsRepository($database),
+        new OcppCommandRepository($database),
     );
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);
