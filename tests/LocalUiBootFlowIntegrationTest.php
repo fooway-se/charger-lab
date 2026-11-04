@@ -455,6 +455,10 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($startedPayload[3]['eventType'] ?? null) !== 'Started'
             || ($startedPayload[3]['triggerReason'] ?? null) !== 'CablePluggedIn'
             || ($startedPayload[3]['seqNo'] ?? null) !== 0
+            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null) !== 'Transaction.Begin'
+            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null) !== 'Energy.Active.Import.Register'
+            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['unitOfMeasure']['unit'] ?? null) !== 'Wh'
+            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== 0
             || ($startedPayload[3]['evse']['id'] ?? null) !== 2
             || ($startedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($startedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'EVConnected'
@@ -498,6 +502,10 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
             || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
+            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null) !== 'Transaction.End'
+            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null) !== 'Energy.Active.Import.Register'
+            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['unitOfMeasure']['unit'] ?? null) !== 'Wh'
+            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== 1000
             || ($availableStatusPayload[3]['connectorStatus'] ?? null) !== 'Available'
             || ($availableStatusPayload[3]['evseId'] ?? null) !== 2)->toBeFalse('Unplugging an outlet should end its transaction and restore Available status.');
         [, $duplicateUnplugHeaders] = request(

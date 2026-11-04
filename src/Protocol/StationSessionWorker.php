@@ -18,6 +18,8 @@ use Throwable;
  */
 final class StationSessionWorker
 {
+    private const SIMULATED_SESSION_ENERGY_WH = 1000;
+
     /**
      * @var array<int, array{connection:WebSocketConnection,url:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float}>
      */
@@ -290,12 +292,14 @@ final class StationSessionWorker
         }
 
         $transactionId = $this->chargers->nextTransactionId($chargerId);
+        $meterWh = $session['meter_wh'];
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
         $this->createClient($chargerId)->request('TransactionEvent', [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'CablePluggedIn',
             'seqNo' => 0,
+            'meterValue' => $this->meterValue($meterWh, 'Transaction.Begin'),
             'transactionInfo' => ['transactionId' => $transactionId, 'chargingState' => 'EVConnected'],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
         ]);
@@ -318,11 +322,13 @@ final class StationSessionWorker
         }
 
         $sequence = $session['seq_no'] + 1;
+        $meterWh = $session['meter_wh'] + self::SIMULATED_SESSION_ENERGY_WH;
         $this->createClient($chargerId)->request('TransactionEvent', [
             'eventType' => 'Ended',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'EVCommunicationLost',
             'seqNo' => $sequence,
+            'meterValue' => $this->meterValue($meterWh, 'Transaction.End'),
             'transactionInfo' => [
                 'transactionId' => $session['transaction_id'],
                 'chargingState' => 'Idle',
@@ -330,7 +336,7 @@ final class StationSessionWorker
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
         ]);
-        $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id']);
+        $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id'], $meterWh);
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
 
         return ['status' => 'Unplugged'];
@@ -389,6 +395,22 @@ final class StationSessionWorker
             'evseId' => $evseId,
             'connectorId' => $connectorId,
         ]);
+    }
+
+    /**
+     * @return list<array{timestamp:string,sampledValue:list<array{value:int,context:string,measurand:string,unitOfMeasure:array{unit:string}}>}>
+     */
+    private function meterValue(int $meterWh, string $context): array
+    {
+        return [[
+            'timestamp' => gmdate(DATE_ATOM),
+            'sampledValue' => [[
+                'value' => $meterWh,
+                'context' => $context,
+                'measurand' => 'Energy.Active.Import.Register',
+                'unitOfMeasure' => ['unit' => 'Wh'],
+            ]],
+        ]];
     }
 
     /**
