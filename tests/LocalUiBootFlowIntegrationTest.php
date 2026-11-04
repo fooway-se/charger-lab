@@ -555,7 +555,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         expect(count($remoteStartEntries) !== 1
             || ($remoteStartPayload[3]['eventType'] ?? null) !== 'Started'
             || ($remoteStartPayload[3]['transactionInfo']['remoteStartId'] ?? null) !== 42
-            || ($remoteStartPayload[3]['idToken']['idToken'] ?? null) !== 'REMOTE-42')->toBeFalse('An accepted remote start should produce a correlated Started TransactionEvent.');
+            || ($remoteStartPayload[3]['idToken']['idToken'] ?? null) !== 'REMOTE-42'
+            || isset($remoteStartPayload[3]['meterValue']))->toBeFalse('An accepted remote start should produce a correlated Started TransactionEvent without disabled start meter data.');
         $remoteStopEntries = array_values(array_filter(
             $updatedCharger['entries'] ?? [],
             static function (array $entry): bool {
@@ -599,10 +600,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($startedPayload[3]['eventType'] ?? null) !== 'Started'
             || ($startedPayload[3]['triggerReason'] ?? null) !== 'CablePluggedIn'
             || ($startedPayload[3]['seqNo'] ?? null) !== 0
-            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null) !== 'Transaction.Begin'
-            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null) !== 'Energy.Active.Import.Register'
-            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['unitOfMeasure']['unit'] ?? null) !== 'Wh'
-            || ($startedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== 0
+            || isset($startedPayload[3]['meterValue'])
             || ($startedPayload[3]['evse']['id'] ?? null) !== 2
             || ($startedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($startedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'EVConnected'

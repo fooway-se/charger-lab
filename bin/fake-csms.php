@@ -210,6 +210,10 @@ function serveClient($client): void
                         'component' => ['name' => 'SampledDataCtrlr'],
                         'variable' => ['name' => 'TxUpdatedMeasurands'],
                         'attributeValue' => 'Energy.Active.Import.Register',
+                    ], [
+                        'component' => ['name' => 'SampledDataCtrlr'],
+                        'variable' => ['name' => 'TxStartedMeasurands'],
+                        'attributeValue' => '',
                     ]],
                 ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 writeFrame($client, 0x1, $meterSettingsCall);

@@ -15,6 +15,7 @@ final class DeviceModelSettingsRepository
     private const DEFAULTS = [
         'TxUpdatedInterval' => '0',
         'TxUpdatedMeasurands' => 'Energy.Active.Import.Register',
+        'TxStartedMeasurands' => 'Energy.Active.Import.Register',
     ];
 
     public function __construct(private readonly PDO $database)

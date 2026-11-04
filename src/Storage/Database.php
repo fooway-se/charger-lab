@@ -267,13 +267,27 @@ final class Database
 
     private static function migrateDeviceModelSettings(PDO $pdo): void
     {
+        $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
+        if ($schema !== false && str_contains((string) $schema, "'TxStartedMeasurands'")) {
+            return;
+        }
+
+        if ($schema !== false) {
+            $pdo->exec('ALTER TABLE device_model_setting RENAME TO device_model_setting_legacy');
+        }
+
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )
             SQL);
+
+        if ($schema !== false) {
+            $pdo->exec('INSERT INTO device_model_setting (charger_id, variable, value) SELECT charger_id, variable, value FROM device_model_setting_legacy');
+            $pdo->exec('DROP TABLE device_model_setting_legacy');
+        }
     }
 }

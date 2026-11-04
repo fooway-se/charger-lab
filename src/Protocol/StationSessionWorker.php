@@ -336,15 +336,20 @@ final class StationSessionWorker
         $transactionId = $this->chargers->nextTransactionId($chargerId);
         $meterWh = $session['meter_wh'];
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
-        $this->createClient($chargerId)->request('TransactionEvent', [
+        $transactionEvent = [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'CablePluggedIn',
             'seqNo' => 0,
-            'meterValue' => $this->meterValue($meterWh, 'Transaction.Begin'),
             'transactionInfo' => ['transactionId' => $transactionId, 'chargingState' => 'EVConnected'],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
-        ]);
+        ];
+        $meterValue = $this->transactionBeginMeterValue($chargerId, $meterWh);
+        if ($meterValue !== null) {
+            $transactionEvent['meterValue'] = $meterValue;
+        }
+
+        $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
 
         return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
@@ -368,12 +373,11 @@ final class StationSessionWorker
 
         $transactionId = $this->chargers->nextTransactionId($chargerId);
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
-        $result = $this->createClient($chargerId)->request('TransactionEvent', [
+        $transactionEvent = [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'RemoteStart',
             'seqNo' => 0,
-            'meterValue' => $this->meterValue($session['meter_wh'], 'Transaction.Begin'),
             'transactionInfo' => [
                 'transactionId' => $transactionId,
                 'chargingState' => 'Charging',
@@ -381,7 +385,13 @@ final class StationSessionWorker
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
             'idToken' => $idToken,
-        ]);
+        ];
+        $meterValue = $this->transactionBeginMeterValue($chargerId, $session['meter_wh']);
+        if ($meterValue !== null) {
+            $transactionEvent['meterValue'] = $meterValue;
+        }
+
+        $result = $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
         if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
             throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
         }
@@ -523,6 +533,18 @@ final class StationSessionWorker
             'evseId' => $evseId,
             'connectorId' => $connectorId,
         ]);
+    }
+
+    /**
+     * @return list<array{timestamp:string,sampledValue:list<array{value:int,context:string,measurand:string,unitOfMeasure:array{unit:string}}>}>|null
+     */
+    private function transactionBeginMeterValue(int $chargerId, int $meterWh): ?array
+    {
+        if ($this->deviceModelSettings->get($chargerId, 'TxStartedMeasurands') !== 'Energy.Active.Import.Register') {
+            return null;
+        }
+
+        return $this->meterValue($meterWh, 'Transaction.Begin');
     }
 
     /**
