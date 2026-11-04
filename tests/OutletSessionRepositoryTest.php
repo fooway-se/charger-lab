@@ -29,6 +29,86 @@ it('keeps a remote start pending until a vehicle plugs in and exposes expired st
         ->and($sessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM, time() + 31)))->toBe([]);
 });
 
+it('persists local RFID stop state only for the matching active transaction token', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->markOccupied($chargerId, 1, 1, 'local-stop-tx');
+    $sessions->attachToken($chargerId, 1, 1, 'local-stop-tx', 'TAG-1', 1);
+
+    expect(fn () => $sessions->markLocalStopRequested($chargerId, 1, 1, 'local-stop-tx', 'OTHER-TAG', 2))
+        ->toThrow(RuntimeException::class, 'active outlet transaction changed');
+
+    $sessions->markLocalStopRequested($chargerId, 1, 1, 'local-stop-tx', 'TAG-1', 2);
+    $stopped = $sessions->find($chargerId, 1, 1);
+
+    expect($stopped['connector_status'])->toBe('Occupied')
+        ->and($stopped['transaction_id'])->toBe('local-stop-tx')
+        ->and($stopped['seq_no'])->toBe(2)
+        ->and($stopped['stop_reason'])->toBe('Local')
+        ->and($stopped['id_token'])->toBe('TAG-1');
+});
+
+it('migrates active outlet sessions to allow persisted local RFID stops', function (): void {
+    $directory = sys_get_temp_dir() . '/charger-local-stop-migration-' . bin2hex(random_bytes(6));
+    mkdir($directory);
+    $databasePath = $directory . '/emulator.sqlite';
+    $database = Database::connect($databasePath);
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    unset($database);
+
+    $legacyDatabase = new PDO('sqlite:' . $databasePath);
+    $legacyDatabase->exec('DROP TABLE outlet_session');
+    $legacyDatabase->exec(<<<'SQL'
+        CREATE TABLE outlet_session (
+            charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+            evse_id INTEGER NOT NULL CHECK (evse_id > 0),
+            connector_id INTEGER NOT NULL CHECK (connector_id > 0),
+            connector_status TEXT NOT NULL CHECK (connector_status IN ('Available', 'Occupied')),
+            transaction_id TEXT,
+            id_token TEXT,
+            seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
+            meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
+            stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote'),
+            meter_updated_at TEXT,
+            meter_ended_at TEXT,
+            meter_end_samples TEXT NOT NULL DEFAULT '[]',
+            remote_start_deadline TEXT,
+            PRIMARY KEY (charger_id, evse_id, connector_id),
+            UNIQUE (charger_id, transaction_id),
+            CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
+                OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL))
+        )
+        SQL);
+    $legacyDatabase->prepare(<<<'SQL'
+        INSERT INTO outlet_session (
+            charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
+            seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
+            meter_end_samples, remote_start_deadline
+        ) VALUES (:charger_id, 1, 1, 'Occupied', 'legacy-local-stop-tx', 'TAG-2', 1, 10, NULL,
+            '2026-11-05T00:00:00+00:00', NULL, '[]', NULL)
+        SQL)->execute(['charger_id' => $chargerId]);
+    unset($legacyDatabase);
+
+    $database = Database::connect($databasePath);
+    $sessions = new OutletSessionRepository($database);
+    $session = $sessions->find($chargerId, 1, 1);
+    $sessions->markLocalStopRequested($chargerId, 1, 1, 'legacy-local-stop-tx', 'TAG-2', 2);
+
+    expect($session['transaction_id'])->toBe('legacy-local-stop-tx')
+        ->and($sessions->find($chargerId, 1, 1)['stop_reason'])->toBe('Local');
+
+    unset($sessions, $database);
+    foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+
+    rmdir($directory);
+});
+
 it('keeps an outlet meter register across completed sessions and database reopen', function (): void {
     $directory = sys_get_temp_dir() . '/charger-meter-' . bin2hex(random_bytes(6));
     $databasePath = $directory . '/emulator.sqlite';

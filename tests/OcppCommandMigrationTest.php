@@ -51,14 +51,20 @@ it('migrates queued OCPP commands safely', function (): void {
     $plugCommandId = $commands->enqueue((int) $charger['id'], 'PlugIn', ['evseId' => 1, 'connectorId' => 1]);
 
     $plugCommand = $commands->get($plugCommandId);
+    $localStopCommandId = $commands->enqueue((int) $charger['id'], 'LocalStop', [
+        'idToken' => ['idToken' => 'OLD', 'type' => 'ISO14443'],
+    ]);
+    $localStopCommand = $commands->get($localStopCommandId);
 
     $schema = (string) $database->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
 
     expect(!str_contains($schema, "'PlugIn'")
+        || !str_contains($schema, "'LocalStop'")
         || ($legacyCommand['action'] ?? null) !== 'Authorize'
         || ($legacyCommand['result']['idTokenInfo']['status'] ?? null) !== 'Accepted'
         || ($plugCommand['action'] ?? null) !== 'PlugIn'
-        || ($plugCommand['payload']['evseId'] ?? null) !== 1)->toBeFalse('The command migration should preserve existing results and admit outlet simulation actions.');
+        || ($plugCommand['payload']['evseId'] ?? null) !== 1
+        || ($localStopCommand['action'] ?? null) !== 'LocalStop')->toBeFalse('The command migration should preserve existing results and admit outlet simulation actions.');
 
     unset($commands, $database);
 

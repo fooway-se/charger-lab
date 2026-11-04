@@ -226,7 +226,9 @@ final class Database
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
         $needsMigration = is_string($schema)
-            && (!str_contains($schema, "'RemoteStart'") || !str_contains($schema, "'RemoteStop'"));
+            && (!str_contains($schema, "'RemoteStart'")
+                || !str_contains($schema, "'RemoteStop'")
+                || !str_contains($schema, "'LocalStop'"));
         if ($needsMigration) {
             $pdo->exec('DROP INDEX IF EXISTS ocpp_command_pending');
             $pdo->exec('ALTER TABLE ocpp_command RENAME TO ocpp_command_legacy');
@@ -236,7 +238,7 @@ final class Database
             CREATE TABLE IF NOT EXISTS ocpp_command (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart', 'RemoteStop')),
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart', 'RemoteStop', 'LocalStop')),
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
                 result TEXT,
@@ -259,6 +261,11 @@ final class Database
 
     private static function migrateOutletSessions(PDO $pdo): void
     {
+        $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'outlet_session'")->fetchColumn();
+        $needsLocalStopMigration = is_string($schema)
+            && str_contains($schema, "stop_reason = 'Remote'")
+            && !str_contains($schema, "'Local'");
+
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS outlet_session (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
@@ -269,7 +276,7 @@ final class Database
                 id_token TEXT,
                 seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
                 meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
-                stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote'),
+                stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason IN ('Remote', 'Local')),
                 meter_updated_at TEXT,
                 meter_ended_at TEXT,
                 meter_end_samples TEXT NOT NULL DEFAULT '[]',
@@ -287,7 +294,7 @@ final class Database
         }
 
         if (!in_array('stop_reason', $columns, true)) {
-            $pdo->exec("ALTER TABLE outlet_session ADD COLUMN stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason = 'Remote')");
+            $pdo->exec("ALTER TABLE outlet_session ADD COLUMN stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason IN ('Remote', 'Local'))");
         }
 
         if (!in_array('meter_updated_at', $columns, true)) {
@@ -304,6 +311,43 @@ final class Database
 
         if (!in_array('remote_start_deadline', $columns, true)) {
             $pdo->exec('ALTER TABLE outlet_session ADD COLUMN remote_start_deadline TEXT');
+        }
+
+        if ($needsLocalStopMigration) {
+            $pdo->exec('ALTER TABLE outlet_session RENAME TO outlet_session_legacy');
+            $pdo->exec(<<<'SQL'
+                CREATE TABLE outlet_session (
+                    charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                    evse_id INTEGER NOT NULL CHECK (evse_id > 0),
+                    connector_id INTEGER NOT NULL CHECK (connector_id > 0),
+                    connector_status TEXT NOT NULL CHECK (connector_status IN ('Available', 'Occupied')),
+                    transaction_id TEXT,
+                    id_token TEXT,
+                    seq_no INTEGER NOT NULL DEFAULT 0 CHECK (seq_no >= 0),
+                    meter_wh INTEGER NOT NULL DEFAULT 0 CHECK (meter_wh >= 0),
+                    stop_reason TEXT CHECK (stop_reason IS NULL OR stop_reason IN ('Remote', 'Local')),
+                    meter_updated_at TEXT,
+                    meter_ended_at TEXT,
+                    meter_end_samples TEXT NOT NULL DEFAULT '[]',
+                    remote_start_deadline TEXT,
+                    PRIMARY KEY (charger_id, evse_id, connector_id),
+                    UNIQUE (charger_id, transaction_id),
+                    CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
+                        OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL))
+                )
+                SQL);
+            $pdo->exec(<<<'SQL'
+                INSERT INTO outlet_session (
+                    charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
+                    seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
+                    meter_end_samples, remote_start_deadline
+                )
+                SELECT charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
+                    seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
+                    meter_end_samples, remote_start_deadline
+                FROM outlet_session_legacy
+                SQL);
+            $pdo->exec('DROP TABLE outlet_session_legacy');
         }
     }
 

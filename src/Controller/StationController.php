@@ -308,12 +308,18 @@ final class StationController
                 if ($outletState === null || $outletState['connector_status'] !== 'Occupied' || $outletState['transaction_id'] === null) {
                     return Response::json(409, ['error' => 'Plug in a vehicle on the selected outlet before presenting a token.']);
                 }
+
+                if ($outletState['id_token'] === $token
+                    && !$outletState['remote_start_pending']
+                    && $outletState['stop_reason'] === null) {
+                    $action = 'LocalStop';
+                }
             }
         } catch (InvalidArgumentException $exception) {
             return Response::json(422, ['error' => $exception->getMessage()]);
         }
 
-        if ($action === 'Authorize' && trim((string) $token) === '') {
+        if (in_array($action, ['Authorize', 'LocalStop'], true) && trim((string) $token) === '') {
             return Response::json(422, ['error' => 'Enter an RFID token to present.']);
         }
 
@@ -345,6 +351,8 @@ final class StationController
         $result = is_array($command['result']) ? $command['result'] : [];
         if ($action === 'BootNotification') {
             $notice = 'BootNotification received: ' . (string) ($result['status'] ?? 'unknown') . '.';
+        } elseif ($action === 'LocalStop') {
+            $notice = 'Local RFID stop requested.';
         } else {
             $notice = 'RFID token response: ' . (string) ($result['idTokenInfo']['status'] ?? 'Unknown response') . '.';
         }

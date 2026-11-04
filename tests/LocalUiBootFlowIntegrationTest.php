@@ -719,6 +719,45 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($transactionCalls[3]['direction'] ?? null) !== 'outgoing'
             || ($periodicMeterPayload['triggerReason'] ?? null) !== 'MeterValuePeriodic')->toBeFalse('The plug-first flow should start a transaction, attach its accepted RFID token, and send its configured periodic sample.');
 
+        [$localStopBody, $localStopHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            $authorizePayload,
+            'application/json',
+        );
+        $localStopResponse = is_string($localStopBody) ? json_decode($localStopBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        [$localStopStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $localStopState = is_string($localStopStateBody) ? json_decode($localStopStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $localStopCharger = $localStopState['chargers'][0] ?? [];
+        $localStopOutlet = $localStopCharger['outlets'][1] ?? [];
+        $localStopAuthorizes = array_values(array_filter(
+            $localStopCharger['entries'] ?? [],
+            static fn (array $entry): bool => ($entry['action'] ?? null) === 'Authorize'
+                && ($entry['direction'] ?? null) === 'outgoing',
+        ));
+        $localStopEvents = array_values(array_filter(
+            $localStopCharger['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['triggerReason'] ?? null) === 'StopAuthorized';
+            },
+        ));
+        $localStopCall = json_decode($localStopEvents[0]['message'] ?? 'null', true);
+        expect(!str_contains($localStopHeaders[0] ?? '', '200')
+            || ($localStopResponse['result']['status'] ?? null) !== 'LocalStopRequested'
+            || count($localStopAuthorizes) !== 1
+            || count($localStopEvents) !== 1
+            || ($localStopCall[3]['eventType'] ?? null) !== 'Updated'
+            || ($localStopCall[3]['idToken']['idToken'] ?? null) !== '04A1B2C3D4'
+            || ($localStopOutlet['connector_status'] ?? null) !== 'Occupied'
+            || ($localStopOutlet['transaction_id'] ?? null) !== $pluggedOutlet['transaction_id']
+            || ($localStopOutlet['is_charging'] ?? true))->toBeFalse('Presenting the same RFID during charging should stop energy without re-authorizing or ending the session before unplug.');
+
         [$unplugBody, $unplugHeaders] = request(
             "http://127.0.0.1:{$appPort}/api/outlet/unplug",
             'POST',
@@ -760,7 +799,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $endedRegisterSamples = array_filter($endedMeterValues, static function (array $meterValue): bool {
             return ($meterValue['sampledValue'][0]['context'] ?? null) === 'Transaction.End';
         });
-        $expectedEndedSequence = 3 + count($periodicCalls);
+        $expectedEndedSequence = 4 + count($periodicCalls);
         $expectedEndedMeterWh = 1000 + (100 * (count($periodicCalls) + count($endedIntervalSamples)));
         $unplugDatabase = new PDO('sqlite:' . $databasePath);
         $persistedMeterWh = (int) $unplugDatabase->query(
@@ -919,7 +958,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $bootCount !== 4
             || $authorizeCount !== 2
             || $statusNotificationCount !== 12
-            || $transactionEventCount !== 20 + (2 * $periodicTransactionEventCount)
+            || $transactionEventCount !== 22 + (2 * $periodicTransactionEventCount)
             || $heartbeatCount < 2
             || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
                 'boot' => $bootCount,

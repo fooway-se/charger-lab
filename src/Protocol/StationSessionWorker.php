@@ -72,6 +72,13 @@ final class StationSessionWorker
                 throw new RuntimeException('The requested charger no longer exists.');
             }
 
+            if ($command['action'] === 'LocalStop') {
+                $result = $this->localStop($chargerId, $command['payload']);
+                $this->commands->complete($command['id'], $result);
+
+                return true;
+            }
+
             if ($command['action'] === 'Disconnect') {
                 unset($this->sessions[$chargerId]);
                 $this->chargers->setConnectionStatus($chargerId, 'Not connected');
@@ -770,6 +777,57 @@ final class StationSessionWorker
         $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
 
         return ['status' => 'Unplugged'];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array{status:string}
+     */
+    private function localStop(int $chargerId, array $payload): array
+    {
+        $outlet = $payload['_outlet'] ?? null;
+        if (!is_array($outlet) || !is_int($outlet['evse_id'] ?? null) || !is_int($outlet['connector_id'] ?? null)) {
+            throw new RuntimeException('The local RFID stop does not identify a valid outlet.');
+        }
+
+        $evseId = $outlet['evse_id'];
+        $connectorId = $outlet['connector_id'];
+        $idToken = $payload['idToken'] ?? null;
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if (!is_array($idToken) || !is_string($idToken['idToken'] ?? null)
+            || $session === null || $session['connector_status'] !== 'Occupied'
+            || $session['transaction_id'] === null || $session['remote_start_pending']
+            || $session['stop_reason'] !== null || $session['id_token'] !== $idToken['idToken']) {
+            throw new RuntimeException('The presented RFID does not match an active transaction that can be stopped.');
+        }
+
+        $sequence = $session['seq_no'] + 1;
+        $transactionEvent = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'StopAuthorized',
+            'seqNo' => $sequence,
+            'transactionInfo' => [
+                'transactionId' => $session['transaction_id'],
+                'chargingState' => 'EVConnected',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+            'idToken' => $idToken,
+        ];
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
+        $this->outletSessions->markLocalStopRequested(
+            $chargerId,
+            $evseId,
+            $connectorId,
+            $session['transaction_id'],
+            $idToken['idToken'],
+            $sequence,
+        );
+        if (($this->sessions[$chargerId]['connection'] ?? null) instanceof WebSocketConnection) {
+            $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+        }
+
+        return ['status' => 'LocalStopRequested'];
     }
 
     /**
