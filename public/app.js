@@ -143,12 +143,16 @@ function renderOutlets(workspace, outlets, topology) {
 function renderCharger(charger) {
     const workspace = chargerTemplate.content.firstElementChild.cloneNode(true);
     workspace.dataset.chargerId = String(charger.id);
+    const configForm = workspace.querySelector('[data-action="save"]');
     for (const [name, value] of Object.entries(charger)) {
-        const field = workspace.querySelector(`[name="${name}"]`);
+        const field = configForm.elements.namedItem(name);
         if (field) {
             field.value = value;
         }
     }
+    const usesDefaultCsms = configForm.elements.namedItem('uses_default_csms');
+    usesDefaultCsms.checked = charger.uses_default_csms;
+    configForm.elements.namedItem('csms_url').disabled = usesDefaultCsms.checked;
 
     workspace.querySelector('[data-role="station-identity"]').textContent = charger.station_identity;
     workspace.querySelector('[data-role="vendor-name"]').textContent = charger.vendor_name;
@@ -165,6 +169,7 @@ function renderCharger(charger) {
 }
 
 function renderState(state) {
+    document.querySelector('#workspace-csms-form').elements.namedItem('default_csms_url').value = state.settings.default_csms_url;
     chargerList.replaceChildren(...state.chargers.map(renderCharger));
     document.querySelector('#charger-count').textContent = String(state.chargers.length).padStart(2, '0');
 }
@@ -186,7 +191,11 @@ chargerList.addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
         if (form.dataset.action === 'save') {
-            await postAction('/api/charger', { ...formValues(form), charger_id: chargerId });
+            await postAction('/api/charger', {
+                ...formValues(form),
+                charger_id: chargerId,
+                uses_default_csms: form.elements.namedItem('uses_default_csms').checked,
+            });
         } else if (form.dataset.action === 'authorize') {
             await postAction('/api/authorize', { rfid_token: formValues(form).rfid_token, charger_id: chargerId });
         }
@@ -194,6 +203,14 @@ chargerList.addEventListener('submit', async (event) => {
         await refreshState().catch(() => {});
         showNotice(error.message, true);
     }
+});
+
+chargerList.addEventListener('change', (event) => {
+    if (event.target.name !== 'uses_default_csms') {
+        return;
+    }
+
+    event.target.form.elements.namedItem('csms_url').disabled = event.target.checked;
 });
 
 chargerList.addEventListener('click', async (event) => {
@@ -207,7 +224,11 @@ chargerList.addEventListener('click', async (event) => {
     try {
         if (button.dataset.action === 'boot') {
             const form = workspace.querySelector('[data-action="save"]');
-            await postAction('/api/boot', { ...formValues(form), charger_id: chargerId });
+            await postAction('/api/boot', {
+                ...formValues(form),
+                charger_id: chargerId,
+                uses_default_csms: form.elements.namedItem('uses_default_csms').checked,
+            });
         } else if (button.dataset.action === 'clear-log') {
             await postAction('/api/log/clear', { charger_id: chargerId });
         } else if (button.dataset.action === 'delete') {
@@ -215,6 +236,15 @@ chargerList.addEventListener('click', async (event) => {
         }
     } catch (error) {
         await refreshState().catch(() => {});
+        showNotice(error.message, true);
+    }
+});
+
+document.querySelector('#workspace-csms-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+        await postAction('/api/settings/csms', formValues(event.currentTarget));
+    } catch (error) {
         showNotice(error.message, true);
     }
 });

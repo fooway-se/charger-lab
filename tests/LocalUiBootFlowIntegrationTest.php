@@ -7,6 +7,7 @@ mkdir($directory, 0775, true);
 $databasePath = $directory . '/emulator.sqlite';
 $fakeCsmsPort = findOpenPort();
 $appPort = findOpenPort();
+$overrideEndpoint = "ws://127.0.0.1:{$fakeCsmsPort}/ocpp";
 $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
     'PATH' => (string) getenv('PATH'),
     'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
@@ -40,10 +41,27 @@ try {
         throw new RuntimeException('The local app should create an additional independent charger.');
     }
 
+    $workspaceUrl = 'wss://workspace-csms.example/ocpp';
+    [$settingsBody, $settingsHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/settings/csms",
+        'POST',
+        json_encode(['default_csms_url' => $workspaceUrl], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [$inheritedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $inheritedState = is_string($inheritedStateBody) ? json_decode($inheritedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    if (!str_contains($settingsHeaders[0] ?? '', '200')
+        || ($inheritedState['settings']['default_csms_url'] ?? null) !== $workspaceUrl
+        || ($inheritedState['chargers'][0]['csms_url'] ?? null) !== $workspaceUrl
+        || ($inheritedState['chargers'][1]['csms_url'] ?? null) !== $workspaceUrl) {
+        throw new RuntimeException('Changing the workspace CSMS default should update every charger that inherits it.');
+    }
+
     $payload = json_encode([
         'charger_id' => $chargerId,
+        'uses_default_csms' => false,
         'station_identity' => 'UiIntegrationCharger',
-        'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
+        'csms_url' => $overrideEndpoint,
         'vendor_name' => 'UI Test Vendor',
         'model' => 'UI Test Model',
         'serial_number' => 'UI-001',
@@ -52,7 +70,7 @@ try {
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     [$body, $headers] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $payload, 'application/json');
     if (!str_contains($headers[0] ?? '', '200') || !is_string($body)) {
-        throw new RuntimeException('The BootNotification API should return an accepted CSMS response.');
+        throw new RuntimeException('The BootNotification API should return an accepted CSMS response; received ' . ($headers[0] ?? 'no HTTP status') . ' ' . (string) $body);
     }
     $bootResponse = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
     if (($bootResponse['notice'] ?? null) !== 'BootNotification received: Accepted.') {
@@ -75,14 +93,17 @@ try {
         || ($charger['outlets'][0]['connector_id'] ?? null) !== 1
         || ($charger['outlets'][1]['evse_id'] ?? null) !== 2
         || ($charger['outlets'][1]['connector_id'] ?? null) !== 1
-        || count($secondCharger['entries'] ?? []) !== 0) {
+        || count($secondCharger['entries'] ?? []) !== 0
+        || ($secondCharger['csms_url'] ?? null) !== $workspaceUrl
+        || ($charger['csms_url'] ?? null) !== $overrideEndpoint) {
         throw new RuntimeException('The local UI state should expose two independent EVSEs and the BootNotification log.');
     }
 
     $authorizePayload = json_encode([
         'charger_id' => $chargerId,
+        'uses_default_csms' => false,
         'station_identity' => 'UiIntegrationCharger',
-        'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
+        'csms_url' => $overrideEndpoint,
         'vendor_name' => 'UI Test Vendor',
         'model' => 'UI Test Model',
         'serial_number' => 'UI-001',
@@ -115,10 +136,26 @@ try {
         throw new RuntimeException('The local log should persist the presented RFID token as an ISO14443 Authorize call.');
     }
 
+    $updatedWorkspaceUrl = 'wss://second-workspace-csms.example/ocpp';
+    [$updatedSettingsBody, $updatedSettingsHeaders] = request(
+        "http://127.0.0.1:{$appPort}/api/settings/csms",
+        'POST',
+        json_encode(['default_csms_url' => $updatedWorkspaceUrl], JSON_THROW_ON_ERROR),
+        'application/json',
+    );
+    [$overrideStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+    $overrideState = is_string($overrideStateBody) ? json_decode($overrideStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+    if (!str_contains($updatedSettingsHeaders[0] ?? '', '200')
+        || ($overrideState['chargers'][0]['csms_url'] ?? null) !== $overrideEndpoint
+        || ($overrideState['chargers'][1]['csms_url'] ?? null) !== $updatedWorkspaceUrl) {
+        throw new RuntimeException('Changing the workspace default should leave a charger override unchanged.');
+    }
+
     $sharedTopology = json_encode([
         'charger_id' => $chargerId,
+        'uses_default_csms' => false,
         'station_identity' => 'UiIntegrationCharger',
-        'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp/UiIntegrationCharger",
+        'csms_url' => $overrideEndpoint,
         'vendor_name' => 'UI Test Vendor',
         'model' => 'UI Test Model',
         'serial_number' => 'UI-001',
@@ -142,6 +179,17 @@ try {
         || ($sharedCharger['outlets'][1]['evse_id'] ?? null) !== 1
         || ($sharedCharger['outlets'][1]['connector_id'] ?? null) !== 2) {
         throw new RuntimeException('Shared outlets should resolve to connector IDs 1 and 2 on EVSE 1.');
+    }
+
+    $fakeCsmsOutput = '';
+    foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
+        if ($process === $fakeCsms) {
+            $fakeCsmsOutput = stream_get_contents($pipes[1]);
+            break;
+        }
+    }
+    if (!str_contains($fakeCsmsOutput, 'GET /ocpp/UiIntegrationCharger HTTP/1.1')) {
+        throw new RuntimeException('The OCPP-J handshake should append the charger identity to the configured endpoint.');
     }
 
     $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);

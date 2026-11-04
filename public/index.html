@@ -19,6 +19,10 @@
         <div class="session-label"><span class="session-icon">◉</span> PRIVATE LOCAL SESSION</div>
     </section>
     <div id="notice" class="notice" role="status" hidden></div>
+    <section class="workspace-settings">
+        <div><span class="section-kicker">WORKSPACE DEFAULT</span><h2>CSMS connection</h2><p>Chargers inherit this endpoint unless you set an override on a card. Station identity is appended when connecting.</p></div>
+        <form id="workspace-csms-form"><label>Default OCPP-J endpoint URL<input name="default_csms_url" spellcheck="false" required></label><button class="button button-quiet" type="submit">Save workspace URL</button></form>
+    </section>
     <section class="station-column">
         <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging stations <span id="charger-count" class="count-pill">00</span></h2></div><button id="add-charger" class="button button-primary" type="button">＋ Add charger</button></div>
         <div id="charger-list" class="charger-list"></div>
@@ -39,7 +43,8 @@
             <form data-action="save" class="config-form">
                 <div class="form-heading"><span>STATION CONFIGURATION</span><span class="saved-hint">Saved in local SQLite</span></div>
                 <label>Station identity<input name="station_identity" required></label>
-                <label>CSMS WebSocket URL<input name="csms_url" spellcheck="false" required><small>Use the bundled fake CSMS or enter your own ws:// or wss:// endpoint.</small></label>
+                <label class="default-switch"><input name="uses_default_csms" type="checkbox">Use workspace CSMS URL</label>
+                <label>OCPP-J endpoint override<input name="csms_url" spellcheck="false" required><small>Station identity is appended when connecting.</small></label>
                 <div class="form-row"><label>Vendor<input name="vendor_name" required></label><label>Model<input name="model" required></label></div>
                 <div class="form-row"><label>Number of outlets<input name="outlet_count" type="number" min="1" max="16" required></label><label>Outlet topology<select name="outlet_topology" required><option value="independent">Independent EVSEs</option><option value="shared">Shared EVSE</option></select><small data-role="topology-hint"></small></label></div>
                 <label>Serial number <span class="optional">OPTIONAL</span><input name="serial_number"></label>

@@ -12,6 +12,7 @@ use ChargerEmulator\Http\Router;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
+use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 require __DIR__ . '/../src/autoload.php';
 
@@ -23,9 +24,14 @@ try {
 
 try {
     $database = Database::connect(getenv('DATA_PATH') ?: dirname(__DIR__) . '/data/emulator.sqlite');
-    $controller = new StationController(new ChargerRepository($database), new ExchangeRepository($database));
+    $controller = new StationController(
+        new ChargerRepository($database),
+        new ExchangeRepository($database),
+        new WorkspaceSettingsRepository($database),
+    );
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);
+    $router->add('POST', '/api/settings/csms', [$controller, 'saveWorkspaceSettings']);
     $router->add('POST', '/api/charger/create', [$controller, 'create']);
     $router->add('POST', '/api/charger', [$controller, 'save']);
     $router->add('POST', '/api/charger/delete', [$controller, 'delete']);

@@ -8,9 +8,11 @@ use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Http\Response;
 use ChargerEmulator\Protocol\OcppClient;
+use ChargerEmulator\Protocol\OcppConnectionUrl;
 use ChargerEmulator\Protocol\WebSocketConnection;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
+use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use InvalidArgumentException;
 use Throwable;
 
@@ -22,19 +24,42 @@ final class StationController
     public function __construct(
         private readonly ChargerRepository $chargers,
         private readonly ExchangeRepository $logs,
+        private readonly WorkspaceSettingsRepository $settings,
     ) {
     }
 
     public function state(Request $request): Response
     {
+        $defaultCsmsUrl = $this->settings->getCsmsUrl();
         $chargers = [];
         foreach ($this->chargers->all() as $charger) {
+            $charger['uses_default_csms'] = (bool) $charger['uses_default_csms'];
+            if ($charger['uses_default_csms']) {
+                $charger['csms_url'] = $defaultCsmsUrl;
+            }
             $charger['outlets'] = (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets();
             $charger['entries'] = $this->logs->recent((int) $charger['id']);
             $chargers[] = $charger;
         }
 
-        return Response::json(200, ['chargers' => $chargers]);
+        return Response::json(200, [
+            'settings' => ['default_csms_url' => $defaultCsmsUrl],
+            'chargers' => $chargers,
+        ]);
+    }
+
+    public function saveWorkspaceSettings(Request $request): Response
+    {
+        try {
+            $url = $this->requiredString($request->body(), 'default_csms_url');
+            $this->validateCsmsUrl($url);
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
+
+        $this->settings->saveCsmsUrl($url);
+
+        return Response::json(200, ['notice' => 'Workspace CSMS URL saved.', 'default_csms_url' => $url]);
     }
 
     public function create(Request $request): Response
@@ -126,7 +151,7 @@ final class StationController
 
         try {
             $client = new OcppClient(
-                new WebSocketConnection($charger['csms_url']),
+                new WebSocketConnection(OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity'])),
                 function (string $direction, string $message) use ($action, $id): void {
                     $this->logs->record($id, $direction, $action, $message);
                 },
@@ -152,7 +177,7 @@ final class StationController
 
     /**
      * @param array<string, mixed> $input
-     * @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string}
+     * @return array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
      */
     private function validatedCharger(int $id, array $input): array
     {
@@ -169,7 +194,12 @@ final class StationController
             'serial_number' => $this->stringValue($input, 'serial_number', $current['serial_number']),
             'outlet_count' => $this->integerValue($input, 'outlet_count', (int) $current['outlet_count']),
             'outlet_topology' => $this->stringValue($input, 'outlet_topology', $current['outlet_topology']),
+            'uses_default_csms' => $this->booleanValue($input, 'uses_default_csms', (bool) $current['uses_default_csms']),
         ];
+
+        $charger['csms_url'] = $charger['uses_default_csms']
+            ? $this->settings->getCsmsUrl()
+            : $this->stringValue($input, 'csms_url', $current['csms_url']);
 
         if ($charger['station_identity'] === '' || $charger['vendor_name'] === '' || $charger['model'] === '') {
             throw new InvalidArgumentException('Station identity, vendor, and model are required.');
@@ -179,10 +209,7 @@ final class StationController
             throw new InvalidArgumentException('Each charger needs a unique station identity.');
         }
 
-        $parts = parse_url($charger['csms_url']);
-        if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
-            throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
-        }
+        $this->validateCsmsUrl($charger['csms_url']);
 
         new OutletMap($charger['outlet_count'], $charger['outlet_topology']);
 
@@ -248,5 +275,35 @@ final class StationController
         }
 
         return trim($input[$key]);
+    }
+
+    /**
+     * @param array<string, mixed> $input
+     */
+    private function booleanValue(array $input, string $key, bool $fallback): bool
+    {
+        if (!array_key_exists($key, $input)) {
+            return $fallback;
+        }
+
+        if (is_bool($input[$key])) {
+            return $input[$key];
+        }
+        if (is_string($input[$key]) && in_array(strtolower($input[$key]), ['1', 'true', 'on'], true)) {
+            return true;
+        }
+        if (is_string($input[$key]) && in_array(strtolower($input[$key]), ['0', 'false', 'off'], true)) {
+            return false;
+        }
+
+        throw new InvalidArgumentException("{$key} must be a boolean value.");
+    }
+
+    private function validateCsmsUrl(string $url): void
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
+            throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
+        }
     }
 }

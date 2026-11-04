@@ -12,7 +12,7 @@ $scriptPath = __DIR__ . '/../public/app.js';
 if (!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js" defer></script>')) {
     throw new RuntimeException('The GUI should be static HTML with a separate browser script.');
 }
-foreach (['name="outlet_count"', 'name="outlet_topology"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
+foreach (['name="outlet_count"', 'name="outlet_topology"', 'name="uses_default_csms"', 'id="workspace-csms-form"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
     if (!str_contains($html, $requiredElement)) {
         throw new RuntimeException("The GUI should expose configurable outlet topology: {$requiredElement}");
     }

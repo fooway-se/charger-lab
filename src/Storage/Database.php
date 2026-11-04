@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Storage;
 
+use ChargerEmulator\Protocol\OcppConnectionUrl;
 use PDO;
 
 /**
@@ -27,7 +28,8 @@ final class Database
         $pdo->beginTransaction();
 
         try {
-            self::migrateChargers($pdo);
+            $csmsModeAdded = self::migrateChargers($pdo);
+            self::migrateWorkspaceSettings($pdo, $csmsModeAdded);
             self::migrateLogs($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
@@ -42,7 +44,7 @@ final class Database
         return $pdo;
     }
 
-    private static function migrateChargers(PDO $pdo): void
+    private static function migrateChargers(PDO $pdo): bool
     {
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS charger (
@@ -54,6 +56,7 @@ final class Database
                 serial_number TEXT NOT NULL DEFAULT '',
                 outlet_count INTEGER NOT NULL DEFAULT 1 CHECK (outlet_count BETWEEN 1 AND 16),
                 outlet_topology TEXT NOT NULL DEFAULT 'independent' CHECK (outlet_topology IN ('independent', 'shared')),
+                uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
                 boot_status TEXT NOT NULL DEFAULT 'Not connected',
                 updated_at TEXT NOT NULL
             )
@@ -68,6 +71,11 @@ final class Database
             $pdo->exec("ALTER TABLE charger ADD COLUMN outlet_topology TEXT NOT NULL DEFAULT 'independent'");
         }
 
+        $csmsModeAdded = !in_array('uses_default_csms', $columns, true);
+        if ($csmsModeAdded) {
+            $pdo->exec('ALTER TABLE charger ADD COLUMN uses_default_csms INTEGER NOT NULL DEFAULT 1');
+        }
+
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'charger'")->fetchColumn();
         if (is_string($schema) && preg_match('/CHECK\s*\(\s*id\s*=\s*1\s*\)/i', $schema) === 1) {
             $pdo->exec(<<<'SQL'
@@ -80,13 +88,49 @@ final class Database
                     serial_number TEXT NOT NULL DEFAULT '',
                     outlet_count INTEGER NOT NULL DEFAULT 1 CHECK (outlet_count BETWEEN 1 AND 16),
                     outlet_topology TEXT NOT NULL DEFAULT 'independent' CHECK (outlet_topology IN ('independent', 'shared')),
+                    uses_default_csms INTEGER NOT NULL DEFAULT 1 CHECK (uses_default_csms IN (0, 1)),
                     boot_status TEXT NOT NULL DEFAULT 'Not connected',
                     updated_at TEXT NOT NULL
                 )
                 SQL);
-            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, boot_status, updated_at FROM charger');
+            $pdo->exec('INSERT INTO charger_multi SELECT id, station_identity, csms_url, vendor_name, model, serial_number, outlet_count, outlet_topology, uses_default_csms, boot_status, updated_at FROM charger');
             $pdo->exec('DROP TABLE charger');
             $pdo->exec('ALTER TABLE charger_multi RENAME TO charger');
+        }
+
+        return $csmsModeAdded;
+    }
+
+    private static function migrateWorkspaceSettings(PDO $pdo, bool $csmsModeAdded): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS workspace_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                default_csms_url TEXT NOT NULL
+            )
+            SQL);
+
+        $chargerRows = $pdo->query('SELECT station_identity, csms_url FROM charger ORDER BY id')->fetchAll();
+        $storedUrl = $pdo->query('SELECT default_csms_url FROM workspace_settings WHERE id = 1')->fetchColumn();
+        if ($storedUrl === false) {
+            $firstCharger = $chargerRows[0] ?? null;
+            $storedUrl = is_array($firstCharger)
+                ? OcppConnectionUrl::endpointFromConnectionUrl($firstCharger['csms_url'], $firstCharger['station_identity'])
+                : 'ws://fake-csms:9000/ocpp';
+            $statement = $pdo->prepare('INSERT INTO workspace_settings (id, default_csms_url) VALUES (1, :url)');
+            $statement->execute(['url' => $storedUrl]);
+        }
+
+        if ($csmsModeAdded) {
+            $statement = $pdo->prepare('UPDATE charger SET csms_url = :url, uses_default_csms = :uses_default WHERE station_identity = :identity');
+            foreach ($chargerRows as $charger) {
+                $endpointUrl = OcppConnectionUrl::endpointFromConnectionUrl($charger['csms_url'], $charger['station_identity']);
+                $statement->execute([
+                    'url' => $endpointUrl,
+                    'uses_default' => $endpointUrl === $storedUrl ? 1 : 0,
+                    'identity' => $charger['station_identity'],
+                ]);
+            }
         }
     }
 
