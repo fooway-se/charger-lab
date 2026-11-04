@@ -28,6 +28,15 @@
             <div><span class="section-kicker">WORKSPACE DEFAULT</span><h2>CSMS connection</h2><p>Chargers inherit this endpoint unless you set an override on a charger. Station identity is appended when connecting.</p></div>
             <form id="workspace-csms-form"><label>Default OCPP-J endpoint URL<input name="default_csms_url" spellcheck="false" required></label><button class="button button-quiet" type="submit">Save workspace URL</button></form>
         </section>
+        <section class="tls-settings">
+            <div><span class="section-kicker">TLS TRUST</span><h2>Certificate settings</h2><p>Use the URL host when its name matches the CSMS certificate. For Docker service routing, the TLS server name can differ from the service address.</p></div>
+            <form id="workspace-tls-form">
+                <label>TLS server name <span class="optional">OPTIONAL</span><input name="tls_server_name" spellcheck="false" placeholder="Uses the URL host when blank"><small>Must match a name on the CSMS certificate. For the local AllMeter certificate, use localhost.</small></label>
+                <label>Trusted CA certificate <span class="optional">OPTIONAL · PEM</span><textarea name="tls_ca_certificate" rows="6" maxlength="65536" spellcheck="false" placeholder="System trust store is used when blank"></textarea><small>Paste the root/intermediate CA PEM, or the self-signed CSMS certificate. A leaf certificate signed by a separate CA is not a trust root.</small></label>
+                <label class="default-switch"><input name="clear_tls_ca_certificate" type="checkbox" disabled>Clear saved CA certificate</label>
+                <button class="button button-quiet" type="submit">Save TLS settings</button>
+            </form>
+        </section>
         <section class="network-test-panel">
             <div><span class="section-kicker">NETWORK CHECK</span><h2>Test CSMS connection</h2><p>Opens a WebSocket and checks TLS, authentication, and the OCPP 2.0.1 subprotocol. It does not send BootNotification.</p><p class="network-help">In Docker, localhost means this container. For a CSMS in another Compose project, attach both app and station-worker to its network and use its service name and container port. For a host CSMS, use host.docker.internal. The TLS certificate must match the URL host and its CA must be trusted.</p></div>
             <form id="network-test-form">
@@ -77,8 +86,7 @@
             <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Plug in a vehicle first to attach the token to its transaction.</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><select name="outlet_number" aria-label="Occupied outlet"><option value="">Authorization only</option></select><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
         </article>
         <section class="log-column">
-            <div class="section-heading"><div><span class="section-kicker">LIVE INSPECTION</span><h2>Communication log <span data-role="log-count" class="count-pill">00</span></h2></div><button data-action="clear-log" class="text-button" type="button" hidden>Clear log</button></div>
-            <div class="log-card"><div class="log-toolbar"><div><span class="toolbar-dot"></span> EXCHANGE STREAM</div><span>NEWEST AT BOTTOM</span></div><div data-role="log-content"><div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect this station to start its OCPP exchange.</p><div class="empty-line"></div></div></div><div class="log-footer"><span><i></i> LOCAL LOGGING ACTIVE</span><span>OCPP-J · JSON</span></div></div>
+            <div class="log-card"><div class="log-toolbar"><div class="log-toolbar-info"><span><span class="toolbar-dot"></span> EXCHANGE STREAM</span><span data-role="log-count" class="count-pill">00</span></div><div class="log-toolbar-actions"><button data-action="clear-log" class="text-button" type="button" hidden>Clear log</button><span>NEWEST AT TOP</span></div></div><div class="log-content" data-role="log-content"><div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect this station to start its OCPP exchange.</p><div class="empty-line"></div></div></div><div class="log-footer"><span><i></i> LOCAL LOGGING ACTIVE</span><span>OCPP-J · JSON</span></div></div>
         </section>
     </div>
 </template>

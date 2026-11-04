@@ -34,6 +34,7 @@ final class StationController
     public function state(Request $request): Response
     {
         $defaultCsmsUrl = $this->settings->getCsmsUrl();
+        $tlsSettings = $this->settings->getTlsSettings();
         $chargers = [];
         foreach ($this->chargers->all() as $charger) {
             $charger['uses_default_csms'] = (bool) $charger['uses_default_csms'];
@@ -52,6 +53,13 @@ final class StationController
                 $state = $outletStates[$outlet['evse_id'] . ':' . $outlet['connector_id']] ?? null;
                 $outlet['connector_status'] = $state['connector_status'] ?? 'Available';
                 $outlet['transaction_id'] = $state['transaction_id'] ?? null;
+                $outlet['remote_start_pending'] = $state['remote_start_pending'] ?? false;
+                // Accepted tokens start simulated energy transfer unless the vehicle is still pending or a remote stop was requested.
+                $outlet['is_charging'] = $state !== null
+                    && $state['connector_status'] === 'Occupied'
+                    && $state['id_token'] !== null
+                    && $state['stop_reason'] === null
+                    && !$state['remote_start_pending'];
 
                 return $outlet;
             }, (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets());
@@ -60,7 +68,11 @@ final class StationController
         }
 
         return Response::json(200, [
-            'settings' => ['default_csms_url' => $defaultCsmsUrl],
+            'settings' => [
+                'default_csms_url' => $defaultCsmsUrl,
+                'tls_server_name' => $tlsSettings['tls_server_name'],
+                'has_tls_ca_certificate' => $tlsSettings['tls_ca_certificate'] !== '',
+            ],
             'chargers' => $chargers,
         ]);
     }
@@ -77,6 +89,46 @@ final class StationController
         $this->settings->saveCsmsUrl($url);
 
         return Response::json(200, ['notice' => 'Workspace CSMS URL saved.', 'default_csms_url' => $url]);
+    }
+
+    public function saveTlsSettings(Request $request): Response
+    {
+        try {
+            $input = $request->body();
+            $serverName = $input['tls_server_name'] ?? '';
+            if (!is_string($serverName)) {
+                throw new InvalidArgumentException('TLS server name must be a string.');
+            }
+            $serverName = trim($serverName);
+            $this->validateTlsServerName($serverName);
+
+            $current = $this->settings->getTlsSettings();
+            $clearCertificate = $this->booleanValue($input, 'clear_tls_ca_certificate', false);
+            $certificate = $clearCertificate ? '' : ($input['tls_ca_certificate'] ?? '');
+            if (!is_string($certificate)) {
+                throw new InvalidArgumentException('TLS CA certificate must be a PEM string.');
+            }
+            if ($certificate === '' && !$clearCertificate) {
+                $certificate = $current['tls_ca_certificate'];
+            }
+            if (strlen($certificate) > 65_536) {
+                throw new InvalidArgumentException('TLS CA certificate must be 64 KiB or smaller.');
+            }
+            if ($certificate !== '' && (!str_contains($certificate, '-----BEGIN CERTIFICATE-----')
+                || @openssl_x509_read($certificate) === false)) {
+                throw new InvalidArgumentException('TLS CA certificate must contain a valid PEM X.509 certificate.');
+            }
+        } catch (InvalidArgumentException $exception) {
+            return Response::json(422, ['error' => $exception->getMessage()]);
+        }
+
+        $this->settings->saveTlsSettings($serverName, $certificate);
+
+        return Response::json(200, [
+            'notice' => 'TLS trust settings saved.',
+            'tls_server_name' => $serverName,
+            'has_tls_ca_certificate' => $certificate !== '',
+        ]);
     }
 
     public function testConnection(Request $request): Response
@@ -100,6 +152,7 @@ final class StationController
         $endpoint = (bool) $charger['uses_default_csms']
             ? $this->settings->getCsmsUrl()
             : $charger['csms_url'];
+        $tlsSettings = $this->settings->getTlsSettings();
 
         try {
             $connectionUrl = OcppConnectionUrl::fromEndpoint($endpoint, $charger['station_identity']);
@@ -108,6 +161,8 @@ final class StationController
                 timeoutSeconds: 5,
                 username: $charger['station_identity'],
                 password: $charger['csms_password'],
+                tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
+                tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
             );
             unset($connection);
         } catch (Throwable $exception) {
@@ -324,10 +379,13 @@ final class StationController
             }
 
             $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);
-            if ($action === 'PlugIn' && ($outletState === null || $outletState['connector_status'] !== 'Available')) {
+            if ($action === 'PlugIn' && ($outletState === null
+                || ($outletState['connector_status'] !== 'Available' && !$outletState['remote_start_pending']))) {
                 return Response::json(409, ['error' => 'The selected outlet is not available for a vehicle.']);
             }
-            if ($action === 'Unplug' && ($outletState === null || $outletState['connector_status'] !== 'Occupied')) {
+            if ($action === 'Unplug' && ($outletState === null
+                || $outletState['connector_status'] !== 'Occupied'
+                || $outletState['remote_start_pending'])) {
                 return Response::json(409, ['error' => 'The selected outlet has no vehicle to unplug.']);
             }
         } catch (InvalidArgumentException $exception) {
@@ -522,6 +580,19 @@ final class StationController
         $parts = parse_url($url);
         if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
             throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
+        }
+    }
+
+    private function validateTlsServerName(string $serverName): void
+    {
+        if ($serverName === '') {
+            return;
+        }
+
+        if (strlen($serverName) > 253
+            || (filter_var($serverName, FILTER_VALIDATE_IP) === false
+                && preg_match('/^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/D', $serverName) !== 1)) {
+            throw new InvalidArgumentException('TLS server name must be a hostname or IP address.');
         }
     }
 }

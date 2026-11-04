@@ -135,6 +135,10 @@ final class DeviceModel
             };
         }
 
+        if ($componentName === 'TxCtrlr' && $variableName === 'EVConnectionTimeOut') {
+            return $this->settings->get($this->chargerId, $variableName);
+        }
+
         if ($componentName === 'SampledDataCtrlr') {
             return $this->settings->get($this->chargerId, $variableName);
         }
@@ -219,7 +223,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr'], true)) {
+        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'TxCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -258,6 +262,10 @@ final class DeviceModel
             return in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
         }
 
+        if (($component['name'] ?? null) === 'TxCtrlr') {
+            return ($variable['name'] ?? null) === 'EVConnectionTimeOut';
+        }
+
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
             && in_array($variable['name'] ?? null, [
                 'MessageAttemptsTransactionEvent',
@@ -283,10 +291,11 @@ final class DeviceModel
             'RetryBackOffRandomRange',
             'RetryBackOffRepeatTimes',
             'HeartbeatInterval',
+            'EVConnectionTimeOut',
         ], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
                 && filter_var($value, FILTER_VALIDATE_INT) !== false
-                && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval'], true) || (int) $value > 0);
+                && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'EVConnectionTimeOut'], true) || (int) $value > 0);
         }
 
         if (!in_array($variable, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {

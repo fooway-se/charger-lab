@@ -9,6 +9,31 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
+it('exposes the EV connection timeout used for remote starts', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
+
+    $get = $deviceModel->handle('GetVariables', [
+        'getVariableData' => [[
+            'component' => ['name' => 'TxCtrlr'],
+            'variable' => ['name' => 'EVConnectionTimeOut'],
+        ]],
+    ]);
+    $set = $deviceModel->handle('SetVariables', [
+        'setVariableData' => [[
+            'component' => ['name' => 'TxCtrlr'],
+            'variable' => ['name' => 'EVConnectionTimeOut'],
+            'attributeValue' => '45',
+        ]],
+    ]);
+
+    expect($get['getVariableResult'][0]['attributeValue'] ?? null)->toBe('30')
+        ->and($set['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted');
+});
+
 it('reads and persists supported transaction meter sampling settings', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();

@@ -144,9 +144,19 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS workspace_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
-                default_csms_url TEXT NOT NULL
+                default_csms_url TEXT NOT NULL,
+                tls_server_name TEXT NOT NULL DEFAULT '',
+                tls_ca_certificate TEXT NOT NULL DEFAULT ''
             )
             SQL);
+
+        $columns = array_column($pdo->query('PRAGMA table_info(workspace_settings)')->fetchAll(), 'name');
+        if (!in_array('tls_server_name', $columns, true)) {
+            $pdo->exec("ALTER TABLE workspace_settings ADD COLUMN tls_server_name TEXT NOT NULL DEFAULT ''");
+        }
+        if (!in_array('tls_ca_certificate', $columns, true)) {
+            $pdo->exec("ALTER TABLE workspace_settings ADD COLUMN tls_ca_certificate TEXT NOT NULL DEFAULT ''");
+        }
 
         $chargerRows = $pdo->query('SELECT station_identity, csms_url FROM charger ORDER BY id')->fetchAll();
         $storedUrl = $pdo->query('SELECT default_csms_url FROM workspace_settings WHERE id = 1')->fetchColumn();
@@ -263,6 +273,7 @@ final class Database
                 meter_updated_at TEXT,
                 meter_ended_at TEXT,
                 meter_end_samples TEXT NOT NULL DEFAULT '[]',
+                remote_start_deadline TEXT,
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
                 CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
@@ -290,12 +301,16 @@ final class Database
         if (!in_array('meter_end_samples', $columns, true)) {
             $pdo->exec("ALTER TABLE outlet_session ADD COLUMN meter_end_samples TEXT NOT NULL DEFAULT '[]'");
         }
+
+        if (!in_array('remote_start_deadline', $columns, true)) {
+            $pdo->exec('ALTER TABLE outlet_session ADD COLUMN remote_start_deadline TEXT');
+        }
     }
 
     private static function migrateDeviceModelSettings(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
-        if ($schema !== false && str_contains((string) $schema, "'HeartbeatInterval'")) {
+        if ($schema !== false && str_contains((string) $schema, "'EVConnectionTimeOut'")) {
             return;
         }
 
@@ -306,7 +321,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('HeartbeatInterval', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )

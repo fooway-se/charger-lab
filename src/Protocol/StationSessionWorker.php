@@ -15,6 +15,7 @@ use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
+use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use RuntimeException;
 use Throwable;
 
@@ -27,7 +28,7 @@ final class StationSessionWorker
     private const SIMULATED_PERIODIC_ENERGY_WH = 100;
 
     /**
-     * @var array<int, array{connection:?WebSocketConnection,url:string,username:string,password:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
+     * @var array<int, array{connection:?WebSocketConnection,url:string,username:string,password:string,tls_server_name:string,tls_ca_certificate:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
      */
     private array $sessions = [];
 
@@ -38,6 +39,7 @@ final class StationSessionWorker
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $deviceModelSettings,
         private readonly TransactionEventOutboxRepository $transactionEvents,
+        private readonly WorkspaceSettingsRepository $workspaceSettings,
     ) {
     }
 
@@ -79,9 +81,12 @@ final class StationSessionWorker
             }
 
             $connectionUrl = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
+            $tlsSettings = $this->workspaceSettings->getTlsSettings();
             if (!isset($this->sessions[$chargerId]) || $this->sessions[$chargerId]['url'] !== $connectionUrl
                 || $this->sessions[$chargerId]['username'] !== $charger['station_identity']
                 || $this->sessions[$chargerId]['password'] !== $charger['csms_password']
+                || $this->sessions[$chargerId]['tls_server_name'] !== $tlsSettings['tls_server_name']
+                || $this->sessions[$chargerId]['tls_ca_certificate'] !== $tlsSettings['tls_ca_certificate']
                 || $this->sessions[$chargerId]['connection'] === null) {
                 unset($this->sessions[$chargerId]);
                 if ($command['action'] !== 'BootNotification') {
@@ -93,10 +98,14 @@ final class StationSessionWorker
                         $connectionUrl,
                         username: $charger['station_identity'],
                         password: $charger['csms_password'],
+                        tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
+                        tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
                     ),
                     'url' => $connectionUrl,
                     'username' => $charger['station_identity'],
                     'password' => $charger['csms_password'],
+                    'tls_server_name' => $tlsSettings['tls_server_name'],
+                    'tls_ca_certificate' => $tlsSettings['tls_ca_certificate'],
                     'heartbeat_interval' => 300,
                     'next_heartbeat_at' => null,
                     'boot_payload' => [],
@@ -220,10 +229,15 @@ final class StationSessionWorker
                     }
                     $this->sessions[$chargerId]['username'] = $charger['station_identity'];
                     $this->sessions[$chargerId]['password'] = $charger['csms_password'];
+                    $tlsSettings = $this->workspaceSettings->getTlsSettings();
+                    $this->sessions[$chargerId]['tls_server_name'] = $tlsSettings['tls_server_name'];
+                    $this->sessions[$chargerId]['tls_ca_certificate'] = $tlsSettings['tls_ca_certificate'];
                     $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
                         $session['url'],
                         username: $charger['station_identity'],
                         password: $charger['csms_password'],
+                        tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
+                        tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
                     );
                     $this->sessions[$chargerId]['reconnect_attempt'] = 0;
                     $this->sessions[$chargerId]['next_reconnect_at'] = null;
@@ -255,6 +269,10 @@ final class StationSessionWorker
                         throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
                     }
 
+                    return true;
+                }
+
+                if ($this->expireRemoteStart($chargerId)) {
                     return true;
                 }
 
@@ -307,12 +325,15 @@ final class StationSessionWorker
 
             $chargerId = (int) $charger['id'];
             $url = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
+            $tlsSettings = $this->workspaceSettings->getTlsSettings();
             $this->transactionEvents->markPendingOffline($chargerId);
             $this->sessions[$chargerId] = [
                 'connection' => null,
                 'url' => $url,
                 'username' => $charger['station_identity'],
                 'password' => $charger['csms_password'],
+                'tls_server_name' => $tlsSettings['tls_server_name'],
+                'tls_ca_certificate' => $tlsSettings['tls_ca_certificate'],
                 'heartbeat_interval' => $this->deviceModelSettingInt($chargerId, 'HeartbeatInterval', 300, 1),
                 'next_heartbeat_at' => null,
                 'boot_payload' => [],
@@ -457,6 +478,10 @@ final class StationSessionWorker
         $evseId = $this->requiredOutletId($payload, 'evseId');
         $connectorId = $this->requiredOutletId($payload, 'connectorId');
         $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        if ($session !== null && $session['remote_start_pending']) {
+            return $this->connectRemoteStartedVehicle($chargerId, $session);
+        }
+
         if ($session === null || $session['connector_status'] !== 'Available') {
             throw new RuntimeException('The selected outlet is not available.');
         }
@@ -501,6 +526,16 @@ final class StationSessionWorker
         }
 
         $transactionId = $this->chargers->nextTransactionId($chargerId);
+        $connectionTimeout = $this->deviceModelSettingInt($chargerId, 'EVConnectionTimeOut', 30, 1);
+        $deadline = gmdate(DATE_ATOM, time() + $connectionTimeout);
+        $this->outletSessions->beginRemoteStart(
+            $chargerId,
+            $evseId,
+            $connectorId,
+            $transactionId,
+            $idToken['idToken'],
+            $deadline,
+        );
         $transactionEvent = [
             'eventType' => 'Started',
             'timestamp' => gmdate(DATE_ATOM),
@@ -508,7 +543,6 @@ final class StationSessionWorker
             'seqNo' => 0,
             'transactionInfo' => [
                 'transactionId' => $transactionId,
-                'chargingState' => 'Charging',
                 'remoteStartId' => $remoteStartId,
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
@@ -520,23 +554,108 @@ final class StationSessionWorker
         }
 
         $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
-        $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
-        $this->outletSessions->attachToken(
-            $chargerId,
-            $evseId,
-            $connectorId,
-            $transactionId,
-            $idToken['idToken'],
-            0,
-        );
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
         $result = $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
         if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
             $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $transactionId, $session['meter_wh']);
+            $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
             throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
         }
 
-        return ['status' => 'Started', 'transactionId' => $transactionId];
+        return ['status' => 'AwaitingVehicle', 'transactionId' => $transactionId];
+    }
+
+    /**
+     * @param array<string, mixed> $session
+     * @return array{status:string,transactionId:string}
+     */
+    private function connectRemoteStartedVehicle(int $chargerId, array $session): array
+    {
+        $transactionId = $session['transaction_id'];
+        if (!is_string($transactionId) || $transactionId === '') {
+            throw new RuntimeException('The remote-start transaction is missing its transaction ID.');
+        }
+
+        $evseId = $session['evse_id'];
+        $connectorId = $session['connector_id'];
+        $connectedSequence = $session['seq_no'] + 1;
+        $connectedEvent = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'CablePluggedIn',
+            'seqNo' => $connectedSequence,
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => 'EVConnected',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ];
+        $queuedConnectedEvent = $this->queueTransactionEvent($chargerId, $connectedEvent);
+        $this->outletSessions->markRemoteStartConnected(
+            $chargerId,
+            $evseId,
+            $connectorId,
+            $transactionId,
+            $connectedSequence,
+        );
+        $this->deliverTransactionEventsThrough($chargerId, $queuedConnectedEvent['id']);
+
+        $chargingSequence = $connectedSequence + 1;
+        $chargingEvent = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'ChargingStateChanged',
+            'seqNo' => $chargingSequence,
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => 'Charging',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ];
+        $queuedChargingEvent = $this->queueTransactionEvent($chargerId, $chargingEvent);
+        $this->outletSessions->updateSequence($chargerId, $evseId, $connectorId, $transactionId, $chargingSequence);
+        $this->deliverTransactionEventsThrough($chargerId, $queuedChargingEvent['id']);
+
+        return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
+    }
+
+    private function expireRemoteStart(int $chargerId): bool
+    {
+        $dueSessions = $this->outletSessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM));
+        if ($dueSessions === []) {
+            return false;
+        }
+
+        $session = $dueSessions[0];
+        $endedSequence = $session['seq_no'] + 1;
+        $event = [
+            'eventType' => 'Ended',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'TimeLimitReached',
+            'seqNo' => $endedSequence,
+            'transactionInfo' => [
+                'transactionId' => $session['transaction_id'],
+                'stoppedReason' => 'Timeout',
+            ],
+            'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+        ];
+        $meterValue = $this->transactionEndMeterValue($chargerId, $session['meter_wh']);
+        if ($meterValue !== null) {
+            $event['meterValue'] = $meterValue;
+        }
+
+        $queuedEvent = $this->queueTransactionEvent($chargerId, $event);
+        $this->outletSessions->markAvailable(
+            $chargerId,
+            $session['evse_id'],
+            $session['connector_id'],
+            $session['transaction_id'],
+            $session['meter_wh'],
+        );
+        $this->sendStatusNotification($chargerId, $session['evse_id'], $session['connector_id'], 'Available');
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+
+        return true;
     }
 
     /**
@@ -553,6 +672,37 @@ final class StationSessionWorker
             || $session['connector_status'] !== 'Occupied'
             || $session['transaction_id'] !== $transactionId) {
             throw new RuntimeException('The accepted remote-stop request no longer matches an active transaction.');
+        }
+
+        if ($session['remote_start_pending']) {
+            $endedEvent = [
+                'eventType' => 'Ended',
+                'timestamp' => gmdate(DATE_ATOM),
+                'triggerReason' => 'RemoteStop',
+                'seqNo' => $session['seq_no'] + 1,
+                'transactionInfo' => [
+                    'transactionId' => $transactionId,
+                    'stoppedReason' => 'Remote',
+                ],
+                'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+            ];
+            $meterValue = $this->transactionEndMeterValue($chargerId, $session['meter_wh']);
+            if ($meterValue !== null) {
+                $endedEvent['meterValue'] = $meterValue;
+            }
+
+            $queuedEvent = $this->queueTransactionEvent($chargerId, $endedEvent);
+            $this->outletSessions->markAvailable(
+                $chargerId,
+                $evseId,
+                $connectorId,
+                $transactionId,
+                $session['meter_wh'],
+            );
+            $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
+            $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+
+            return ['status' => 'Stopped'];
         }
 
         $sequence = $session['seq_no'] + 1;
@@ -854,7 +1004,8 @@ final class StationSessionWorker
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
             if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
-                || $session['id_token'] === null || $session['stop_reason'] !== null) {
+                || $session['id_token'] === null || $session['stop_reason'] !== null
+                || $session['remote_start_pending']) {
                 continue;
             }
 
@@ -910,7 +1061,8 @@ final class StationSessionWorker
         }
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
-            if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null) {
+            if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
+                || $session['remote_start_pending']) {
                 continue;
             }
 

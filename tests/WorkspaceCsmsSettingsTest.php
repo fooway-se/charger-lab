@@ -40,6 +40,7 @@ it('persists workspace defaults and charger overrides', function (): void {
     $settings = new WorkspaceSettingsRepository($database);
 
     $default = $settings->getCsmsUrl();
+    $tlsSettings = $settings->getTlsSettings();
 
     $settings->saveCsmsUrl('wss://new-csms.example/ocpp');
 
@@ -47,6 +48,7 @@ it('persists workspace defaults and charger overrides', function (): void {
 
     expect($default !== 'wss://csms.example/ocpp'
         || $settings->getCsmsUrl() !== 'wss://new-csms.example/ocpp'
+        || $tlsSettings !== ['tls_server_name' => '', 'tls_ca_certificate' => '']
         || (int) $chargers[0]['uses_default_csms'] !== 1
         || (int) $chargers[1]['uses_default_csms'] !== 0
         || $chargers[1]['csms_url'] !== 'wss://other.example/ocpp')->toBeFalse('Workspace CSMS defaults should persist while preserving individual legacy endpoints as overrides: ' . json_encode([$default, $settings->getCsmsUrl(), $chargers], JSON_THROW_ON_ERROR));

@@ -29,6 +29,8 @@ final class WebSocketConnection implements Connection
         private readonly int $timeoutSeconds = 8,
         private readonly ?string $username = null,
         private readonly ?string $password = null,
+        private readonly ?string $tlsServerName = null,
+        private readonly ?string $tlsCaCertificatePem = null,
     )
     {
         if ($password !== null && $password !== '' && $username === null) {
@@ -45,11 +47,38 @@ final class WebSocketConnection implements Connection
         $host = $parts['host'];
         $addressHost = str_contains($host, ':') ? '[' . $host . ']' : $host;
         $address = ($secure ? 'ssl' : 'tcp') . '://' . $addressHost . ':' . $port;
-        $context = stream_context_create($secure ? [
-            'ssl' => ['peer_name' => $host, 'verify_peer' => true, 'verify_peer_name' => true],
-        ] : []);
+        $sslOptions = [
+            'peer_name' => $tlsServerName ?? $host,
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+        ];
+        $caFile = null;
+        if ($secure && $tlsCaCertificatePem !== null && $tlsCaCertificatePem !== '') {
+            if (!str_contains($tlsCaCertificatePem, '-----BEGIN CERTIFICATE-----')
+                || @openssl_x509_read($tlsCaCertificatePem) === false) {
+                throw new InvalidArgumentException('The configured TLS CA certificate is not valid PEM X.509 data.');
+            }
 
-        $stream = @stream_socket_client($address, $errorNumber, $errorMessage, $timeoutSeconds, STREAM_CLIENT_CONNECT, $context);
+            $caFile = tempnam(sys_get_temp_dir(), 'charger-csms-ca-');
+            if (!is_string($caFile)) {
+                throw new RuntimeException('Could not prepare the configured CSMS CA certificate.');
+            }
+            if (file_put_contents($caFile, $tlsCaCertificatePem) === false) {
+                unlink($caFile);
+                throw new RuntimeException('Could not write the configured CSMS CA certificate.');
+            }
+            chmod($caFile, 0600);
+            $sslOptions['cafile'] = $caFile;
+        }
+
+        $context = stream_context_create($secure ? ['ssl' => $sslOptions] : []);
+        try {
+            $stream = @stream_socket_client($address, $errorNumber, $errorMessage, $timeoutSeconds, STREAM_CLIENT_CONNECT, $context);
+        } finally {
+            if (is_string($caFile) && is_file($caFile)) {
+                unlink($caFile);
+            }
+        }
         if (!is_resource($stream)) {
             throw new RuntimeException("Could not connect to CSMS ({$errorMessage}).", $errorNumber);
         }

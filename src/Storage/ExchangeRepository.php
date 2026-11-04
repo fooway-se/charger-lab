@@ -38,7 +38,7 @@ final class ExchangeRepository
     /**
      * @return list<array{id:int,charger_id:int,direction:string,action:string,message:string,created_at:string}>
      */
-    public function recent(int $chargerId, int $limit = 30): array
+    public function recent(int $chargerId, int $limit = 100): array
     {
         $statement = $this->database->prepare('SELECT * FROM exchange_log WHERE charger_id = :charger_id ORDER BY id DESC LIMIT :limit');
         $statement->bindValue(':charger_id', $chargerId, PDO::PARAM_INT);

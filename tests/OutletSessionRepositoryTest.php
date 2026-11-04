@@ -6,6 +6,29 @@ use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
+it('keeps a remote start pending until a vehicle plugs in and exposes expired starts', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $deadline = gmdate(DATE_ATOM, time() + 30);
+
+    $sessions->beginRemoteStart($chargerId, 1, 1, 'remote-tx', 'TAG-1', $deadline);
+    $pending = $sessions->find($chargerId, 1, 1);
+
+    expect($pending['connector_status'])->toBe('Occupied')
+        ->and($pending['remote_start_pending'])->toBeTrue()
+        ->and($sessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM)))->toBe([])
+        ->and($sessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM, time() + 31)))->toHaveCount(1);
+
+    $sessions->markRemoteStartConnected($chargerId, 1, 1, 'remote-tx', 1);
+    $connected = $sessions->find($chargerId, 1, 1);
+
+    expect($connected['remote_start_pending'])->toBeFalse()
+        ->and($connected['seq_no'])->toBe(1)
+        ->and($sessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM, time() + 31)))->toBe([]);
+});
+
 it('keeps an outlet meter register across completed sessions and database reopen', function (): void {
     $directory = sys_get_temp_dir() . '/charger-meter-' . bin2hex(random_bytes(6));
     $databasePath = $directory . '/emulator.sqlite';

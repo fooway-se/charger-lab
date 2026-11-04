@@ -93,6 +93,26 @@ function waitForProcessOutput($process, string $expected, int $timeoutMillisecon
     return $output;
 }
 
+function drainProcessOutput($process): string
+{
+    foreach ($GLOBALS['testProcesses'] as [$candidate, $pipes]) {
+        if ($candidate !== $process) {
+            continue;
+        }
+
+        $output = stream_get_contents($pipes[1]);
+        if (is_string($output) && $output !== '') {
+            $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+
+            return $output;
+        }
+
+        return '';
+    }
+
+    return '';
+}
+
 function waitForBootStatus(int $appPort, int $chargerId, string $status, int $timeoutMilliseconds): void
 {
     $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
@@ -221,6 +241,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'FAKE_CSMS_SEND_REMOTE_START' => '1',
         'FAKE_CSMS_SET_METER_SETTINGS' => '1',
         'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
     ]);
 
     $worker = null;
@@ -407,6 +428,65 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         }
         expect($remoteStartOutput)->toContain('GetTransactionStatus station response: ')
             ->and($remoteStartOutput)->toContain('"ongoingIndicator":true,"messagesInQueue":false');
+        [$remotePendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $remotePendingState = is_string($remotePendingStateBody) ? json_decode($remotePendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $remotePendingOutlet = $remotePendingState['chargers'][0]['outlets'][0] ?? [];
+        expect($remotePendingOutlet['remote_start_pending'] ?? false)->toBeTrue('An accepted remote start without a plugged-in vehicle should wait for the vehicle instead of simulating a plug-in.');
+        $remoteStartEntry = array_values(array_filter(
+            $remotePendingState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['triggerReason'] ?? null) === 'RemoteStart';
+            },
+        ));
+        $remoteStartPayload = json_decode($remoteStartEntry[0]['message'] ?? 'null', true);
+        expect(isset($remoteStartPayload[3]['transactionInfo']['chargingState']))->toBeFalse('RemoteStart must not report Charging before a vehicle is physically connected.');
+        $remoteConnectedEntries = array_values(array_filter(
+            $remotePendingState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['triggerReason'] ?? null) === 'CablePluggedIn';
+            },
+        ));
+        expect($remoteConnectedEntries)->toBeEmpty('A remote-start transaction must not report the vehicle connected before the test-bench plug-in action.');
+        [$remotePlugBody, $remotePlugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($remotePlugHeaders[0] ?? '', '200') || !is_string($remotePlugBody))->toBeFalse('The test bench should connect a vehicle to the pending remote-start transaction.');
+        [$connectedRemoteStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $connectedRemoteState = is_string($connectedRemoteStateBody) ? json_decode($connectedRemoteStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $connectedRemoteEvents = array_values(array_filter(
+            $connectedRemoteState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return in_array($call[3]['triggerReason'] ?? null, ['CablePluggedIn', 'ChargingStateChanged'], true);
+            },
+        ));
+        expect(count($connectedRemoteEvents))->toBe(2, 'Connecting the simulated vehicle should report EVConnected and only then Charging.');
+        $connectedRemotePayloads = array_map(static fn (array $entry): array => json_decode($entry['message'], true)[3], $connectedRemoteEvents);
+        expect(($connectedRemotePayloads[0]['transactionInfo']['chargingState'] ?? null))->toBe('EVConnected')
+            ->and($connectedRemotePayloads[0]['seqNo'] ?? null)->toBe(1)
+            ->and($connectedRemotePayloads[1]['transactionInfo']['chargingState'] ?? null)->toBe('Charging')
+            ->and($connectedRemotePayloads[1]['seqNo'] ?? null)->toBe(2);
+        file_put_contents($directory . '/remote-start-continue', 'connected', LOCK_EX);
         if (!str_contains($remoteStartOutput, 'RemoteStop station response: ')) {
             $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
         }
@@ -839,7 +919,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || $bootCount !== 4
             || $authorizeCount !== 2
             || $statusNotificationCount !== 12
-            || $transactionEventCount !== 16 + (2 * $periodicTransactionEventCount)
+            || $transactionEventCount !== 20 + (2 * $periodicTransactionEventCount)
             || $heartbeatCount < 2
             || $serverCallCount !== 4)->toBeFalse('The accepted status, topology, and both OCPP exchanges should persist in SQLite: ' . json_encode([
                 'boot' => $bootCount,
@@ -878,7 +958,309 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             stopProcess($worker);
         }
         stopProcess($fakeCsms);
-        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/fake-csms-boot-count', $directory . '/remote-start-sent'] as $path) {
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/fake-csms-boot-count', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('preserves a waiting remote-start deadline across worker restart without reconnecting early or duplicating events', function (): void {
+    $directory = sys_get_temp_dir() . '/charger-remote-start-restart-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_CALL' => '1',
+        'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
+        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'RestartPendingCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Test Model',
+            'serial_number' => 'RESTART-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The charger configuration should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200') || !is_string($bootBody))->toBeFalse('The CSMS should accept the charger boot.');
+
+        $remoteStartOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($remoteStartOutput, 'RemoteStart TransactionEvent: ')) {
+            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStart TransactionEvent: ', 5_000);
+        }
+        expect($remoteStartOutput)->toContain('RemoteStart station response: ')
+            ->and($remoteStartOutput)->toContain('RemoteStart TransactionEvent: ');
+
+        $stateBeforeRestartBody = '';
+        $stateBeforeRestart = [];
+        $stateDeadline = microtime(true) + 3;
+        do {
+            [$stateBeforeRestartBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $stateBeforeRestart = is_string($stateBeforeRestartBody)
+                ? json_decode($stateBeforeRestartBody, true, flags: JSON_THROW_ON_ERROR)
+                : [];
+            $outletBeforeRestart = $stateBeforeRestart['chargers'][0]['outlets'][0] ?? [];
+            if (($outletBeforeRestart['remote_start_pending'] ?? false) === true) {
+                break;
+            }
+
+            usleep(20_000);
+        } while (microtime(true) < $stateDeadline);
+        $outletBeforeRestart = $stateBeforeRestart['chargers'][0]['outlets'][0] ?? [];
+        $database = new PDO('sqlite:' . $databasePath);
+        $deadlineBeforeRestart = $database->query(
+            "SELECT remote_start_deadline FROM outlet_session WHERE charger_id = {$chargerId} AND evse_id = 1 AND connector_id = 1",
+        )->fetchColumn();
+        unset($database);
+        expect($outletBeforeRestart['remote_start_pending'] ?? null)->toBeTrue()
+            ->and($deadlineBeforeRestart)->toBeString();
+
+        drainProcessOutput($fakeCsms);
+        stopProcess($worker);
+        drainProcessOutput($fakeCsms);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+
+        $earlyReconnectOutput = waitForProcessOutput($fakeCsms, 'No early reconnect expected', 250);
+        expect($earlyReconnectOutput)->not->toContain('Connected GET /ocpp/RestartPendingCharger HTTP/1.1');
+        [$earlyStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $earlyState = is_string($earlyStateBody) ? json_decode($earlyStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $earlyOutlet = $earlyState['chargers'][0]['outlets'][0] ?? [];
+        expect($earlyOutlet['remote_start_pending'] ?? null)->toBeTrue();
+
+        $reconnectOutput = waitForProcessOutput($fakeCsms, 'Connected GET /ocpp/RestartPendingCharger HTTP/1.1', 3_000);
+        expect($reconnectOutput)->toContain('Connected GET /ocpp/RestartPendingCharger HTTP/1.1');
+        usleep(250_000);
+        [$stateAfterRestartBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $stateAfterRestart = is_string($stateAfterRestartBody)
+            ? json_decode($stateAfterRestartBody, true, flags: JSON_THROW_ON_ERROR)
+            : [];
+        $chargerAfterRestart = $stateAfterRestart['chargers'][0] ?? [];
+        $outletAfterRestart = $chargerAfterRestart['outlets'][0] ?? [];
+        $transactionEvents = array_values(array_filter(
+            $chargerAfterRestart['entries'] ?? [],
+            static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent'
+                && ($entry['direction'] ?? null) === 'outgoing',
+        ));
+        $startedEvents = array_values(array_filter($transactionEvents, static function (array $entry): bool {
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['eventType'] ?? null) === 'Started'
+                && ($call[3]['triggerReason'] ?? null) === 'RemoteStart';
+        }));
+        $endedEvents = array_values(array_filter($transactionEvents, static function (array $entry): bool {
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['eventType'] ?? null) === 'Ended';
+        }));
+        $database = new PDO('sqlite:' . $databasePath);
+        $deadlineAfterRestart = $database->query(
+            "SELECT remote_start_deadline FROM outlet_session WHERE charger_id = {$chargerId} AND evse_id = 1 AND connector_id = 1",
+        )->fetchColumn();
+        $bootCount = (int) $database->query(
+            "SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification' AND direction = 'outgoing'",
+        )->fetchColumn();
+        unset($database);
+
+        expect($outletAfterRestart['remote_start_pending'] ?? null)->toBeTrue()
+            ->and($deadlineAfterRestart)->toBe($deadlineBeforeRestart)
+            ->and($transactionEvents)->toHaveCount(1, 'Restarting the worker must not duplicate any transaction event.')
+            ->and($startedEvents)->toHaveCount(1)
+            ->and($endedEvents)->toBeEmpty()
+            ->and($bootCount)->toBe(1, 'A worker restart after Accepted BootNotification must reconnect without sending BootNotification again.');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('ends a remote-start transaction when the CSMS stops it before vehicle connection', function (): void {
+    $directory = sys_get_temp_dir() . '/charger-remote-stop-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_CALL' => '1',
+        'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'RemoteStopPendingCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Test Model',
+            'serial_number' => 'REMOTE-STOP-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200') || !is_string($bootBody))->toBeFalse('The CSMS should accept the test charger boot.');
+
+        $remoteStopOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($remoteStopOutput, 'RemoteStop station response: ')) {
+            $remoteStopOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
+        }
+        if (!str_contains($remoteStopOutput, 'RemoteStop TransactionEvent: ')) {
+            $remoteStopOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop TransactionEvent: ', 5_000);
+        }
+
+        expect($remoteStopOutput)->toContain('RemoteStart TransactionEvent: ')
+            ->and($remoteStopOutput)->toContain('RemoteStop station response: ')
+            ->and($remoteStopOutput)->toContain('"status":"Accepted"')
+            ->and($remoteStopOutput)->toContain('RemoteStop TransactionEvent: ');
+
+        $stoppedCharger = [];
+        $outlet = [];
+        $endedEvents = [];
+        $stateDeadline = microtime(true) + 5;
+        do {
+            [$stoppedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $stoppedState = is_string($stoppedStateBody) ? json_decode($stoppedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+            $stoppedCharger = $stoppedState['chargers'][0] ?? [];
+            $outlet = $stoppedCharger['outlets'][0] ?? [];
+            $endedEvents = array_values(array_filter(
+                $stoppedCharger['entries'] ?? [],
+                static function (array $entry): bool {
+                    if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                        return false;
+                    }
+
+                    $call = json_decode($entry['message'], true);
+
+                    return ($call[3]['eventType'] ?? null) === 'Ended'
+                        && ($call[3]['triggerReason'] ?? null) === 'RemoteStop';
+                },
+            ));
+            if ($endedEvents !== []) {
+                break;
+            }
+
+            usleep(20_000);
+        } while (microtime(true) < $stateDeadline);
+        $endedEvent = json_decode($endedEvents[0]['message'] ?? 'null', true);
+        $startedRemoteEvents = array_values(array_filter(
+            $stoppedCharger['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['eventType'] ?? null) === 'Started'
+                    && ($call[3]['triggerReason'] ?? null) === 'RemoteStart';
+            },
+        ));
+        $startedRemoteEvent = json_decode($startedRemoteEvents[0]['message'] ?? 'null', true);
+        expect(($outlet['connector_status'] ?? null))->toBe('Available')
+            ->and($outlet['remote_start_pending'] ?? null)->toBeFalse()
+            ->and($startedRemoteEvents)->toHaveCount(1)
+            ->and($startedRemoteEvent[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null)->toBe('Transaction.Begin')
+            ->and($startedRemoteEvent[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null)->toBe('Energy.Active.Import.Register')
+            ->and($endedEvents)->toHaveCount(1, 'Expected one RemoteStop Ended event; observed: ' . json_encode(array_map(
+                static fn (array $entry): mixed => json_decode($entry['message'], true),
+                array_values(array_filter(
+                    $stoppedCharger['entries'] ?? [],
+                    static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent',
+                )),
+            )))
+            ->and($endedEvent[3]['transactionInfo']['stoppedReason'] ?? null)->toBe('Remote')
+            ->and($endedEvent[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null)->toBe('Transaction.End')
+            ->and(isset($endedEvent[3]['transactionInfo']['chargingState']))->toBeFalse();
+
+        [$refreshedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $refreshedState = is_string($refreshedStateBody) ? json_decode($refreshedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($refreshedState['chargers'][0]['outlets'][0]['remote_start_pending'] ?? null)->toBeFalse('Refreshing state should not restore a stopped pending remote-start transaction.');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

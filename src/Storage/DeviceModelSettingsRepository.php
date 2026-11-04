@@ -24,6 +24,7 @@ final class DeviceModelSettingsRepository
         'RetryBackOffRandomRange' => '5',
         'RetryBackOffRepeatTimes' => '3',
         'HeartbeatInterval' => '300',
+        'EVConnectionTimeOut' => '30',
     ];
 
     public function __construct(private readonly PDO $database)

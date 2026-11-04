@@ -365,6 +365,12 @@ function serveClient($client): void
                         }
                     }
 
+                    $remoteStartContinuePath = getenv('FAKE_CSMS_REMOTE_START_CONTINUE_PATH') ?: '';
+                    $remoteStopBeforePlug = getenv('FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG') === '1';
+                    if ($remoteStartContinuePath !== '' && !$remoteStopBeforePlug) {
+                        waitForRemoteStartContinuation($client, $remoteStartContinuePath);
+                    }
+
                     $remoteStopCallId = 'fake-csms-remote-stop-' . $call[1];
                     $remoteStopCall = json_encode([2, $remoteStopCallId, 'RequestStopTransaction', [
                         'transactionId' => $remoteTransactionId,
@@ -388,10 +394,13 @@ function serveClient($client): void
                         } elseif (($stationMessage[0] ?? null) === 2) {
                             $outgoingAction = $stationMessage[2] ?? '';
                             $outgoingPayload = $stationMessage[3] ?? [];
-                            if ($outgoingAction === 'TransactionEvent'
-                                && ($outgoingPayload['eventType'] ?? null) === 'Updated'
-                                && ($outgoingPayload['triggerReason'] ?? null) === 'RemoteStop') {
-                                $remoteStopReported = true;
+                            $remoteStopReported = $outgoingAction === 'TransactionEvent'
+                                && ($remoteStopBeforePlug
+                                    ? (($outgoingPayload['eventType'] ?? null) === 'Ended'
+                                        && ($outgoingPayload['transactionInfo']['stoppedReason'] ?? null) === 'Remote')
+                                    : (($outgoingPayload['eventType'] ?? null) === 'Updated'
+                                        && ($outgoingPayload['triggerReason'] ?? null) === 'RemoteStop'));
+                            if ($remoteStopReported) {
                                 fwrite(STDOUT, 'RemoteStop TransactionEvent: ' . $stationResponse[1] . "\n");
                             }
 
@@ -429,6 +438,52 @@ function serveClient($client): void
                 }
             }
         }
+    }
+}
+
+function waitForRemoteStartContinuation($client, string $continuePath): void
+{
+    while (!is_file($continuePath)) {
+        $read = [$client];
+        $write = [];
+        $except = [];
+        $ready = @stream_select($read, $write, $except, 0, 100_000);
+        if ($ready === false) {
+            throw new RuntimeException('Could not wait for the remote-start vehicle connection.');
+        }
+        if ($ready === 0) {
+            continue;
+        }
+
+        $frame = readFrame($client);
+        if ($frame === null) {
+            return;
+        }
+
+        [$opcode, $payload] = $frame;
+        if ($opcode === 0x9) {
+            writeFrame($client, 0xA, $payload);
+            continue;
+        }
+        if ($opcode !== 0x1) {
+            continue;
+        }
+
+        $message = json_decode($payload, true);
+        if (!is_array($message) || ($message[0] ?? null) !== 2 || !is_string($message[1] ?? null)) {
+            continue;
+        }
+
+        $action = $message[2] ?? '';
+        $request = is_array($message[3] ?? null) ? $message[3] : [];
+        $result = match ($action) {
+            'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
+            'TransactionEvent' => isset($request['idToken'])
+                ? ['idTokenInfo' => ['status' => 'Accepted']]
+                : new stdClass(),
+            default => new stdClass(),
+        };
+        writeFrame($client, 0x1, json_encode([3, $message[1], $result], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
     }
 }
 
