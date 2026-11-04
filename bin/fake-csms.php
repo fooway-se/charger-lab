@@ -299,6 +299,36 @@ function serveClient($client): void
                 }
 
                 if ($requestAnswered && $transactionStarted && is_string($remoteTransactionId)) {
+                    $transactionStatusCallId = 'fake-csms-transaction-status-' . $call[1];
+                    $transactionStatusCall = json_encode([2, $transactionStatusCallId, 'GetTransactionStatus', [
+                        'transactionId' => $remoteTransactionId,
+                    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $transactionStatusCall);
+                    while (($stationResponse = readFrame($client)) !== null) {
+                        if ($stationResponse[0] !== 0x1) {
+                            continue;
+                        }
+
+                        $stationMessage = json_decode($stationResponse[1], true);
+                        if (!is_array($stationMessage)) {
+                            continue;
+                        }
+
+                        if (($stationMessage[0] ?? null) === 3 && ($stationMessage[1] ?? null) === $transactionStatusCallId) {
+                            fwrite(STDOUT, 'GetTransactionStatus station response: ' . $stationResponse[1] . "\n");
+                            break;
+                        }
+
+                        if (($stationMessage[0] ?? null) === 2) {
+                            $outgoingAction = $stationMessage[2] ?? '';
+                            $outgoingResult = $outgoingAction === 'Heartbeat'
+                                ? ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')]
+                                : new stdClass();
+                            $outgoingResponse = json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                            writeFrame($client, 0x1, $outgoingResponse);
+                        }
+                    }
+
                     $remoteStopCallId = 'fake-csms-remote-stop-' . $call[1];
                     $remoteStopCall = json_encode([2, $remoteStopCallId, 'RequestStopTransaction', [
                         'transactionId' => $remoteTransactionId,

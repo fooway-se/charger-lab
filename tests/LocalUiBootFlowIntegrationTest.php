@@ -380,6 +380,11 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         expect($remoteStartOutput)->toContain('"status":"Accepted"');
         expect(strpos($remoteStartOutput, 'RemoteStart station response: '))
             ->toBeLessThan(strpos($remoteStartOutput, 'RemoteStart TransactionEvent: '));
+        if (!str_contains($remoteStartOutput, 'GetTransactionStatus station response: ')) {
+            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'GetTransactionStatus station response: ', 5_000);
+        }
+        expect($remoteStartOutput)->toContain('GetTransactionStatus station response: ')
+            ->and($remoteStartOutput)->toContain('"ongoingIndicator":true,"messagesInQueue":false');
         if (!str_contains($remoteStartOutput, 'RemoteStop station response: ')) {
             $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
         }

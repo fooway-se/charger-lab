@@ -8,6 +8,7 @@ use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
+use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
@@ -268,13 +269,14 @@ final class StationSessionWorker
         $deviceModel = new DeviceModel($this->outletSessions, $this->deviceModelSettings, $chargerId);
         $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
+        $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions);
 
         return new OcppClient(
             $this->sessions[$chargerId]['connection'],
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $remoteStart, $remoteStop): ?array {
+            function (string $action, array $payload) use ($deviceModel, $remoteStart, $remoteStop, $transactionStatus): ?array {
                 $deviceModelResponse = $deviceModel->handle($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -284,7 +286,11 @@ final class StationSessionWorker
                     return $remoteStart->handle($payload);
                 }
 
-                return $action === 'RequestStopTransaction' ? $remoteStop->handle($payload) : null;
+                if ($action === 'RequestStopTransaction') {
+                    return $remoteStop->handle($payload);
+                }
+
+                return $action === 'GetTransactionStatus' ? $transactionStatus->handle($payload) : null;
             },
             function () use ($chargerId): ?string {
                 $charger = $this->chargers->get($chargerId);
