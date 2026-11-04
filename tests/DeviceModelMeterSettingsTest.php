@@ -31,6 +31,10 @@ it('reads and persists supported transaction meter sampling settings', function 
                 'component' => ['name' => 'SampledDataCtrlr'],
                 'variable' => ['name' => 'TxStartedMeasurands'],
             ],
+            [
+                'component' => ['name' => 'SampledDataCtrlr'],
+                'variable' => ['name' => 'TxEndedMeasurands'],
+            ],
         ],
     ]);
     $set = $deviceModel->handle('SetVariables', [
@@ -48,6 +52,11 @@ it('reads and persists supported transaction meter sampling settings', function 
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
                 'variable' => ['name' => 'TxStartedMeasurands'],
+                'attributeValue' => '',
+            ],
+            [
+                'component' => ['name' => 'SampledDataCtrlr'],
+                'variable' => ['name' => 'TxEndedMeasurands'],
                 'attributeValue' => '',
             ],
         ],
@@ -71,12 +80,16 @@ it('reads and persists supported transaction meter sampling settings', function 
                 'component' => ['name' => 'SampledDataCtrlr'],
                 'variable' => ['name' => 'TxStartedMeasurands'],
             ],
+            [
+                'component' => ['name' => 'SampledDataCtrlr'],
+                'variable' => ['name' => 'TxEndedMeasurands'],
+            ],
         ],
     ]);
 
-    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register', 'Energy.Active.Import.Register'])
-        ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted'])
-        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register', '']);
+    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register', 'Energy.Active.Import.Register', 'Energy.Active.Import.Register'])
+        ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted', 'Accepted'])
+        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register', '', '']);
 });
 
 it('rejects invalid transaction meter sampling settings without changing saved values', function (): void {
@@ -104,6 +117,11 @@ it('rejects invalid transaction meter sampling settings without changing saved v
                 'variable' => ['name' => 'TxStartedMeasurands'],
                 'attributeValue' => 'MadeUp.Measurand',
             ],
+            [
+                'component' => ['name' => 'SampledDataCtrlr'],
+                'variable' => ['name' => 'TxEndedMeasurands'],
+                'attributeValue' => 'MadeUp.Measurand',
+            ],
         ],
     ]);
     $get = $deviceModel->handle('GetVariables', [
@@ -119,6 +137,6 @@ it('rejects invalid transaction meter sampling settings without changing saved v
         ],
     ]);
 
-    expect(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected'])
+    expect(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected', 'Rejected'])
         ->and(array_column($get['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register']);
 });

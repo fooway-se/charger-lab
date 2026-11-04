@@ -243,7 +243,7 @@ final class DeviceModel
     private function isWritable(array $component, array $variable): bool
     {
         return ($component['name'] ?? null) === 'SampledDataCtrlr'
-            && in_array($variable['name'] ?? null, ['TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
+            && in_array($variable['name'] ?? null, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
     }
 
     /**
@@ -256,7 +256,7 @@ final class DeviceModel
                 && filter_var($value, FILTER_VALIDATE_INT) !== false;
         }
 
-        if (!in_array($variable, ['TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {
+        if (!in_array($variable, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {
             return false;
         }
 

@@ -214,6 +214,10 @@ function serveClient($client): void
                         'component' => ['name' => 'SampledDataCtrlr'],
                         'variable' => ['name' => 'TxStartedMeasurands'],
                         'attributeValue' => '',
+                    ], [
+                        'component' => ['name' => 'SampledDataCtrlr'],
+                        'variable' => ['name' => 'TxEndedMeasurands'],
+                        'attributeValue' => '',
                     ]],
                 ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
                 writeFrame($client, 0x1, $meterSettingsCall);

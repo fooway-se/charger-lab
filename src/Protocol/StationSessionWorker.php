@@ -462,19 +462,24 @@ final class StationSessionWorker
         $sequence = $session['seq_no'] + 1;
         $meterWh = $session['meter_wh'] + self::SIMULATED_SESSION_ENERGY_WH;
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
-        $this->createClient($chargerId)->request('TransactionEvent', [
+        $transactionEvent = [
             'eventType' => 'Ended',
             'timestamp' => gmdate(DATE_ATOM),
             'triggerReason' => 'EVCommunicationLost',
             'seqNo' => $sequence,
-            'meterValue' => $this->meterValue($meterWh, 'Transaction.End'),
             'transactionInfo' => [
                 'transactionId' => $session['transaction_id'],
                 'chargingState' => 'Idle',
                 'stoppedReason' => $session['stop_reason'] === 'Remote' ? 'Remote' : 'EVDisconnected',
             ],
             'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
-        ]);
+        ];
+        $meterValue = $this->transactionEndMeterValue($chargerId, $meterWh);
+        if ($meterValue !== null) {
+            $transactionEvent['meterValue'] = $meterValue;
+        }
+
+        $this->createClient($chargerId)->request('TransactionEvent', $transactionEvent);
         $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id'], $meterWh);
 
         return ['status' => 'Unplugged'];
@@ -545,6 +550,18 @@ final class StationSessionWorker
         }
 
         return $this->meterValue($meterWh, 'Transaction.Begin');
+    }
+
+    /**
+     * @return list<array{timestamp:string,sampledValue:list<array{value:int,context:string,measurand:string,unitOfMeasure:array{unit:string}}>}>|null
+     */
+    private function transactionEndMeterValue(int $chargerId, int $meterWh): ?array
+    {
+        if ($this->deviceModelSettings->get($chargerId, 'TxEndedMeasurands') !== 'Energy.Active.Import.Register') {
+            return null;
+        }
+
+        return $this->meterValue($meterWh, 'Transaction.End');
     }
 
     /**

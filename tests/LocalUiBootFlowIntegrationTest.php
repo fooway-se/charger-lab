@@ -653,6 +653,11 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         });
         $expectedEndedSequence = 3 + count($periodicCalls);
         $expectedEndedMeterWh = 1000 + (100 * count($periodicCalls));
+        $unplugDatabase = new PDO('sqlite:' . $databasePath);
+        $persistedMeterWh = (int) $unplugDatabase->query(
+            "SELECT meter_wh FROM outlet_session WHERE charger_id = {$chargerId} AND evse_id = 2 AND connector_id = 1",
+        )->fetchColumn();
+        unset($unplugDatabase);
         $finalStatusCalls = array_values(array_filter(
             $unpluggedState['chargers'][0]['entries'] ?? [],
             static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing',
@@ -668,10 +673,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($endedPayload[3]['transactionInfo']['transactionId'] ?? null) !== $pluggedOutlet['transaction_id']
             || ($endedPayload[3]['transactionInfo']['chargingState'] ?? null) !== 'Idle'
             || ($endedPayload[3]['transactionInfo']['stoppedReason'] ?? null) !== 'EVDisconnected'
-            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null) !== 'Transaction.End'
-            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['measurand'] ?? null) !== 'Energy.Active.Import.Register'
-            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['unitOfMeasure']['unit'] ?? null) !== 'Wh'
-            || ($endedPayload[3]['meterValue'][0]['sampledValue'][0]['value'] ?? null) !== $expectedEndedMeterWh
+            || isset($endedPayload[3]['meterValue'])
+            || $persistedMeterWh !== $expectedEndedMeterWh
             || ($availableStatusPayload[3]['connectorStatus'] ?? null) !== 'Available'
             || ($availableStatusPayload[3]['evseId'] ?? null) !== 2)->toBeFalse('Unplugging an outlet should end its transaction and restore Available status.');
         [, $duplicateUnplugHeaders] = request(

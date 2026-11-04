@@ -16,6 +16,7 @@ final class DeviceModelSettingsRepository
         'TxUpdatedInterval' => '0',
         'TxUpdatedMeasurands' => 'Energy.Active.Import.Register',
         'TxStartedMeasurands' => 'Energy.Active.Import.Register',
+        'TxEndedMeasurands' => 'Energy.Active.Import.Register',
     ];
 
     public function __construct(private readonly PDO $database)
