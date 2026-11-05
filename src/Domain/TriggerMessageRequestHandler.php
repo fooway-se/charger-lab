@@ -20,6 +20,11 @@ final class TriggerMessageRequestHandler
 
     private bool $heartbeatRequested = false;
 
+    /**
+     * @var list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
+     */
+    private array $transactionSessions = [];
+
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
@@ -36,6 +41,7 @@ final class TriggerMessageRequestHandler
     {
         $this->statusNotifications = [];
         $this->heartbeatRequested = false;
+        $this->transactionSessions = [];
         $requestedMessage = $payload['requestedMessage'] ?? null;
         if (!is_string($requestedMessage)) {
             return ['status' => 'Rejected'];
@@ -51,7 +57,7 @@ final class TriggerMessageRequestHandler
             return ['status' => 'Accepted'];
         }
 
-        if ($requestedMessage !== 'StatusNotification') {
+        if (!in_array($requestedMessage, ['StatusNotification', 'TransactionEvent'], true)) {
             return ['status' => 'NotImplemented'];
         }
 
@@ -74,6 +80,20 @@ final class TriggerMessageRequestHandler
         ));
         if ($outlets === []) {
             return ['status' => 'Rejected'];
+        }
+
+        if ($requestedMessage === 'TransactionEvent') {
+            $this->transactionSessions = array_values(array_filter(
+                $outlets,
+                static fn (array $outlet): bool => $outlet['connector_status'] === 'Occupied'
+                    && is_string($outlet['transaction_id'])
+                    && $outlet['transaction_id'] !== '',
+            ));
+            if ($this->transactionSessions === []) {
+                return ['status' => 'Rejected'];
+            }
+
+            return ['status' => 'Accepted'];
         }
 
         $pendingReset = $this->resets->pending($this->chargerId);
@@ -116,5 +136,16 @@ final class TriggerMessageRequestHandler
         $this->heartbeatRequested = false;
 
         return $heartbeatRequested;
+    }
+
+    /**
+     * @return list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
+     */
+    public function takeTransactionSessions(): array
+    {
+        $transactionSessions = $this->transactionSessions;
+        $this->transactionSessions = [];
+
+        return $transactionSessions;
     }
 }

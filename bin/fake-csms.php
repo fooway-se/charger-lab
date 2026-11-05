@@ -94,6 +94,7 @@ function serveClient($client): void
     $serverCallSent = false;
     $remoteStartSent = false;
     $changeAvailabilitySent = false;
+    $triggerTransactionEventSent = false;
     while (true) {
         $frame = readFrame($client);
         if ($frame === null) {
@@ -243,6 +244,61 @@ function serveClient($client): void
             && (($resetSentPath = getenv('FAKE_CSMS_RESET_SENT_PATH') ?: '') === '' || !is_file($resetSentPath))) {
             markResetSent($resetSentPath);
             sendResetCall($client, 'fake-csms-reset-' . $call[1], getenv('FAKE_CSMS_RESET_TYPE') ?: 'Immediate');
+        }
+
+        if ($action === 'TransactionEvent'
+            && ($call[3]['eventType'] ?? null) === 'Started'
+            && !$triggerTransactionEventSent
+            && getenv('FAKE_CSMS_SEND_TRIGGER_TRANSACTION_EVENT') === '1') {
+            $triggerTransactionEventSent = true;
+            $triggerCallId = 'fake-csms-trigger-transaction-event-' . $call[1];
+            $triggerCall = json_encode([2, $triggerCallId, 'TriggerMessage', [
+                'requestedMessage' => 'TransactionEvent',
+                'evse' => ['id' => 1, 'connectorId' => 1],
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            fwrite(STDOUT, 'TriggerMessage CSMS call: ' . $triggerCall . "\n");
+            writeFrame($client, 0x1, $triggerCall);
+            $triggerResponseReceived = false;
+            $triggeredEventReceived = false;
+            while (!$triggerResponseReceived || !$triggeredEventReceived) {
+                $stationMessageFrame = readFrame($client);
+                if ($stationMessageFrame === null) {
+                    break;
+                }
+                if ($stationMessageFrame[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationMessageFrame[1], true);
+                if (!is_array($stationMessage)) {
+                    continue;
+                }
+
+                if (in_array($stationMessage[0] ?? null, [3, 4], true)
+                    && ($stationMessage[1] ?? null) === $triggerCallId) {
+                    fwrite(STDOUT, 'TriggerMessage station response: ' . $stationMessageFrame[1] . "\n");
+                    $triggerResponseReceived = true;
+                    if (($stationMessage[0] ?? null) === 4) {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'TransactionEvent') {
+                    fwrite(STDOUT, 'TriggerMessage transaction event: ' . $stationMessageFrame[1] . "\n");
+                    $payload = $stationMessage[3] ?? [];
+                    if (($payload['eventType'] ?? null) === 'Updated' && ($payload['triggerReason'] ?? null) === 'Trigger') {
+                        $triggeredEventReceived = true;
+                    }
+
+                    $transactionEventReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $transactionEventReply);
+                } elseif (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                }
+            }
         }
 
         if ($action === 'BootNotification'

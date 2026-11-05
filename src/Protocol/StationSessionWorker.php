@@ -530,6 +530,10 @@ final class StationSessionWorker
                         foreach ($triggerMessage->takeStatusNotifications() as $statusNotification) {
                             $this->createClient($chargerId)->request('StatusNotification', $statusNotification);
                         }
+
+                        foreach ($triggerMessage->takeTransactionSessions() as $session) {
+                            $this->sendTriggeredTransactionEvent($chargerId, $session);
+                        }
                     }
 
                     return;
@@ -1183,6 +1187,48 @@ final class StationSessionWorker
         if (!isset($result['currentTime']) || !is_string($result['currentTime'])) {
             throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
         }
+    }
+
+    /**
+     * @param array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool} $session
+     */
+    private function sendTriggeredTransactionEvent(int $chargerId, array $session): void
+    {
+        $transactionId = $session['transaction_id'];
+        if (!is_string($transactionId) || $transactionId === '') {
+            throw new RuntimeException('The active transaction is missing its transaction ID.');
+        }
+
+        $timestamp = gmdate(DATE_ATOM);
+        $transactionInfo = ['transactionId' => $transactionId];
+        if (!$session['remote_start_pending']) {
+            $transactionInfo['chargingState'] = $session['id_token'] !== null && $session['stop_reason'] === null
+                ? 'Charging'
+                : 'EVConnected';
+        }
+
+        $event = [
+            'eventType' => 'Updated',
+            'timestamp' => $timestamp,
+            'triggerReason' => 'Trigger',
+            'seqNo' => $session['seq_no'] + 1,
+            'transactionInfo' => $transactionInfo,
+            'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+        ];
+        if ($this->deviceModelSettings->get($chargerId, 'TxUpdatedMeasurands') === 'Energy.Active.Import.Register') {
+            $event['meterValue'] = $this->meterValue($session['meter_wh'], 'Trigger', $timestamp);
+        }
+
+        $queuedEvent = $this->transactionEvents->enqueueForActiveTransaction(
+            $chargerId,
+            $event,
+            $this->outletSessions,
+            $session['evse_id'],
+            $session['connector_id'],
+            $transactionId,
+            $session['seq_no'],
+        );
+        $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
     }
 
     /**

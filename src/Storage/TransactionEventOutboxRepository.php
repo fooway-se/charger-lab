@@ -53,6 +53,53 @@ final class TransactionEventOutboxRepository
     }
 
     /**
+     * Stores a triggered event and advances its transaction sequence atomically.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}
+     */
+    public function enqueueForActiveTransaction(
+        int $chargerId,
+        array $payload,
+        OutletSessionRepository $sessions,
+        int $evseId,
+        int $connectorId,
+        string $transactionId,
+        int $previousSequence,
+    ): array {
+        $transactionInfo = is_array($payload['transactionInfo'] ?? null) ? $payload['transactionInfo'] : [];
+        $eventTransactionId = $transactionInfo['transactionId'] ?? null;
+        if ($eventTransactionId !== $transactionId || ($payload['seqNo'] ?? null) !== $previousSequence + 1) {
+            throw new RuntimeException('A triggered event must match the active transaction and next sequence number.');
+        }
+
+        if ($this->database->inTransaction()) {
+            throw new RuntimeException('A triggered transaction event cannot start inside another database transaction.');
+        }
+
+        $this->database->beginTransaction();
+        try {
+            $entry = $this->enqueue($chargerId, $payload);
+            $sessions->advanceSequenceForTrigger(
+                $chargerId,
+                $evseId,
+                $connectorId,
+                $transactionId,
+                $previousSequence,
+            );
+            $this->database->commit();
+
+            return $entry;
+        } catch (Throwable $exception) {
+            if ($this->database->inTransaction()) {
+                $this->database->rollBack();
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
      * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}|null
      */
     public function nextPending(int $chargerId, ?int $now = null): ?array

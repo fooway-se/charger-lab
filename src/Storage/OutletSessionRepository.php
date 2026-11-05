@@ -237,6 +237,32 @@ final class OutletSessionRepository
         }
     }
 
+    public function advanceSequenceForTrigger(
+        int $chargerId,
+        int $evseId,
+        int $connectorId,
+        string $transactionId,
+        int $previousSequence,
+    ): void {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE outlet_session SET seq_no = :next_sequence
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Occupied' AND transaction_id = :transaction_id
+                AND seq_no = :previous_sequence
+            SQL);
+        $statement->execute([
+            'next_sequence' => $previousSequence + 1,
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'previous_sequence' => $previousSequence,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The active transaction changed before its triggered event was stored.');
+        }
+    }
+
     public function attachToken(int $chargerId, int $evseId, int $connectorId, string $transactionId, string $idToken, int $sequence): void
     {
         $statement = $this->database->prepare(<<<'SQL'

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 
 it('persists transaction events and retries them with the same message identity', function (): void {
@@ -71,6 +72,64 @@ it('does not deliver a later transaction event before an earlier event retry is 
 
     expect($outbox->nextPending($chargerId, 1_800_000_009))->toBeNull()
         ->and($outbox->nextPending($chargerId, 1_800_000_010)['id'] ?? null)->toBe($first['id']);
+});
+
+it('stores a triggered event and advances its active session sequence atomically', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->markOccupied($chargerId, 1, 1, 'triggered-transaction');
+    $outbox = new TransactionEventOutboxRepository($database);
+    $payload = [
+        'eventType' => 'Updated',
+        'triggerReason' => 'Trigger',
+        'seqNo' => 1,
+        'transactionInfo' => ['transactionId' => 'triggered-transaction'],
+        'evse' => ['id' => 1, 'connectorId' => 1],
+    ];
+
+    $entry = $outbox->enqueueForActiveTransaction(
+        $chargerId,
+        $payload,
+        $sessions,
+        1,
+        1,
+        'triggered-transaction',
+        0,
+    );
+    $session = $sessions->find($chargerId, 1, 1);
+
+    expect($entry['payload'])->toBe($payload)
+        ->and($session['seq_no'] ?? null)->toBe(1)
+        ->and($database->inTransaction())->toBeFalse();
+});
+
+it('rolls back a triggered event if its transaction sequence cannot advance', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $outbox = new TransactionEventOutboxRepository($database);
+    $payload = [
+        'eventType' => 'Updated',
+        'triggerReason' => 'Trigger',
+        'seqNo' => 1,
+        'transactionInfo' => ['transactionId' => 'missing-active-transaction'],
+        'evse' => ['id' => 1, 'connectorId' => 1],
+    ];
+
+    expect(fn () => $outbox->enqueueForActiveTransaction(
+        $chargerId,
+        $payload,
+        $sessions,
+        1,
+        1,
+        'missing-active-transaction',
+        0,
+    ))->toThrow(RuntimeException::class)
+        ->and($outbox->nextPending($chargerId))->toBeNull()
+        ->and($database->inTransaction())->toBeFalse();
 });
 
 it('marks queued transaction events offline when the charger loses its connection', function (): void {

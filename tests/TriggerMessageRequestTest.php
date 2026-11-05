@@ -100,6 +100,51 @@ it('accepts a Heartbeat trigger even when the CSMS includes an irrelevant EVSE',
         ->and($handler->takeStatusNotifications())->toBe([]);
 });
 
+it('accepts a TransactionEvent trigger for a matching active transaction', function (): void {
+    [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler();
+    $sessions->markOccupied($chargerId, 1, 2, 'active-shared-transaction');
+
+    $response = $handler->handle([
+        'requestedMessage' => 'TransactionEvent',
+        'evse' => ['id' => 1, 'connectorId' => 2],
+    ]);
+    $transactionSessions = $handler->takeTransactionSessions();
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($transactionSessions)->toHaveCount(1)
+        ->and($transactionSessions[0]['transaction_id'] ?? null)->toBe('active-shared-transaction')
+        ->and($transactionSessions[0]['evse_id'] ?? null)->toBe(1)
+        ->and($transactionSessions[0]['connector_id'] ?? null)->toBe(2);
+});
+
+it('rejects a TransactionEvent trigger when its target has no active transaction', function (): void {
+    [, , , , , , $handler] = createTriggerMessageHandler();
+
+    $response = $handler->handle([
+        'requestedMessage' => 'TransactionEvent',
+        'evse' => ['id' => 1],
+    ]);
+
+    expect($response)->toBe(['status' => 'Rejected'])
+        ->and($handler->takeTransactionSessions())->toBe([]);
+});
+
+it('schedules a TransactionEvent for every active EVSE when the request has no EVSE target', function (): void {
+    [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler(2, 'independent');
+    $sessions->markOccupied($chargerId, 1, 1, 'active-first-transaction');
+    $sessions->markOccupied($chargerId, 2, 1, 'active-second-transaction');
+
+    $response = $handler->handle(['requestedMessage' => 'TransactionEvent']);
+    $transactionSessions = $handler->takeTransactionSessions();
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($transactionSessions)->toHaveCount(2)
+        ->and(array_column($transactionSessions, 'transaction_id'))->toBe([
+            'active-first-transaction',
+            'active-second-transaction',
+        ]);
+});
+
 it('rejects a triggered BootNotification after the station was accepted', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler(1, 'independent');
 

@@ -1580,6 +1580,122 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
     }
 })->group('integration');
 
+it('sends a current sequenced TransactionEvent after accepting its trigger', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-trigger-transaction-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_TRIGGER_TRANSACTION_EVENT' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'TriggerTransactionCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Trigger Transaction Test Model',
+            'serial_number' => 'TRIGGER-TX-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody);
+        drainProcessOutput($fakeCsms);
+
+        [$plugBody, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($plugHeaders[0] ?? '', '200'))->toBeFalse('The simulated vehicle should start a transaction: ' . (string) $plugBody);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($csmsOutput, 'TriggerMessage transaction event: ')) {
+            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage transaction event: ', 3_000);
+        }
+
+        expect($csmsOutput)->toContain('"requestedMessage":"TransactionEvent"')
+            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-transaction-event-')
+            ->toContain('"status":"Accepted"')
+            ->toContain('TriggerMessage transaction event: [2,');
+
+        $triggerResponsePosition = strpos($csmsOutput, 'TriggerMessage station response:');
+        $triggeredEventPosition = strpos($csmsOutput, 'TriggerMessage transaction event:');
+        expect($triggerResponsePosition)->toBeInt()
+            ->and($triggeredEventPosition)->toBeInt()
+            ->and($triggerResponsePosition)->toBeLessThan($triggeredEventPosition, 'The TriggerMessage response must precede the TransactionEvent.');
+
+        $triggerEventLineStart = strpos($csmsOutput, 'TriggerMessage transaction event: [');
+        $triggerEventFrameText = substr($csmsOutput, $triggerEventLineStart + strlen('TriggerMessage transaction event: '));
+        $triggerEventFrame = json_decode(strtok($triggerEventFrameText, "\n"), true, flags: JSON_THROW_ON_ERROR);
+        $triggerEvent = $triggerEventFrame[3] ?? [];
+        $startedState = is_string($plugBody) ? json_decode($plugBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $transactionId = $startedState['result']['transactionId'] ?? null;
+        expect($triggerEventFrame[2] ?? null)->toBe('TransactionEvent')
+            ->and($triggerEvent['eventType'] ?? null)->toBe('Updated')
+            ->and($triggerEvent['triggerReason'] ?? null)->toBe('Trigger')
+            ->and($triggerEvent['seqNo'] ?? null)->toBe(1)
+            ->and($triggerEvent['transactionInfo']['transactionId'] ?? null)->toBe($transactionId)
+            ->and($triggerEvent['transactionInfo']['chargingState'] ?? null)->toBe('EVConnected')
+            ->and($triggerEvent['evse'] ?? null)->toBe(['id' => 1, 'connectorId' => 1])
+            ->and($triggerEvent['meterValue'][0]['sampledValue'][0]['context'] ?? null)->toBe('Trigger');
+
+        $database = new PDO('sqlite:' . $databasePath);
+        $sessionSequence = (int) $database->query(
+            "SELECT seq_no FROM outlet_session WHERE charger_id = {$chargerId} AND evse_id = 1 AND connector_id = 1",
+        )->fetchColumn();
+        $deliveredStatus = $database->query(
+            "SELECT status FROM transaction_event_outbox WHERE charger_id = {$chargerId} AND transaction_id = "
+                . $database->quote((string) $transactionId) . ' AND seq_no = 1',
+        )->fetchColumn();
+        expect($sessionSequence)->toBe(1)
+            ->and($deliveredStatus)->toBe('delivered');
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('reconnects with a RemoteReset BootNotification after an idle Immediate reset', function (): void {
     $GLOBALS['capturedFakeCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
