@@ -160,9 +160,11 @@ function serveClient($client): void
         if ($action === 'BootNotification'
             && ($result['status'] ?? null) === 'Accepted'
             && getenv('FAKE_CSMS_SEND_TRIGGER_MESSAGE') === '1') {
+            $requestedMessage = getenv('FAKE_CSMS_TRIGGER_MESSAGE') ?: 'StatusNotification';
             $expectedStatusNotifications = (int) (getenv('FAKE_CSMS_TRIGGER_EXPECTED_STATUSES') ?: 1);
+            $expectedInitialStatuses = (int) (getenv('FAKE_CSMS_INITIAL_STATUS_COUNT') ?: $expectedStatusNotifications);
             $initialStatusNotifications = 0;
-            while ($initialStatusNotifications < $expectedStatusNotifications) {
+            while ($initialStatusNotifications < $expectedInitialStatuses) {
                 $stationMessageFrame = readFrame($client);
                 if ($stationMessageFrame === null) {
                     break;
@@ -184,14 +186,18 @@ function serveClient($client): void
             }
 
             $triggerCallId = 'fake-csms-trigger-message-' . $call[1];
-            $triggerCall = json_encode([2, $triggerCallId, 'TriggerMessage', [
-                'requestedMessage' => 'StatusNotification',
-            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            $triggerPayload = ['requestedMessage' => $requestedMessage];
+            if ($requestedMessage === 'Heartbeat' && getenv('FAKE_CSMS_TRIGGER_INCLUDE_EVSE') === '1') {
+                $triggerPayload['evse'] = ['id' => 99];
+            }
+
+            $triggerCall = json_encode([2, $triggerCallId, 'TriggerMessage', $triggerPayload], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
             fwrite(STDOUT, 'TriggerMessage CSMS call: ' . $triggerCall . "\n");
             writeFrame($client, 0x1, $triggerCall);
             $triggerResponseReceived = false;
-            $statusNotificationsReceived = 0;
-            while (!$triggerResponseReceived || $statusNotificationsReceived < $expectedStatusNotifications) {
+            $triggeredMessagesReceived = 0;
+            $expectedTriggeredMessages = $requestedMessage === 'StatusNotification' ? $expectedStatusNotifications : 1;
+            while (!$triggerResponseReceived || $triggeredMessagesReceived < $expectedTriggeredMessages) {
                 $stationResponse = readFrame($client);
                 if ($stationResponse === null) {
                     break;
@@ -216,12 +222,17 @@ function serveClient($client): void
                     continue;
                 }
 
-                if (($stationMessage[0] ?? null) === 2
-                    && ($stationMessage[2] ?? null) === 'StatusNotification') {
-                    fwrite(STDOUT, 'TriggerMessage status notification: ' . $stationResponse[1] . "\n");
-                    $statusNotificationsReceived++;
-                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-                    writeFrame($client, 0x1, $statusReply);
+                if (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === $requestedMessage) {
+                    $triggeredMessageLabel = $requestedMessage === 'StatusNotification'
+                        ? 'TriggerMessage status notification: '
+                        : 'TriggerMessage Heartbeat: ';
+                    fwrite(STDOUT, $triggeredMessageLabel . $stationResponse[1] . "\n");
+                    $triggeredMessagesReceived++;
+                    $requestedReply = $requestedMessage === 'Heartbeat'
+                        ? ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')]
+                        : new stdClass();
+                    $messageReply = json_encode([3, $stationMessage[1], $requestedReply], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $messageReply);
                 }
             }
         }

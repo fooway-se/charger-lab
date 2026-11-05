@@ -18,6 +18,8 @@ final class TriggerMessageRequestHandler
      */
     private array $statusNotifications = [];
 
+    private bool $heartbeatRequested = false;
+
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
@@ -32,6 +34,8 @@ final class TriggerMessageRequestHandler
      */
     public function handle(array $payload, ?string $bootStatus = null): array
     {
+        $this->statusNotifications = [];
+        $this->heartbeatRequested = false;
         $requestedMessage = $payload['requestedMessage'] ?? null;
         if (!is_string($requestedMessage)) {
             return ['status' => 'Rejected'];
@@ -39,6 +43,12 @@ final class TriggerMessageRequestHandler
 
         if ($requestedMessage === 'BootNotification' && $bootStatus === 'Accepted') {
             return ['status' => 'Rejected'];
+        }
+
+        if ($requestedMessage === 'Heartbeat') {
+            $this->heartbeatRequested = true;
+
+            return ['status' => 'Accepted'];
         }
 
         if ($requestedMessage !== 'StatusNotification') {
@@ -67,7 +77,6 @@ final class TriggerMessageRequestHandler
         }
 
         $pendingReset = $this->resets->pending($this->chargerId);
-        $this->statusNotifications = [];
         foreach ($outlets as $outlet) {
             $connectorStatus = $outlet['connector_status'];
             if ($pendingReset !== null && $pendingReset['type'] === 'OnIdle' && $connectorStatus === 'Available') {
@@ -99,5 +108,13 @@ final class TriggerMessageRequestHandler
         $this->statusNotifications = [];
 
         return $statusNotifications;
+    }
+
+    public function takeHeartbeatRequest(): bool
+    {
+        $heartbeatRequested = $this->heartbeatRequested;
+        $this->heartbeatRequested = false;
+
+        return $heartbeatRequested;
     }
 }

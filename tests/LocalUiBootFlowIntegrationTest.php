@@ -1491,6 +1491,95 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
     }
 })->group('integration');
 
+it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant EVSE', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-trigger-heartbeat-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'FAKE_CSMS_TRIGGER_MESSAGE' => 'Heartbeat',
+        'FAKE_CSMS_TRIGGER_EXPECTED_STATUSES' => '1',
+        'FAKE_CSMS_INITIAL_STATUS_COUNT' => '2',
+        'FAKE_CSMS_TRIGGER_INCLUDE_EVSE' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'TriggerHeartbeatCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Trigger Heartbeat Test Model',
+            'serial_number' => 'TRIGGER-HB-001',
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($csmsOutput, 'TriggerMessage Heartbeat: ')) {
+            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage Heartbeat: ', 3_000);
+        }
+
+        expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"fake-csms-trigger-message-')
+            ->toContain('"requestedMessage":"Heartbeat"')
+            ->toContain('"evse":{"id":99}')
+            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
+            ->toContain('"status":"Accepted"')
+            ->toContain('TriggerMessage Heartbeat: [2,')
+            ->toContain(',"Heartbeat",{}]');
+
+        $triggerResponsePosition = strpos($csmsOutput, 'TriggerMessage station response:');
+        $heartbeatPosition = strpos($csmsOutput, 'TriggerMessage Heartbeat:');
+        expect($triggerResponsePosition)->toBeInt()
+            ->and($heartbeatPosition)->toBeInt()
+            ->and($triggerResponsePosition)->toBeLessThan($heartbeatPosition, 'The TriggerMessage response must precede the triggered Heartbeat.');
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('reconnects with a RemoteReset BootNotification after an idle Immediate reset', function (): void {
     $GLOBALS['capturedFakeCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];

@@ -86,6 +86,20 @@ it('reports unsupported TriggerMessage types as NotImplemented', function (): vo
         ->and($handler->takeStatusNotifications())->toBe([]);
 });
 
+it('accepts a Heartbeat trigger even when the CSMS includes an irrelevant EVSE', function (): void {
+    [, , , , , , $handler] = createTriggerMessageHandler(1, 'independent');
+
+    $response = $handler->handle([
+        'requestedMessage' => 'Heartbeat',
+        'evse' => ['id' => 99],
+    ]);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeHeartbeatRequest())->toBeTrue()
+        ->and($handler->takeHeartbeatRequest())->toBeFalse()
+        ->and($handler->takeStatusNotifications())->toBe([]);
+});
+
 it('rejects a triggered BootNotification after the station was accepted', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler(1, 'independent');
 

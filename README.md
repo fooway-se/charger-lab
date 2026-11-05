@@ -32,7 +32,7 @@ CSMS `ChangeAvailability` requests support station-wide, EVSE, and connector tar
 
 Station-wide CSMS `Reset` requests support `Immediate` and `OnIdle`. `OnIdle` responds `Scheduled` while transactions are active, blocks new transactions, and resets after the active `Ended` events have been delivered. `Immediate` ends active transactions with stopped reason `ImmediateReset`. Both reset modes simulate a station reboot by reconnecting and sending BootNotification with reason `RemoteReset`. EVSE-specific resets are rejected because independent EVSE reset is not implemented.
 
-CSMS `TriggerMessage` requests support `StatusNotification`. With no EVSE target, the station reports the current status of every configured connector; an EVSE or connector target narrows the response. Unsupported message types receive `NotImplemented`, and a request to trigger BootNotification after the station has already been accepted receives `Rejected`.
+CSMS `TriggerMessage` requests support `StatusNotification` and `Heartbeat`. With no EVSE target, a status request reports every configured connector; an EVSE or connector target narrows the response. A heartbeat request sends the required empty payload and does not reset the periodic heartbeat timer. Unsupported message types receive `NotImplemented`, and a request to trigger BootNotification after the station has already been accepted receives `Rejected`.
 
 ## Tests
 

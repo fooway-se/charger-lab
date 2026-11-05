@@ -275,13 +275,10 @@ final class StationSessionWorker
                 }
 
                 if ($session['next_heartbeat_at'] !== null && microtime(true) >= $session['next_heartbeat_at']) {
-                    $result = $this->createClient($chargerId)->request('Heartbeat', new \stdClass());
+                    $this->sendHeartbeat($chargerId);
                     $interval = $this->sessions[$chargerId]['heartbeat_interval'];
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $interval;
                     $this->chargers->setConnectionStatus($chargerId, 'Connected');
-                    if (!isset($result['currentTime']) || !is_string($result['currentTime'])) {
-                        throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
-                    }
 
                     return true;
                 }
@@ -526,6 +523,10 @@ final class StationSessionWorker
 
                 if ($action === 'TriggerMessage') {
                     if (($response['status'] ?? null) === 'Accepted') {
+                        if ($triggerMessage->takeHeartbeatRequest()) {
+                            $this->sendHeartbeat($chargerId);
+                        }
+
                         foreach ($triggerMessage->takeStatusNotifications() as $statusNotification) {
                             $this->createClient($chargerId)->request('StatusNotification', $statusNotification);
                         }
@@ -1174,6 +1175,14 @@ final class StationSessionWorker
             'evseId' => $evseId,
             'connectorId' => $connectorId,
         ]);
+    }
+
+    private function sendHeartbeat(int $chargerId): void
+    {
+        $result = $this->createClient($chargerId)->request('Heartbeat', new \stdClass());
+        if (!isset($result['currentTime']) || !is_string($result['currentTime'])) {
+            throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
+        }
     }
 
     /**
