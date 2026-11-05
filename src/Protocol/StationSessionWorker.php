@@ -456,6 +456,7 @@ final class StationSessionWorker
             $this->outletSessions,
             $this->availability,
             $this->resets,
+            $this->deviceModelSettings,
         );
 
         $connection = $this->sessions[$chargerId]['connection'];
@@ -533,6 +534,13 @@ final class StationSessionWorker
 
                         foreach ($triggerMessage->takeTransactionSessions() as $session) {
                             $this->sendTriggeredTransactionEvent($chargerId, $session);
+                        }
+
+                        foreach ($triggerMessage->takeMeterValueRequests() as $meterValueRequest) {
+                            $this->createClient($chargerId)->request('MeterValues', [
+                                'evseId' => $meterValueRequest['evse_id'],
+                                'meterValue' => $this->meterValue($meterValueRequest['meter_wh'], 'Trigger'),
+                            ]);
                         }
                     }
 

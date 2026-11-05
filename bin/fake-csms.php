@@ -197,7 +197,11 @@ function serveClient($client): void
             writeFrame($client, 0x1, $triggerCall);
             $triggerResponseReceived = false;
             $triggeredMessagesReceived = 0;
-            $expectedTriggeredMessages = $requestedMessage === 'StatusNotification' ? $expectedStatusNotifications : 1;
+            $expectedTriggeredMessages = match ($requestedMessage) {
+                'StatusNotification' => $expectedStatusNotifications,
+                'MeterValues' => (int) (getenv('FAKE_CSMS_TRIGGER_EXPECTED_METER_VALUES') ?: 1),
+                default => 1,
+            };
             while (!$triggerResponseReceived || $triggeredMessagesReceived < $expectedTriggeredMessages) {
                 $stationResponse = readFrame($client);
                 if ($stationResponse === null) {
@@ -224,9 +228,11 @@ function serveClient($client): void
                 }
 
                 if (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === $requestedMessage) {
-                    $triggeredMessageLabel = $requestedMessage === 'StatusNotification'
-                        ? 'TriggerMessage status notification: '
-                        : 'TriggerMessage Heartbeat: ';
+                    $triggeredMessageLabel = match ($requestedMessage) {
+                        'StatusNotification' => 'TriggerMessage status notification: ',
+                        'MeterValues' => 'TriggerMessage MeterValues: ',
+                        default => 'TriggerMessage Heartbeat: ',
+                    };
                     fwrite(STDOUT, $triggeredMessageLabel . $stationResponse[1] . "\n");
                     $triggeredMessagesReceived++;
                     $requestedReply = $requestedMessage === 'Heartbeat'

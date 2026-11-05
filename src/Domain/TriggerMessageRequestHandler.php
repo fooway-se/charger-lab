@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\AvailabilityRepository;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\ResetRepository;
 
@@ -25,11 +26,17 @@ final class TriggerMessageRequestHandler
      */
     private array $transactionSessions = [];
 
+    /**
+     * @var list<array{evse_id:int,meter_wh:int}>
+     */
+    private array $meterValueRequests = [];
+
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
         private readonly AvailabilityRepository $availability,
         private readonly ResetRepository $resets,
+        private readonly DeviceModelSettingsRepository $settings,
     ) {
     }
 
@@ -42,6 +49,7 @@ final class TriggerMessageRequestHandler
         $this->statusNotifications = [];
         $this->heartbeatRequested = false;
         $this->transactionSessions = [];
+        $this->meterValueRequests = [];
         $requestedMessage = $payload['requestedMessage'] ?? null;
         if (!is_string($requestedMessage)) {
             return ['status' => 'Rejected'];
@@ -57,7 +65,7 @@ final class TriggerMessageRequestHandler
             return ['status' => 'Accepted'];
         }
 
-        if (!in_array($requestedMessage, ['StatusNotification', 'TransactionEvent'], true)) {
+        if (!in_array($requestedMessage, ['StatusNotification', 'TransactionEvent', 'MeterValues'], true)) {
             return ['status' => 'NotImplemented'];
         }
 
@@ -76,7 +84,7 @@ final class TriggerMessageRequestHandler
 
         $outlets = array_values(array_filter($outlets, static fn (array $outlet): bool =>
             ($evseId === null || $outlet['evse_id'] === $evseId)
-            && ($connectorId === null || $outlet['connector_id'] === $connectorId)
+            && ($requestedMessage === 'MeterValues' || $connectorId === null || $outlet['connector_id'] === $connectorId)
         ));
         if ($outlets === []) {
             return ['status' => 'Rejected'];
@@ -91,6 +99,23 @@ final class TriggerMessageRequestHandler
             ));
             if ($this->transactionSessions === []) {
                 return ['status' => 'Rejected'];
+            }
+
+            return ['status' => 'Accepted'];
+        }
+
+        if ($requestedMessage === 'MeterValues') {
+            if ($this->settings->get($this->chargerId, 'Measurands') !== 'Energy.Active.Import.Register') {
+                return ['status' => 'Rejected'];
+            }
+
+            $metersByEvse = [];
+            foreach ($outlets as $outlet) {
+                $evseId = $outlet['evse_id'];
+                $metersByEvse[$evseId] = ($metersByEvse[$evseId] ?? 0) + $outlet['meter_wh'];
+            }
+            foreach ($metersByEvse as $meterEvseId => $meterWh) {
+                $this->meterValueRequests[] = ['evse_id' => (int) $meterEvseId, 'meter_wh' => $meterWh];
             }
 
             return ['status' => 'Accepted'];
@@ -147,5 +172,16 @@ final class TriggerMessageRequestHandler
         $this->transactionSessions = [];
 
         return $transactionSessions;
+    }
+
+    /**
+     * @return list<array{evse_id:int,meter_wh:int}>
+     */
+    public function takeMeterValueRequests(): array
+    {
+        $meterValueRequests = $this->meterValueRequests;
+        $this->meterValueRequests = [];
+
+        return $meterValueRequests;
     }
 }

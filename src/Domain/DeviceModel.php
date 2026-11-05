@@ -141,7 +141,7 @@ final class DeviceModel
             return $this->settings->get($this->chargerId, $variableName);
         }
 
-        if ($componentName === 'SampledDataCtrlr') {
+        if (in_array($componentName, ['AlignedDataCtrlr', 'SampledDataCtrlr'], true)) {
             return $this->settings->get($this->chargerId, $variableName);
         }
 
@@ -236,7 +236,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'TxCtrlr'], true)) {
+        if (in_array($componentName, ['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'TxCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -275,6 +275,10 @@ final class DeviceModel
             return in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
         }
 
+        if (($component['name'] ?? null) === 'AlignedDataCtrlr') {
+            return ($variable['name'] ?? null) === 'Measurands';
+        }
+
         if (($component['name'] ?? null) === 'TxCtrlr') {
             return ($variable['name'] ?? null) === 'EVConnectionTimeOut';
         }
@@ -311,7 +315,7 @@ final class DeviceModel
                 && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'EVConnectionTimeOut'], true) || (int) $value > 0);
         }
 
-        if (!in_array($variable, ['TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {
+        if (!in_array($variable, ['Measurands', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {
             return false;
         }
 

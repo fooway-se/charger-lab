@@ -30,9 +30,11 @@ it('preserves existing sampled data settings when adding a writable variable', f
     $database = Database::connect($databasePath);
     $settings = new DeviceModelSettingsRepository($database);
     $settings->set($chargerId, 'TxStartedMeasurands', '');
+    $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register');
 
     expect($settings->get($chargerId, 'TxUpdatedInterval'))->toBe('7')
-        ->and($settings->get($chargerId, 'TxStartedMeasurands'))->toBe('');
+        ->and($settings->get($chargerId, 'TxStartedMeasurands'))->toBe('')
+        ->and($settings->get($chargerId, 'Measurands'))->toBe('Energy.Active.Import.Register');
 
     unset($settings, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {

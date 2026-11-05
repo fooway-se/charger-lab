@@ -1580,6 +1580,94 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
     }
 })->group('integration');
 
+it('sends current MeterValues for every EVSE after accepting a TriggerMessage', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-trigger-meter-values-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'FAKE_CSMS_TRIGGER_MESSAGE' => 'MeterValues',
+        'FAKE_CSMS_TRIGGER_EXPECTED_METER_VALUES' => '2',
+        'FAKE_CSMS_TRIGGER_EXPECTED_STATUSES' => '2',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'TriggerMeterValuesCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Trigger Meter Values Test Model',
+            'serial_number' => 'TRIGGER-MV-001',
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($csmsOutput, 'TriggerMessage MeterValues: ')) {
+            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage MeterValues: ', 3_000);
+        }
+
+        expect($csmsOutput)->toContain('"requestedMessage":"MeterValues"')
+            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
+            ->toContain('"status":"Accepted"')
+            ->toContain('TriggerMessage MeterValues: [2,')
+            ->toContain(',"MeterValues",{"evseId":1,"meterValue":[{"timestamp":')
+            ->toContain('"context":"Trigger","measurand":"Energy.Active.Import.Register"')
+            ->toContain(',"MeterValues",{"evseId":2,"meterValue":[{"timestamp":');
+
+        $triggerResponsePosition = strpos($csmsOutput, 'TriggerMessage station response:');
+        $firstMeterValuesPosition = strpos($csmsOutput, 'TriggerMessage MeterValues:');
+        expect($triggerResponsePosition)->toBeInt()
+            ->and($firstMeterValuesPosition)->toBeInt()
+            ->and($triggerResponsePosition)->toBeLessThan($firstMeterValuesPosition, 'The TriggerMessage response must precede requested MeterValues calls.');
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('sends a current sequenced TransactionEvent after accepting its trigger', function (): void {
     $GLOBALS['capturedFakeCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];

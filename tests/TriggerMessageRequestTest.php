@@ -8,6 +8,7 @@ use ChargerEmulator\Domain\TriggerMessageRequestHandler;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\ResetRepository;
 
@@ -29,6 +30,8 @@ function createTriggerMessageHandler(int $outletCount = 2, string $topology = 's
     $availability = new AvailabilityRepository($database);
     $resets = new ResetRepository($database, $sessions);
 
+    $settings = new DeviceModelSettingsRepository($database);
+
     return [
         $database,
         $chargers,
@@ -41,7 +44,9 @@ function createTriggerMessageHandler(int $outletCount = 2, string $topology = 's
             $sessions,
             $availability,
             $resets,
+            $settings,
         ),
+        $settings,
     ];
 }
 
@@ -80,10 +85,63 @@ it('rejects an invalid StatusNotification target without queuing messages', func
 it('reports unsupported TriggerMessage types as NotImplemented', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler();
 
-    $response = $handler->handle(['requestedMessage' => 'MeterValues']);
+    $response = $handler->handle(['requestedMessage' => 'FirmwareStatusNotification']);
 
     expect($response)->toBe(['status' => 'NotImplemented'])
         ->and($handler->takeStatusNotifications())->toBe([]);
+});
+
+it('accepts a MeterValues trigger for a configured EVSE', function (): void {
+    [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler(1, 'independent');
+    $sessions->markOccupied($chargerId, 1, 1, 'meter-values-transaction');
+    $sessions->recordMeterSample($chargerId, 1, 1, 'meter-values-transaction', 1250, 1, gmdate(DATE_ATOM));
+
+    $response = $handler->handle([
+        'requestedMessage' => 'MeterValues',
+        'evse' => ['id' => 1],
+    ]);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 1250]]);
+});
+
+it('sends one current MeterValues request per EVSE when the target is absent', function (): void {
+    [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler(2, 'independent');
+    $sessions->markOccupied($chargerId, 1, 1, 'first-meter-transaction');
+    $sessions->recordMeterSample($chargerId, 1, 1, 'first-meter-transaction', 1250, 1, gmdate(DATE_ATOM));
+    $sessions->markOccupied($chargerId, 2, 1, 'second-meter-transaction');
+    $sessions->recordMeterSample($chargerId, 2, 1, 'second-meter-transaction', 2500, 1, gmdate(DATE_ATOM));
+
+    $response = $handler->handle(['requestedMessage' => 'MeterValues']);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeMeterValueRequests())->toBe([
+            ['evse_id' => 1, 'meter_wh' => 1250],
+            ['evse_id' => 2, 'meter_wh' => 2500],
+        ]);
+});
+
+it('rejects MeterValues when no aligned measurands are configured', function (): void {
+    [, , $chargerId, , , , $handler, $settings] = createTriggerMessageHandler(1, 'independent');
+    $settings->set($chargerId, 'Measurands', '');
+
+    $response = $handler->handle(['requestedMessage' => 'MeterValues']);
+
+    expect($response)->toBe(['status' => 'Rejected'])
+        ->and($handler->takeMeterValueRequests())->toBe([]);
+});
+
+it('reports the current combined meter register at the EVSE level for shared connectors', function (): void {
+    [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler(2, 'shared');
+    $sessions->markOccupied($chargerId, 1, 1, 'first-shared-meter-transaction');
+    $sessions->recordMeterSample($chargerId, 1, 1, 'first-shared-meter-transaction', 1250, 1, gmdate(DATE_ATOM));
+    $sessions->markOccupied($chargerId, 1, 2, 'second-shared-meter-transaction');
+    $sessions->recordMeterSample($chargerId, 1, 2, 'second-shared-meter-transaction', 2500, 1, gmdate(DATE_ATOM));
+
+    $response = $handler->handle(['requestedMessage' => 'MeterValues', 'evse' => ['id' => 1, 'connectorId' => 2]]);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 3750]]);
 });
 
 it('accepts a Heartbeat trigger even when the CSMS includes an irrelevant EVSE', function (): void {

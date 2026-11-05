@@ -132,6 +132,53 @@ it('reads and persists supported transaction meter sampling settings', function 
         ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register', '', '', '5']);
 });
 
+it('reads and persists aligned meter value measurands', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $settings = new DeviceModelSettingsRepository($database);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
+
+    $getInitial = $deviceModel->handle('GetVariables', [
+        'getVariableData' => [[
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'Measurands'],
+        ]],
+    ]);
+    $setInvalid = $deviceModel->handle('SetVariables', [
+        'setVariableData' => [[
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'Measurands'],
+            'attributeValue' => 'Unsupported.Measurand',
+        ]],
+    ]);
+    $set = $deviceModel->handle('SetVariables', [
+        'setVariableData' => [[
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'Measurands'],
+            'attributeValue' => '',
+        ]],
+    ]);
+    $reopenedModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+    );
+    $getUpdated = $reopenedModel->handle('GetVariables', [
+        'getVariableData' => [[
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'Measurands'],
+        ]],
+    ]);
+
+    expect($getInitial['getVariableResult'][0]['attributeValue'] ?? null)->toBe('Energy.Active.Import.Register')
+        ->and($setInvalid['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected')
+        ->and($set['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
+        ->and($getUpdated['getVariableResult'][0]['attributeValue'] ?? null)->toBe('');
+});
+
 it('rejects invalid transaction meter sampling settings without changing saved values', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();
