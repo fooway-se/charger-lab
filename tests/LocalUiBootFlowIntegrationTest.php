@@ -1406,3 +1406,359 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
         rmdir($directory);
     }
 })->group('integration');
+
+it('reconnects with a RemoteReset BootNotification after an idle Immediate reset', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-reset-immediate-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $resetSentPath = $directory . '/reset-sent';
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_RESET' => '1',
+        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ResetIntegrationCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Reset Test Model',
+            'serial_number' => 'RESET-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
+
+        $resetResponseOutput = waitForProcessOutput($fakeCsms, 'Reset station response: ', 3_000);
+        expect($resetResponseOutput)->toContain('Reset station response: ')
+            ->toContain('"status":"Accepted"');
+
+        $resetBootOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 4_000);
+        expect($resetBootOutput)->toContain('RemoteReset');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('honors the requested reset timing with an active transaction ({type})', function (
+    string $resetType,
+    string $expectedStatus,
+    string $expectedStoppedReason,
+): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-reset-on-idle-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $resetSentPath = $directory . '/reset-sent';
+    $remoteStartSentPath = $directory . '/remote-start-sent';
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_CALL' => '1',
+        'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+        'FAKE_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
+        'FAKE_CSMS_RESET_TYPE' => $resetType,
+        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ResetOnIdleCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Reset Test Model',
+            'serial_number' => 'RESET-IDLE-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
+
+        $resetOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 5_000);
+        expect($resetOutput)->toContain('RemoteStart TransactionEvent: ')
+            ->toContain('Reset station response: ')
+            ->toContain('"status":"' . $expectedStatus . '"')
+            ->toContain('RemoteReset');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+
+        [$resetStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $resetState = is_string($resetStateBody) ? json_decode($resetStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $entries = $resetState['chargers'][0]['entries'] ?? [];
+        $resetOutlet = $resetState['chargers'][0]['outlets'][0] ?? [];
+        $endedEntries = array_values(array_filter($entries, static function (array $entry): bool {
+            if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                return false;
+            }
+
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['eventType'] ?? null) === 'Ended';
+        }));
+        $resetBootEntries = array_values(array_filter($entries, static function (array $entry): bool {
+            if (($entry['action'] ?? null) !== 'BootNotification' || ($entry['direction'] ?? null) !== 'outgoing') {
+                return false;
+            }
+
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['reason'] ?? null) === 'RemoteReset';
+        }));
+        $endedCall = json_decode($endedEntries[0]['message'] ?? 'null', true);
+        $endedPosition = array_search($endedEntries[0] ?? null, $entries, true);
+        $resetBootPosition = array_search($resetBootEntries[0] ?? null, $entries, true);
+
+        expect($endedEntries)->toHaveCount(1)
+            ->and($endedCall[3]['transactionInfo']['stoppedReason'] ?? null)->toBe($expectedStoppedReason)
+            ->and($resetBootEntries)->not->toBeEmpty()
+            ->and($resetOutlet['connector_status'] ?? null)->toBe('Available')
+            ->and($resetOutlet['can_start_transaction'] ?? null)->toBeTrue()
+            ->and($endedPosition)->toBeLessThan($resetBootPosition, 'The RemoteReset BootNotification must follow the Ended event.');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath, $remoteStartSentPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->with([
+    ['OnIdle', 'Scheduled', 'Remote'],
+    ['Immediate', 'Accepted', 'ImmediateReset'],
+])->group('integration');
+
+it('preserves an OnIdle reset across worker restart without booting before the transaction ends', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-reset-restart-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $resetSentPath = $directory . '/reset-sent';
+    $remoteStartSentPath = $directory . '/remote-start-sent';
+    $continuePath = $directory . '/remote-start-continue';
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_CALL' => '1',
+        'FAKE_CSMS_SEND_REMOTE_START' => '1',
+        'FAKE_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
+        'FAKE_CSMS_RESET_TYPE' => 'OnIdle',
+        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
+        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $continuePath,
+        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ResetRestartCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Reset Test Model',
+            'serial_number' => 'RESET-RESTART-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
+
+        $resetResponseOutput = waitForProcessOutput($fakeCsms, 'Reset station response: ', 5_000);
+        expect($resetResponseOutput)->toContain('"status":"Scheduled"');
+        $database = new PDO('sqlite:' . $databasePath);
+        $persistedReset = $database->query(
+            "SELECT reset_type, response_status FROM reset_request WHERE charger_id = {$chargerId}",
+        )->fetch(PDO::FETCH_ASSOC);
+        unset($database);
+        expect($persistedReset)->toBe(['reset_type' => 'OnIdle', 'response_status' => 'Scheduled']);
+
+        drainProcessOutput($fakeCsms);
+        stopProcess($worker);
+        drainProcessOutput($fakeCsms);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $reconnectOutput = waitForProcessOutput($fakeCsms, 'Connected GET /ocpp/ResetRestartCharger HTTP/1.1', 4_000);
+        expect($reconnectOutput)->toContain('Connected GET /ocpp/ResetRestartCharger HTTP/1.1')
+            ->not->toContain('"reason":"RemoteReset"');
+        [$waitingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $waitingState = is_string($waitingStateBody) ? json_decode($waitingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($waitingState['chargers'][0]['outlets'][0]['remote_start_pending'] ?? null)->toBeTrue();
+
+        [, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($plugHeaders[0] ?? '', '200'))->toBeFalse('The already active remote-start transaction may still receive its vehicle.');
+        [, $authorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'rfid_token' => '04A1B2C3D4'], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The vehicle token should be authorized before unplugging.');
+        [, $unplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($unplugHeaders[0] ?? '', '200'))->toBeFalse('The active transaction should end before the reset.');
+
+        $resetBootOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 5_000);
+        expect($resetBootOutput)->toContain('RemoteReset');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+        [$finalStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $finalState = is_string($finalStateBody) ? json_decode($finalStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $entries = $finalState['chargers'][0]['entries'] ?? [];
+        $remoteStarted = array_values(array_filter($entries, static function (array $entry): bool {
+            if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                return false;
+            }
+
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['eventType'] ?? null) === 'Started'
+                && ($call[3]['triggerReason'] ?? null) === 'RemoteStart';
+        }));
+        $endedEvents = array_values(array_filter($entries, static function (array $entry): bool {
+            if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                return false;
+            }
+
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['eventType'] ?? null) === 'Ended';
+        }));
+        $database = new PDO('sqlite:' . $databasePath);
+        $bootCount = (int) $database->query(
+            "SELECT COUNT(*) FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification' AND direction = 'outgoing'",
+        )->fetchColumn();
+        $pendingResetCount = (int) $database->query(
+            "SELECT COUNT(*) FROM reset_request WHERE charger_id = {$chargerId}",
+        )->fetchColumn();
+        unset($database);
+
+        expect($remoteStarted)->toHaveCount(1)
+            ->and($endedEvents)->toHaveCount(1)
+            ->and($bootCount)->toBe(2, 'The worker restart must not add a BootNotification; only RemoteReset does.')
+            ->and($pendingResetCount)->toBe(0);
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath, $remoteStartSentPath, $continuePath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');

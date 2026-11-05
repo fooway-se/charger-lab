@@ -13,18 +13,21 @@ use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 require __DIR__ . '/../src/autoload.php';
 
 $database = Database::connect(getenv('DATA_PATH') ?: dirname(__DIR__) . '/data/emulator.sqlite');
+$outletSessions = new OutletSessionRepository($database);
 $worker = new StationSessionWorker(
     new ChargerRepository($database),
     new ExchangeRepository($database),
     new OcppCommandRepository($database),
-    new OutletSessionRepository($database),
+    $outletSessions,
     new AvailabilityRepository($database),
+    new ResetRepository($database, $outletSessions),
     new DeviceModelSettingsRepository($database),
     new TransactionEventOutboxRepository($database),
     new WorkspaceSettingsRepository($database),

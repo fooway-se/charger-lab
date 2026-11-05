@@ -11,6 +11,7 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 it('exposes charging state only for an authorized outlet still offering energy', function (): void {
@@ -50,6 +51,7 @@ it('exposes charging state only for an authorized outlet still offering energy',
         new OcppCommandRepository($database),
         $outletSessions,
         new AvailabilityRepository($database),
+        new ResetRepository($database, $outletSessions),
     );
 
     $response = $controller->state(new Request('GET', '/api/state', [], [], []));

@@ -14,6 +14,7 @@ use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use InvalidArgumentException;
 use Throwable;
@@ -30,6 +31,7 @@ final class StationController
         private readonly OcppCommandRepository $commands,
         private readonly OutletSessionRepository $outletSessions,
         private readonly AvailabilityRepository $availability,
+        private readonly ResetRepository $resets,
     ) {
     }
 
@@ -52,7 +54,8 @@ final class StationController
             }
 
             $chargerId = (int) $charger['id'];
-            $charger['outlets'] = array_map(function (array $outlet) use ($chargerId, $outletStates): array {
+            $resetPending = $this->resets->blocksNewTransactions($chargerId);
+            $charger['outlets'] = array_map(function (array $outlet) use ($chargerId, $outletStates, $resetPending): array {
                 $state = $outletStates[$outlet['evse_id'] . ':' . $outlet['connector_id']] ?? null;
                 $outlet['connector_status'] = $this->availability->connectorStatus(
                     $chargerId,
@@ -60,6 +63,9 @@ final class StationController
                     $outlet['connector_id'],
                     $state['connector_status'] ?? 'Available',
                 );
+                if ($resetPending && $outlet['connector_status'] === 'Available') {
+                    $outlet['connector_status'] = 'Unavailable';
+                }
                 $outlet['transaction_id'] = $state['transaction_id'] ?? null;
                 $outlet['remote_start_pending'] = $state['remote_start_pending'] ?? false;
                 $outlet['can_start_transaction'] = $state !== null
@@ -68,7 +74,8 @@ final class StationController
                         $chargerId,
                         $outlet['evse_id'],
                         $outlet['connector_id'],
-                    );
+                    )
+                    && !$resetPending;
                 // Accepted tokens start simulated energy transfer unless the vehicle is still pending or a remote stop was requested.
                 $outlet['is_charging'] = $state !== null
                     && $state['connector_status'] === 'Occupied'
@@ -405,7 +412,8 @@ final class StationController
             if ($action === 'PlugIn' && ($outletState === null
                 || ($outletState['connector_status'] !== 'Available' && !$outletState['remote_start_pending'])
                 || (!$outletState['remote_start_pending']
-                    && !$this->availability->canStartTransaction($id, $outlet['evse_id'], $outlet['connector_id'])))) {
+                    && (!$this->availability->canStartTransaction($id, $outlet['evse_id'], $outlet['connector_id'])
+                        || $this->resets->blocksNewTransactions($id))))) {
                 return Response::json(409, ['error' => 'The selected outlet is not available for a vehicle.']);
             }
             if ($action === 'Unplug' && ($outletState === null

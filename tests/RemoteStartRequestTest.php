@@ -9,6 +9,7 @@ use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 
 it('accepts a remote start only for an available outlet and queues its token', function (): void {
     $directory = sys_get_temp_dir() . '/charger-remote-start-' . bin2hex(random_bytes(6));
@@ -33,6 +34,7 @@ it('accepts a remote start only for an available outlet and queues its token', f
         $sessions,
         new OcppCommandRepository($database),
         new AvailabilityRepository($database),
+        new ResetRepository($database, $sessions),
     );
 
     $result = $handler->handle([
@@ -81,6 +83,7 @@ it('rejects a remote start when the requested EVSE has no available outlet', fun
         $sessions,
         $commands,
         new AvailabilityRepository($database),
+        new ResetRepository($database, $sessions),
     );
 
     expect($handler->handle([
@@ -111,7 +114,13 @@ it('rejects a remote start for an inoperative EVSE', function (): void {
         'operationalStatus' => 'Inoperative',
     ]);
     $commands = new OcppCommandRepository($database);
-    $handler = new RemoteStartRequestHandler($chargerId, $sessions, $commands, $availability);
+    $handler = new RemoteStartRequestHandler(
+        $chargerId,
+        $sessions,
+        $commands,
+        $availability,
+        new ResetRepository($database, $sessions),
+    );
 
     expect($handler->handle([
         'remoteStartId' => 44,
@@ -133,12 +142,51 @@ it('blocks a new remote start while an EVSE inoperative change is scheduled', fu
         'operationalStatus' => 'Inoperative',
     ]);
     $commands = new OcppCommandRepository($database);
-    $handler = new RemoteStartRequestHandler($chargerId, $sessions, $commands, $availability);
+    $handler = new RemoteStartRequestHandler(
+        $chargerId,
+        $sessions,
+        $commands,
+        $availability,
+        new ResetRepository($database, $sessions),
+    );
 
     expect($handler->handle([
         'remoteStartId' => 45,
         'idToken' => ['idToken' => 'RFID-45', 'type' => 'ISO14443'],
         'evseId' => 1,
+    ]))->toBe(['status' => 'Rejected'])
+        ->and($commands->claimNext())->toBeNull();
+});
+
+it('rejects remote starts while a station reset is pending', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->create([
+        'station_identity' => 'ResettingStation',
+        'csms_url' => 'ws://localhost:9000/ocpp',
+        'vendor_name' => 'Test Vendor',
+        'model' => 'Test Model',
+        'serial_number' => '',
+        'outlet_count' => 2,
+        'outlet_topology' => 'independent',
+    ]);
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, (new OutletMap(2, 'independent'))->outlets());
+    $sessions->markOccupied($chargerId, 1, 1, 'active-reset-transaction');
+    $resets = new ResetRepository($database, $sessions);
+    expect($resets->request($chargerId, ['type' => 'OnIdle']))->toBe('Scheduled');
+    $commands = new OcppCommandRepository($database);
+    $handler = new RemoteStartRequestHandler(
+        $chargerId,
+        $sessions,
+        $commands,
+        new AvailabilityRepository($database),
+        $resets,
+    );
+
+    expect($handler->handle([
+        'remoteStartId' => 46,
+        'idToken' => ['idToken' => 'RFID-46', 'type' => 'ISO14443'],
+        'evseId' => 2,
     ]))->toBe(['status' => 'Rejected'])
         ->and($commands->claimNext())->toBeNull();
 });

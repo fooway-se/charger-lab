@@ -36,6 +36,7 @@ final class Database
             self::migrateAvailability($pdo);
             self::migrateDeviceModelSettings($pdo);
             self::migrateTransactionEventOutbox($pdo);
+            self::migrateResetRequests($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -365,6 +366,25 @@ final class Database
                 PRIMARY KEY (charger_id, scope, evse_id, connector_id)
             )
             SQL);
+    }
+
+    private static function migrateResetRequests(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS reset_request (
+                charger_id INTEGER PRIMARY KEY,
+                reset_type TEXT NOT NULL CHECK (reset_type IN ('Immediate', 'OnIdle')),
+                response_status TEXT NOT NULL CHECK (response_status IN ('Accepted', 'Scheduled')),
+                reset_stage TEXT NOT NULL DEFAULT 'waiting' CHECK (reset_stage IN ('waiting', 'unavailable_reported', 'reconnecting')),
+                requested_at TEXT NOT NULL,
+                FOREIGN KEY (charger_id) REFERENCES charger(id) ON DELETE CASCADE
+            )
+            SQL);
+
+        $columns = $pdo->query('PRAGMA table_info(reset_request)')->fetchAll(PDO::FETCH_COLUMN, 1);
+        if (!in_array('reset_stage', $columns, true)) {
+            $pdo->exec("ALTER TABLE reset_request ADD COLUMN reset_stage TEXT NOT NULL DEFAULT 'waiting'");
+        }
     }
 
     private static function migrateDeviceModelSettings(PDO $pdo): void

@@ -10,6 +10,7 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 it('validates station inputs and gates early boot retries', function (): void {
@@ -22,14 +23,16 @@ it('validates station inputs and gates early boot retries', function (): void {
     $database = Database::connect($databasePath);
 
     $chargers = new ChargerRepository($database);
+    $outletSessions = new OutletSessionRepository($database);
 
     $controller = new StationController(
         $chargers,
         new ExchangeRepository($database),
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
-        new OutletSessionRepository($database),
+        $outletSessions,
         new AvailabilityRepository($database),
+        new ResetRepository($database, $outletSessions),
     );
 
     $response = $controller->save(new Request('POST', '/api/charger', [], [], [
@@ -128,6 +131,7 @@ it('exposes CSMS availability changes to the test bench state', function (): voi
         new OcppCommandRepository($database),
         $outlets,
         $availability,
+        new ResetRepository($database, $outlets),
     );
 
     $response = $controller->state(new Request('GET', '/api/state', [], [], []));
@@ -140,5 +144,49 @@ it('exposes CSMS availability changes to the test bench state', function (): voi
     ]));
 
     expect($state['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Unavailable')
+        ->and($plugResponse->status)->toBe(409);
+});
+
+it('shows idle outlets as unavailable and blocks plug-in while reset is scheduled', function (): void {
+    $database = Database::connect(':memory:');
+    $chargers = new ChargerRepository($database);
+    $chargerId = $chargers->create([
+        'station_identity' => 'ScheduledResetStation',
+        'csms_url' => 'ws://localhost:9000/ocpp',
+        'vendor_name' => 'Test Vendor',
+        'model' => 'Test Model',
+        'serial_number' => '',
+        'outlet_count' => 2,
+        'outlet_topology' => 'independent',
+    ]);
+    $outlets = new OutletSessionRepository($database);
+    $outlets->initialize($chargerId, [
+        ['number' => 1, 'evse_id' => 1, 'connector_id' => 1],
+        ['number' => 2, 'evse_id' => 2, 'connector_id' => 1],
+    ]);
+    $outlets->markOccupied($chargerId, 1, 1, 'active-on-idle-reset');
+    $resets = new ResetRepository($database, $outlets);
+    expect($resets->request($chargerId, ['type' => 'OnIdle']))->toBe('Scheduled');
+    $chargers->setBootStatus($chargerId, 'Accepted');
+    $chargers->setConnectionStatus($chargerId, 'Connected');
+    $controller = new StationController(
+        $chargers,
+        new ExchangeRepository($database),
+        new WorkspaceSettingsRepository($database),
+        new OcppCommandRepository($database),
+        $outlets,
+        new AvailabilityRepository($database),
+        $resets,
+    );
+
+    $stateResponse = $controller->state(new Request('GET', '/api/state', [], [], []));
+    $state = json_decode($stateResponse->body, true, flags: JSON_THROW_ON_ERROR);
+    $plugResponse = $controller->plugIn(new Request('POST', '/api/outlet/plug-in', [], [], [
+        'charger_id' => $chargerId,
+        'outlet_number' => 2,
+    ]));
+
+    expect($state['chargers'][0]['outlets'][1]['connector_status'] ?? null)->toBe('Unavailable')
+        ->and($state['chargers'][0]['outlets'][1]['can_start_transaction'] ?? null)->toBeFalse()
         ->and($plugResponse->status)->toBe(409);
 });

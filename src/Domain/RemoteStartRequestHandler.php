@@ -7,6 +7,7 @@ namespace ChargerEmulator\Domain;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 
 /**
  * Validates CSMS remote-start requests and queues an available outlet action.
@@ -21,6 +22,7 @@ final class RemoteStartRequestHandler
         private readonly OutletSessionRepository $outletSessions,
         private readonly OcppCommandRepository $commands,
         private readonly AvailabilityRepository $availability,
+        private readonly ResetRepository $resets,
     ) {
     }
 
@@ -30,6 +32,10 @@ final class RemoteStartRequestHandler
      */
     public function handle(array $payload): array
     {
+        if ($this->resets->blocksNewTransactions($this->chargerId)) {
+            return ['status' => 'Rejected'];
+        }
+
         $remoteStartId = $payload['remoteStartId'] ?? null;
         $idToken = $payload['idToken'] ?? null;
         $evseId = $payload['evseId'] ?? null;

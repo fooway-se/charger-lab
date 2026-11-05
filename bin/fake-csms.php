@@ -159,6 +159,14 @@ function serveClient($client): void
 
         if ($action === 'BootNotification'
             && ($result['status'] ?? null) === 'Accepted'
+            && getenv('FAKE_CSMS_SEND_RESET') === '1'
+            && (($resetSentPath = getenv('FAKE_CSMS_RESET_SENT_PATH') ?: '') === '' || !is_file($resetSentPath))) {
+            markResetSent($resetSentPath);
+            sendResetCall($client, 'fake-csms-reset-' . $call[1], getenv('FAKE_CSMS_RESET_TYPE') ?: 'Immediate');
+        }
+
+        if ($action === 'BootNotification'
+            && ($result['status'] ?? null) === 'Accepted'
             && !$changeAvailabilitySent
             && getenv('FAKE_CSMS_SEND_CHANGE_AVAILABILITY') === '1') {
             $changeAvailabilitySent = true;
@@ -445,6 +453,17 @@ function serveClient($client): void
 
                     $remoteStartContinuePath = getenv('FAKE_CSMS_REMOTE_START_CONTINUE_PATH') ?: '';
                     $remoteStopBeforePlug = getenv('FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG') === '1';
+                    $resetSentPath = getenv('FAKE_CSMS_RESET_SENT_PATH') ?: '';
+                    if (getenv('FAKE_CSMS_SEND_RESET_AFTER_REMOTE_START') === '1'
+                        && ($resetSentPath === '' || !is_file($resetSentPath))) {
+                        markResetSent($resetSentPath);
+                        sendResetCall(
+                            $client,
+                            'fake-csms-reset-after-start-' . $call[1],
+                            getenv('FAKE_CSMS_RESET_TYPE') ?: 'OnIdle',
+                        );
+                    }
+
                     if ($remoteStartContinuePath !== '' && !$remoteStopBeforePlug) {
                         waitForRemoteStartContinuation($client, $remoteStartContinuePath);
                     }
@@ -569,6 +588,49 @@ function waitForRemoteStartContinuation($client, string $continuePath): void
             default => new stdClass(),
         };
         writeFrame($client, 0x1, json_encode([3, $message[1], $result], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+}
+
+/**
+ * @param resource $client
+ */
+function sendResetCall($client, string $messageId, string $type): void
+{
+    $call = json_encode([2, $messageId, 'Reset', ['type' => $type]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $call);
+    while (($frame = readFrame($client)) !== null) {
+        if ($frame[0] !== 0x1) {
+            continue;
+        }
+
+        $message = json_decode($frame[1], true);
+        if (!is_array($message)) {
+            continue;
+        }
+
+        if (in_array($message[0] ?? null, [3, 4], true) && ($message[1] ?? null) === $messageId) {
+            fwrite(STDOUT, 'Reset station response: ' . $frame[1] . "\n");
+
+            return;
+        }
+
+        if (($message[0] ?? null) === 2) {
+            $result = match ($message[2] ?? '') {
+                'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
+                'TransactionEvent' => isset($message[3]['idToken'])
+                    ? ['idTokenInfo' => ['status' => 'Accepted']]
+                    : new stdClass(),
+                default => new stdClass(),
+            };
+            writeFrame($client, 0x1, json_encode([3, $message[1], $result], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+        }
+    }
+}
+
+function markResetSent(string $path): void
+{
+    if ($path !== '') {
+        file_put_contents($path, 'sent', LOCK_EX);
     }
 }
 

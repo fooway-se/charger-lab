@@ -15,6 +15,7 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 require __DIR__ . '/../src/autoload.php';
@@ -27,13 +28,15 @@ try {
 
 try {
     $database = Database::connect(getenv('DATA_PATH') ?: dirname(__DIR__) . '/data/emulator.sqlite');
+    $outletSessions = new OutletSessionRepository($database);
     $controller = new StationController(
         new ChargerRepository($database),
         new ExchangeRepository($database),
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
-        new OutletSessionRepository($database),
+        $outletSessions,
         new AvailabilityRepository($database),
+        new ResetRepository($database, $outletSessions),
     );
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);

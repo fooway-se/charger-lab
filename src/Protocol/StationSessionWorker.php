@@ -9,6 +9,7 @@ use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
+use ChargerEmulator\Domain\ResetRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
@@ -17,6 +18,7 @@ use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use RuntimeException;
 use Throwable;
@@ -40,6 +42,7 @@ final class StationSessionWorker
         private readonly OcppCommandRepository $commands,
         private readonly OutletSessionRepository $outletSessions,
         private readonly AvailabilityRepository $availability,
+        private readonly ResetRepository $resets,
         private readonly DeviceModelSettingsRepository $deviceModelSettings,
         private readonly TransactionEventOutboxRepository $transactionEvents,
         private readonly WorkspaceSettingsRepository $workspaceSettings,
@@ -282,6 +285,14 @@ final class StationSessionWorker
                     return true;
                 }
 
+                if ($this->reportPendingResetUnavailable($chargerId)) {
+                    return true;
+                }
+
+                if ($this->processPendingReset($chargerId)) {
+                    return true;
+                }
+
                 if ($this->expireRemoteStart($chargerId)) {
                     return true;
                 }
@@ -329,11 +340,12 @@ final class StationSessionWorker
     private function restoreAcceptedSessions(): void
     {
         foreach ($this->chargers->all() as $charger) {
-            if (($charger['boot_status'] ?? null) !== 'Accepted') {
+            $chargerId = (int) $charger['id'];
+            $resetReconnecting = $this->resets->isReconnecting($chargerId);
+            if (($charger['boot_status'] ?? null) !== 'Accepted' && !$resetReconnecting) {
                 continue;
             }
 
-            $chargerId = (int) $charger['id'];
             $url = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
             $tlsSettings = $this->workspaceSettings->getTlsSettings();
             $this->transactionEvents->markPendingOffline($chargerId);
@@ -346,8 +358,8 @@ final class StationSessionWorker
                 'tls_ca_certificate' => $tlsSettings['tls_ca_certificate'],
                 'heartbeat_interval' => $this->deviceModelSettingInt($chargerId, 'HeartbeatInterval', 300, 1),
                 'next_heartbeat_at' => null,
-                'boot_payload' => [],
-                'next_boot_at' => null,
+                'boot_payload' => $resetReconnecting ? $this->resetBootPayload($charger) : [],
+                'next_boot_at' => $resetReconnecting ? microtime(true) : null,
                 'reconnect_attempt' => 1,
                 'next_reconnect_at' => microtime(true) + $this->nextReconnectDelay($chargerId, 1),
             ];
@@ -396,6 +408,10 @@ final class StationSessionWorker
      */
     private function applyBootResponse(int $chargerId, array $charger, array $result): void
     {
+        if ($this->resets->isReconnecting($chargerId)) {
+            $this->resets->complete($chargerId);
+        }
+
         $status = is_string($result['status'] ?? null) ? $result['status'] : 'Unknown response';
         $interval = $result['interval'] ?? 300;
         $interval = is_int($interval) && $interval > 0 ? $interval : 300;
@@ -427,8 +443,15 @@ final class StationSessionWorker
             $this->availability,
         );
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
-        $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands, $this->availability);
+        $remoteStart = new RemoteStartRequestHandler(
+            $chargerId,
+            $this->outletSessions,
+            $this->commands,
+            $this->availability,
+            $this->resets,
+        );
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
+        $reset = new ResetRequestHandler($chargerId, $this->resets);
         $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions, $this->transactionEvents);
 
         $connection = $this->sessions[$chargerId]['connection'];
@@ -441,7 +464,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $transactionStatus): ?array {
+            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus): ?array {
                 $deviceModelResponse = $deviceModel->handle($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -459,6 +482,10 @@ final class StationSessionWorker
                     return $remoteStop->handle($payload);
                 }
 
+                if ($action === 'Reset') {
+                    return $reset->handle($payload);
+                }
+
                 return $action === 'GetTransactionStatus' ? $transactionStatus->handle($payload) : null;
             },
             function () use ($chargerId): ?string {
@@ -468,7 +495,16 @@ final class StationSessionWorker
                     ? $charger['boot_status']
                     : null;
             },
-            function (string $action, array $_payload, array $_response) use ($changeAvailability, $chargerId): void {
+            function (string $action, array $_payload, array $response) use ($changeAvailability, $chargerId): void {
+                if ($action === 'Reset') {
+                    if (in_array($response['status'] ?? null, ['Accepted', 'Scheduled'], true)) {
+                        $this->reportPendingResetUnavailable($chargerId);
+                        $this->processPendingReset($chargerId);
+                    }
+
+                    return;
+                }
+
                 if ($action !== 'ChangeAvailability') {
                     return;
                 }
@@ -509,6 +545,116 @@ final class StationSessionWorker
         }
     }
 
+    private function reportPendingResetUnavailable(int $chargerId): bool
+    {
+        $pendingReset = $this->resets->pending($chargerId);
+        if ($pendingReset === null || $pendingReset['type'] !== 'OnIdle'
+            || $this->resets->isReconnecting($chargerId)
+            || $this->resets->unavailableReported($chargerId)) {
+            return false;
+        }
+
+        foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
+            if ($session['connector_status'] === 'Available') {
+                $this->sendStatusNotification(
+                    $chargerId,
+                    $session['evse_id'],
+                    $session['connector_id'],
+                    'Unavailable',
+                );
+            }
+        }
+
+        $this->resets->markUnavailableReported($chargerId);
+
+        return true;
+    }
+
+    private function processPendingReset(int $chargerId): bool
+    {
+        $pendingReset = $this->resets->pending($chargerId);
+        if ($pendingReset === null || $this->resets->isReconnecting($chargerId)) {
+            return false;
+        }
+
+        $activeSessions = array_values(array_filter(
+            $this->outletSessions->allForCharger($chargerId),
+            static fn (array $session): bool => $session['connector_status'] === 'Occupied',
+        ));
+        if ($activeSessions !== []) {
+            if ($pendingReset['type'] === 'OnIdle') {
+                return false;
+            }
+
+            $session = $activeSessions[0];
+            $event = [
+                'eventType' => 'Ended',
+                'timestamp' => gmdate(DATE_ATOM),
+                'triggerReason' => 'ImmediateReset',
+                'seqNo' => $session['seq_no'] + 1,
+                'transactionInfo' => [
+                    'transactionId' => $session['transaction_id'],
+                    'stoppedReason' => 'ImmediateReset',
+                ],
+                'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+            ];
+            $meterValue = $this->transactionEndMeterValue($chargerId, $session['meter_wh']);
+            if ($meterValue !== null) {
+                $event['meterValue'] = $meterValue;
+            }
+
+            $queuedEvent = $this->queueTransactionEvent($chargerId, $event);
+            $this->outletSessions->markAvailable(
+                $chargerId,
+                $session['evse_id'],
+                $session['connector_id'],
+                $session['transaction_id'],
+                $session['meter_wh'],
+            );
+            $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+            $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id']);
+
+            return true;
+        }
+
+        if ($this->transactionEvents->hasPending($chargerId)) {
+            return false;
+        }
+
+        $charger = $this->chargers->get($chargerId);
+        if ($charger === null || !isset($this->sessions[$chargerId])) {
+            return false;
+        }
+
+        $this->resets->markReconnecting($chargerId);
+        $this->sessions[$chargerId]['connection'] = null;
+        $this->sessions[$chargerId]['boot_payload'] = $this->resetBootPayload($charger);
+        $this->sessions[$chargerId]['next_boot_at'] = microtime(true);
+        $this->sessions[$chargerId]['next_heartbeat_at'] = null;
+        $this->sessions[$chargerId]['reconnect_attempt'] = 1;
+        $this->sessions[$chargerId]['next_reconnect_at'] = microtime(true) + 0.2;
+        $this->chargers->setBootStatus($chargerId, 'Not connected');
+        $this->chargers->setConnectionStatus($chargerId, 'Not connected');
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $charger
+     * @return array{chargingStation:array<string, mixed>,reason:string}
+     */
+    private function resetBootPayload(array $charger): array
+    {
+        return [
+            'chargingStation' => array_filter([
+                'model' => $charger['model'],
+                'vendorName' => $charger['vendor_name'],
+                'serialNumber' => $charger['serial_number'] !== '' ? $charger['serial_number'] : null,
+            ], static fn (mixed $value): bool => $value !== null),
+            'reason' => 'RemoteReset',
+        ];
+    }
+
     /**
      * @param array<string, mixed> $payload
      * @return array{status:string,transactionId:string}
@@ -520,6 +666,10 @@ final class StationSessionWorker
         $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
         if ($session !== null && $session['remote_start_pending']) {
             return $this->connectRemoteStartedVehicle($chargerId, $session);
+        }
+
+        if ($this->resets->blocksNewTransactions($chargerId)) {
+            throw new RuntimeException('The charger is waiting to reset and cannot start a new transaction.');
         }
 
         if ($session === null || $session['connector_status'] !== 'Available'
@@ -954,6 +1104,12 @@ final class StationSessionWorker
 
     private function reportReleasedOutlet(int $chargerId, int $evseId, int $connectorId): void
     {
+        if ($this->resets->blocksNewTransactions($chargerId)) {
+            $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Unavailable');
+
+            return;
+        }
+
         $changes = $this->availability->applyPendingChanges($chargerId);
         $reportedCurrentOutlet = false;
         foreach ($changes as $change) {

@@ -10,6 +10,7 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 
 it('does not test a second WebSocket while a charger is already connected', function (): void {
@@ -24,6 +25,7 @@ it('does not test a second WebSocket while a charger is already connected', func
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
         new AvailabilityRepository($database),
+        new ResetRepository($database, new OutletSessionRepository($database)),
     );
 
     $response = $controller->testConnection(new Request('POST', '/api/connection/test', [], [], [

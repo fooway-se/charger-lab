@@ -30,6 +30,8 @@ The Device Model currently supports `GetVariables` and `SetVariables` for statio
 
 CSMS `ChangeAvailability` requests support station-wide, EVSE, and connector targets. Availability settings persist in SQLite, and inoperative connectors report `Unavailable` and reject new local plug-in or remote-start actions. A request targeting an EVSE with an active transaction responds `Scheduled`; its state change and corresponding connector `StatusNotification` messages are applied after the transaction ends. Connector-specific settings remain in force when a parent EVSE or station is restored to Operative.
 
+Station-wide CSMS `Reset` requests support `Immediate` and `OnIdle`. `OnIdle` responds `Scheduled` while transactions are active, blocks new transactions, and resets after the active `Ended` events have been delivered. `Immediate` ends active transactions with stopped reason `ImmediateReset`. Both reset modes simulate a station reboot by reconnecting and sending BootNotification with reason `RemoteReset`. EVSE-specific resets are rejected because independent EVSE reset is not implemented.
+
 ## Tests
 
 Pest is a development-only dependency. Install it and run unit checks before integration checks:
