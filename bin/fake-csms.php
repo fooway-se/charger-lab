@@ -124,10 +124,13 @@ function serveClient($client): void
         }
 
         $action = $call[2] ?? '';
+        if ($action === 'TransactionEvent' && (($call[3]['triggerReason'] ?? null) === 'MeterValueClock')) {
+            fwrite(STDOUT, 'MeterValueClock TransactionEvent: ' . $payload . "\n");
+        }
         $bootStatus = $action === 'BootNotification'
             ? nextBootStatus($bootNotifications, $pendingBootCount, $bootCountPath, $stationKey)
             : null;
-        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'StatusNotification', 'TransactionEvent'], true)) {
+        if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'MeterValues', 'StatusNotification', 'TransactionEvent'], true)) {
             $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
         } else {
             $result = match ($action) {
@@ -140,6 +143,7 @@ function serveClient($client): void
                 ],
                 'Authorize' => ['idTokenInfo' => ['status' => 'Accepted']],
                 'Heartbeat' => ['currentTime' => gmdate('Y-m-d\TH:i:s\Z')],
+                'MeterValues' => new stdClass(),
                 'StatusNotification' => new stdClass(),
                 'TransactionEvent' => isset($call[3]['idToken'])
                     ? ['idTokenInfo' => ['status' => 'Accepted']]
@@ -150,6 +154,9 @@ function serveClient($client): void
 
         $reply = json_encode($replyFrame, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         fwrite(STDOUT, "OCPP out: {$reply}\n");
+        if ($action === 'MeterValues') {
+            fwrite(STDOUT, 'MeterValues response: ' . $reply . "\n");
+        }
         if (getenv('FAKE_CSMS_FRAGMENT_RESPONSE') === '1') {
             $splitAt = max(1, intdiv(strlen($reply), 2));
             writeFrame($client, 0x1, substr($reply, 0, $splitAt), false);
@@ -722,6 +729,9 @@ function waitForRemoteStartContinuation($client, string $continuePath): void
 
         $action = $message[2] ?? '';
         $request = is_array($message[3] ?? null) ? $message[3] : [];
+        if ($action === 'TransactionEvent' && ($request['triggerReason'] ?? null) === 'MeterValueClock') {
+            fwrite(STDOUT, 'MeterValueClock TransactionEvent: ' . $payload . "\n");
+        }
         $result = match ($action) {
             'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
             'TransactionEvent' => isset($request['idToken'])

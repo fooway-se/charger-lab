@@ -132,7 +132,7 @@ it('reads and persists supported transaction meter sampling settings', function 
         ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register', '', '', '5']);
 });
 
-it('reads and persists aligned meter value measurands', function (): void {
+it('reads and persists aligned meter value settings', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();
     $outletSessions = new OutletSessionRepository($database);
@@ -141,24 +141,54 @@ it('reads and persists aligned meter value measurands', function (): void {
     $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
     $getInitial = $deviceModel->handle('GetVariables', [
-        'getVariableData' => [[
-            'component' => ['name' => 'AlignedDataCtrlr'],
-            'variable' => ['name' => 'Measurands'],
-        ]],
+        'getVariableData' => [
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Measurands'],
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Interval'],
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'SendDuringIdle'],
+            ],
+        ],
     ]);
     $setInvalid = $deviceModel->handle('SetVariables', [
         'setVariableData' => [[
             'component' => ['name' => 'AlignedDataCtrlr'],
             'variable' => ['name' => 'Measurands'],
             'attributeValue' => 'Unsupported.Measurand',
+        ], [
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'Interval'],
+            'attributeValue' => '-1',
+        ], [
+            'component' => ['name' => 'AlignedDataCtrlr'],
+            'variable' => ['name' => 'SendDuringIdle'],
+            'attributeValue' => 'sometimes',
         ]],
     ]);
     $set = $deviceModel->handle('SetVariables', [
-        'setVariableData' => [[
-            'component' => ['name' => 'AlignedDataCtrlr'],
-            'variable' => ['name' => 'Measurands'],
-            'attributeValue' => '',
-        ]],
+        'setVariableData' => [
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Measurands'],
+                'attributeValue' => '',
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Interval'],
+                'attributeValue' => '300',
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'SendDuringIdle'],
+                'attributeValue' => 'true',
+            ],
+        ],
     ]);
     $reopenedModel = new DeviceModel(
         $outletSessions,
@@ -167,16 +197,26 @@ it('reads and persists aligned meter value measurands', function (): void {
         new AvailabilityRepository($database),
     );
     $getUpdated = $reopenedModel->handle('GetVariables', [
-        'getVariableData' => [[
-            'component' => ['name' => 'AlignedDataCtrlr'],
-            'variable' => ['name' => 'Measurands'],
-        ]],
+        'getVariableData' => [
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Measurands'],
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'Interval'],
+            ],
+            [
+                'component' => ['name' => 'AlignedDataCtrlr'],
+                'variable' => ['name' => 'SendDuringIdle'],
+            ],
+        ],
     ]);
 
-    expect($getInitial['getVariableResult'][0]['attributeValue'] ?? null)->toBe('Energy.Active.Import.Register')
-        ->and($setInvalid['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected')
-        ->and($set['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
-        ->and($getUpdated['getVariableResult'][0]['attributeValue'] ?? null)->toBe('');
+    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['Energy.Active.Import.Register', '0', 'false'])
+        ->and(array_column($setInvalid['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected'])
+        ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted'])
+        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['', '300', 'true']);
 });
 
 it('rejects invalid transaction meter sampling settings without changing saved values', function (): void {

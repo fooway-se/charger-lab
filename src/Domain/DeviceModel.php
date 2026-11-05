@@ -276,7 +276,7 @@ final class DeviceModel
         }
 
         if (($component['name'] ?? null) === 'AlignedDataCtrlr') {
-            return ($variable['name'] ?? null) === 'Measurands';
+            return in_array($variable['name'] ?? null, ['Interval', 'Measurands', 'SendDuringIdle'], true);
         }
 
         if (($component['name'] ?? null) === 'TxCtrlr') {
@@ -300,6 +300,7 @@ final class DeviceModel
     private function isValidSetting(string $variable, string $value): bool
     {
         if (in_array($variable, [
+            'Interval',
             'TxEndedInterval',
             'TxUpdatedInterval',
             'MessageAttemptsTransactionEvent',
@@ -313,6 +314,10 @@ final class DeviceModel
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
                 && filter_var($value, FILTER_VALIDATE_INT) !== false
                 && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'EVConnectionTimeOut'], true) || (int) $value > 0);
+        }
+
+        if ($variable === 'SendDuringIdle') {
+            return in_array($value, ['true', 'false'], true);
         }
 
         if (!in_array($variable, ['Measurands', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {

@@ -13,7 +13,9 @@ use RuntimeException;
 final class DeviceModelSettingsRepository
 {
     private const DEFAULTS = [
+        'Interval' => '0',
         'Measurands' => 'Energy.Active.Import.Register',
+        'SendDuringIdle' => 'false',
         'TxUpdatedInterval' => '0',
         'TxUpdatedMeasurands' => 'Energy.Active.Import.Register',
         'TxStartedMeasurands' => 'Energy.Active.Import.Register',

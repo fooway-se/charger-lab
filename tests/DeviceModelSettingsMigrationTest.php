@@ -19,22 +19,26 @@ it('preserves existing sampled data settings when adding a writable variable', f
     $legacyDatabase->exec(<<<'SQL'
         CREATE TABLE device_model_setting (
             charger_id INTEGER NOT NULL,
-            variable TEXT NOT NULL CHECK (variable IN ('TxUpdatedInterval', 'TxUpdatedMeasurands')),
+            variable TEXT NOT NULL CHECK (variable IN ('Measurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
             value TEXT NOT NULL,
             PRIMARY KEY (charger_id, variable)
         )
         SQL);
     $legacyDatabase->exec("INSERT INTO device_model_setting (charger_id, variable, value) VALUES ({$chargerId}, 'TxUpdatedInterval', '7')");
+    $legacyDatabase->exec("INSERT INTO device_model_setting (charger_id, variable, value) VALUES ({$chargerId}, 'Measurands', '')");
     unset($legacyDatabase);
 
     $database = Database::connect($databasePath);
     $settings = new DeviceModelSettingsRepository($database);
     $settings->set($chargerId, 'TxStartedMeasurands', '');
-    $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register');
+    $settings->set($chargerId, 'Interval', '300');
+    $settings->set($chargerId, 'SendDuringIdle', 'true');
 
     expect($settings->get($chargerId, 'TxUpdatedInterval'))->toBe('7')
         ->and($settings->get($chargerId, 'TxStartedMeasurands'))->toBe('')
-        ->and($settings->get($chargerId, 'Measurands'))->toBe('Energy.Active.Import.Register');
+        ->and($settings->get($chargerId, 'Measurands'))->toBe('')
+        ->and($settings->get($chargerId, 'Interval'))->toBe('300')
+        ->and($settings->get($chargerId, 'SendDuringIdle'))->toBe('true');
 
     unset($settings, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {

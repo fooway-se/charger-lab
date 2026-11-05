@@ -1459,8 +1459,10 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
         $bootCsmsOutput = drainProcessOutput($fakeCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
         $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
-        if (!str_contains($csmsOutput, 'TriggerMessage status notification: ')) {
-            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage status notification: ', 3_000);
+        if (!str_contains($csmsOutput, '"evseId":2,"connectorId":1')) {
+            waitForProcessOutput($fakeCsms, '"evseId":2,"connectorId":1', 3_000);
+            usleep(50_000);
+            $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
         }
         expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"fake-csms-trigger-message-')
             ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
@@ -1651,6 +1653,200 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
         expect($triggerResponsePosition)->toBeInt()
             ->and($firstMeterValuesPosition)->toBeInt()
             ->and($triggerResponsePosition)->toBeLessThan($firstMeterValuesPosition, 'The TriggerMessage response must precede requested MeterValues calls.');
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('sends clock-aligned MeterValues at the configured UTC interval boundaries', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-clock-aligned-meter-values-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $database = new PDO('sqlite:' . $databasePath);
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        $setting = $database->prepare('INSERT INTO device_model_setting (charger_id, variable, value) VALUES (?, ?, ?)');
+        $setting->execute([$chargerId, 'Interval', '1']);
+        $setting->execute([$chargerId, 'Measurands', 'Energy.Active.Import.Register']);
+        unset($database, $setting);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ClockAlignedMeterValuesCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Clock Aligned Meter Values Test Model',
+            'serial_number' => 'CLOCK-MV-001',
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody);
+        waitForProcessOutput($fakeCsms, 'MeterValues response: ', 4_000);
+        usleep(50_000);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
+        preg_match('/OCPP in: (\[2,"[^"]+","MeterValues",[^\n]+\])/', $csmsOutput, $meterValueMatch);
+        $meterValueCall = isset($meterValueMatch[1]) ? json_decode($meterValueMatch[1], true, flags: JSON_THROW_ON_ERROR) : null;
+        $meterValuePayload = is_array($meterValueCall) && is_array($meterValueCall[3] ?? null) ? $meterValueCall[3] : [];
+        $meterValue = $meterValuePayload['meterValue'][0] ?? [];
+        $sampledValue = $meterValue['sampledValue'][0] ?? [];
+        $sampleTimestamp = is_string($meterValue['timestamp'] ?? null) ? strtotime($meterValue['timestamp']) : false;
+
+        expect($csmsOutput)->toContain('MeterValues response: [3,')
+            ->and($meterValueCall[2] ?? null)->toBe('MeterValues')
+            ->and($meterValuePayload['evseId'] ?? null)->toBe(1)
+            ->and($sampleTimestamp)->toBeInt()
+            ->and($sampledValue['context'] ?? null)->toBe('Sample.Clock')
+            ->and($sampledValue['measurand'] ?? null)->toBe('Energy.Active.Import.Register')
+            ->and($sampledValue['unitOfMeasure']['unit'] ?? null)->toBe('Wh')
+            ->and($sampledValue['value'] ?? null)->toBeInt();
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('sends clock-aligned transaction samples as MeterValueClock events', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-clock-transaction-meter-values-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $database = new PDO('sqlite:' . $databasePath);
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        $setting = $database->prepare('INSERT INTO device_model_setting (charger_id, variable, value) VALUES (?, ?, ?)');
+        $setting->execute([$chargerId, 'Interval', '1']);
+        unset($database, $setting);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ClockAlignedTransactionCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Clock Aligned Transaction Test Model',
+            'serial_number' => 'CLOCK-TX-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should boot before starting a transaction.');
+        [, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($plugHeaders[0] ?? '', '200'))->toBeFalse('The vehicle should plug in before authorization.');
+        [, $authorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'rfid_token' => 'CLOCK-TOKEN', 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The vehicle token should be authorized.');
+
+        waitForProcessOutput($fakeCsms, '"context":"Sample.Clock"', 5_000);
+        usleep(50_000);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
+        preg_match('/MeterValueClock TransactionEvent: (\[2,"[^"]+","TransactionEvent",[^\n]+\])/', $csmsOutput, $transactionEventMatch);
+        $transactionEvent = isset($transactionEventMatch[1])
+            ? json_decode($transactionEventMatch[1], true, flags: JSON_THROW_ON_ERROR)
+            : null;
+        $payload = is_array($transactionEvent) && is_array($transactionEvent[3] ?? null) ? $transactionEvent[3] : [];
+        $meterValue = $payload['meterValue'][0] ?? [];
+        $sampledValue = $meterValue['sampledValue'][0] ?? [];
+
+        expect($transactionEvent[2] ?? null)->toBe('TransactionEvent')
+            ->and($payload['eventType'] ?? null)->toBe('Updated')
+            ->and($payload['triggerReason'] ?? null)->toBe('MeterValueClock')
+            ->and($payload['evse'] ?? null)->toBe(['id' => 1, 'connectorId' => 1])
+            ->and($payload['transactionInfo']['transactionId'] ?? null)->toBeString()
+            ->and($sampledValue['context'] ?? null)->toBe('Sample.Clock')
+            ->and($sampledValue['measurand'] ?? null)->toBe('Energy.Active.Import.Register');
     } finally {
         if ($app !== null) {
             stopProcess($app);

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Protocol;
 
+use ChargerEmulator\Domain\ClockAlignedMeterValueSchedule;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
@@ -36,6 +37,11 @@ final class StationSessionWorker
      * @var array<int, array{connection:?WebSocketConnection,url:string,username:string,password:string,tls_server_name:string,tls_ca_certificate:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
      */
     private array $sessions = [];
+
+    /**
+     * @var array<int, array{interval:int,next_at:int}>
+     */
+    private array $alignedMeterSchedules = [];
 
     public function __construct(
         private readonly ChargerRepository $chargers,
@@ -246,6 +252,7 @@ final class StationSessionWorker
                     $tlsSettings = $this->workspaceSettings->getTlsSettings();
                     $this->sessions[$chargerId]['tls_server_name'] = $tlsSettings['tls_server_name'];
                     $this->sessions[$chargerId]['tls_ca_certificate'] = $tlsSettings['tls_ca_certificate'];
+                    unset($this->alignedMeterSchedules[$chargerId]);
                     $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
                         $session['url'],
                         username: $charger['station_identity'],
@@ -300,6 +307,10 @@ final class StationSessionWorker
                 }
 
                 if ($this->sendPeriodicMeterValue($chargerId)) {
+                    return true;
+                }
+
+                if ($this->sendClockAlignedMeterValues($chargerId)) {
                     return true;
                 }
 
@@ -1417,6 +1428,104 @@ final class StationSessionWorker
         }
 
         return false;
+    }
+
+    private function sendClockAlignedMeterValues(int $chargerId): bool
+    {
+        $interval = filter_var(
+            $this->deviceModelSettings->get($chargerId, 'Interval'),
+            FILTER_VALIDATE_INT,
+        );
+        if (!is_int($interval) || $interval < 1
+            || $this->deviceModelSettings->get($chargerId, 'Measurands') !== 'Energy.Active.Import.Register') {
+            unset($this->alignedMeterSchedules[$chargerId]);
+
+            return false;
+        }
+
+        $now = time();
+        $schedule = new ClockAlignedMeterValueSchedule();
+        if (!isset($this->alignedMeterSchedules[$chargerId])
+            || $this->alignedMeterSchedules[$chargerId]['interval'] !== $interval) {
+            $this->alignedMeterSchedules[$chargerId] = [
+                'interval' => $interval,
+                'next_at' => $schedule->nextSampleAt($interval, $now) ?? PHP_INT_MAX,
+            ];
+
+            return false;
+        }
+
+        $sampleTimestamp = $this->alignedMeterSchedules[$chargerId]['next_at'];
+        if ($now < $sampleTimestamp) {
+            return false;
+        }
+
+        $this->alignedMeterSchedules[$chargerId]['next_at'] = $schedule->nextSampleAt($interval, $sampleTimestamp) ?? PHP_INT_MAX;
+        $sampledAt = gmdate('Y-m-d\TH:i:s\Z', $sampleTimestamp);
+        $outlets = $this->outletSessions->allForCharger($chargerId);
+        $activeTransactionsByEvse = [];
+        foreach ($outlets as $outlet) {
+            if ($outlet['connector_status'] !== 'Occupied' || !is_string($outlet['transaction_id'])
+                || $outlet['transaction_id'] === '') {
+                continue;
+            }
+
+            $activeTransactionsByEvse[$outlet['evse_id']][] = $outlet;
+        }
+
+        $sendDuringIdle = $this->deviceModelSettings->get($chargerId, 'SendDuringIdle') === 'true';
+        foreach ($activeTransactionsByEvse as $transactions) {
+            if ($sendDuringIdle) {
+                continue;
+            }
+
+            foreach ($transactions as $session) {
+                $sequence = $session['seq_no'] + 1;
+                $meterWh = $session['meter_wh'] + self::SIMULATED_PERIODIC_ENERGY_WH;
+                $transactionEvent = [
+                    'eventType' => 'Updated',
+                    'timestamp' => $sampledAt,
+                    'triggerReason' => 'MeterValueClock',
+                    'seqNo' => $sequence,
+                    'meterValue' => $this->meterValue($meterWh, 'Sample.Clock', $sampledAt),
+                    'transactionInfo' => [
+                        'transactionId' => $session['transaction_id'],
+                        'chargingState' => $session['remote_start_pending'] ? 'Idle' : 'Charging',
+                    ],
+                    'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+                ];
+                $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
+                $this->outletSessions->recordMeterSample(
+                    $chargerId,
+                    $session['evse_id'],
+                    $session['connector_id'],
+                    $session['transaction_id'],
+                    $meterWh,
+                    $sequence,
+                    $sampledAt,
+                );
+                $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+            }
+        }
+
+        $metersByEvse = [];
+        foreach ($outlets as $outlet) {
+            $evseId = $outlet['evse_id'];
+            if (isset($activeTransactionsByEvse[$evseId])) {
+                continue;
+            }
+
+            $metersByEvse[$evseId] = ($metersByEvse[$evseId] ?? 0) + $outlet['meter_wh'];
+        }
+
+        foreach ($metersByEvse as $evseId => $meterWh) {
+            $this->createClient($chargerId)->request('MeterValues', [
+                'evseId' => (int) $evseId,
+                'meterValue' => $this->meterValue($meterWh, 'Sample.Clock', $sampledAt),
+            ]);
+        }
+
+        return $activeTransactionsByEvse !== [] || $metersByEvse !== [];
     }
 
     private function sampleTransactionEndMeterValue(int $chargerId): bool
