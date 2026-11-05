@@ -33,6 +33,7 @@ final class Database
             self::migrateLogs($pdo);
             self::migrateCommands($pdo);
             self::migrateOutletSessions($pdo);
+            self::migrateAvailability($pdo);
             self::migrateDeviceModelSettings($pdo);
             self::migrateTransactionEventOutbox($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
@@ -349,6 +350,21 @@ final class Database
                 SQL);
             $pdo->exec('DROP TABLE outlet_session_legacy');
         }
+    }
+
+    private static function migrateAvailability(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS availability_state (
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                scope TEXT NOT NULL CHECK (scope IN ('station', 'evse', 'connector')),
+                evse_id INTEGER NOT NULL DEFAULT 0 CHECK (evse_id >= 0),
+                connector_id INTEGER NOT NULL DEFAULT 0 CHECK (connector_id >= 0),
+                operational_status TEXT NOT NULL CHECK (operational_status IN ('Operative', 'Inoperative')),
+                pending_status TEXT CHECK (pending_status IS NULL OR pending_status IN ('Operative', 'Inoperative')),
+                PRIMARY KEY (charger_id, scope, evse_id, connector_id)
+            )
+            SQL);
     }
 
     private static function migrateDeviceModelSettings(PDO $pdo): void

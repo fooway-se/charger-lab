@@ -6,6 +6,7 @@ namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 
 /**
  * Answers the supported OCPP Device Model variables for one charger.
@@ -16,6 +17,7 @@ final class DeviceModel
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $settings,
         private readonly int $chargerId,
+        private readonly AvailabilityRepository $availability,
     ) {
     }
 
@@ -156,7 +158,7 @@ final class DeviceModel
         }
 
         if ($variableName === 'Available' && in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
-            return 'true';
+            return $this->availabilityState($componentName, $component) === 'Unavailable' ? 'false' : 'true';
         }
 
         if ($variableName !== 'AvailabilityState'
@@ -191,13 +193,24 @@ final class DeviceModel
             return null;
         }
 
+        $states = [];
         foreach ($matchingOutlets as $outlet) {
-            if ($outlet['connector_status'] === 'Occupied') {
+            $state = $this->availability->connectorStatus(
+                $this->chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $outlet['connector_status'],
+            );
+            if ($state === 'Occupied') {
                 return 'Occupied';
             }
+
+            $states[] = $state;
         }
 
-        return 'Available';
+        return $states !== [] && array_all($states, static fn (string $state): bool => $state === 'Unavailable')
+            ? 'Unavailable'
+            : 'Available';
     }
 
     /**

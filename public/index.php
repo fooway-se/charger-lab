@@ -10,6 +10,7 @@ use ChargerEmulator\Http\Request;
 use ChargerEmulator\Http\Response;
 use ChargerEmulator\Http\Router;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -32,6 +33,7 @@ try {
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
     $router = new Router();
     $router->add('GET', '/api/state', [$controller, 'state']);

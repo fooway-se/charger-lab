@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\OcppCommandRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
 /**
@@ -19,6 +20,7 @@ final class RemoteStartRequestHandler
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
         private readonly OcppCommandRepository $commands,
+        private readonly AvailabilityRepository $availability,
     ) {
     }
 
@@ -38,6 +40,11 @@ final class RemoteStartRequestHandler
 
         foreach ($this->outletSessions->allForCharger($this->chargerId) as $session) {
             if ($session['connector_status'] !== 'Available'
+                || !$this->availability->canStartTransaction(
+                    $this->chargerId,
+                    $session['evse_id'],
+                    $session['connector_id'],
+                )
                 || ($evseId !== null && $session['evse_id'] !== $evseId)) {
                 continue;
             }

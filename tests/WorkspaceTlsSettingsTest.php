@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ChargerEmulator\Controller\StationController;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -31,6 +32,7 @@ it('persists a custom TLS trust certificate without returning its PEM in workspa
         $settings,
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
     $saveResponse = $controller->saveTlsSettings(new Request('POST', '/api/settings/tls', [], [], [
         'tls_server_name' => 'localhost',
@@ -66,6 +68,7 @@ it('rejects invalid TLS hostnames and non-PEM trust certificates', function (): 
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
 
     $invalidHostResponse = $controller->saveTlsSettings(new Request('POST', '/api/settings/tls', [], [], [

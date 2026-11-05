@@ -6,6 +6,7 @@ use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
@@ -14,7 +15,7 @@ it('exposes the EV connection timeout used for remote starts', function (): void
     $chargerId = (new ChargerRepository($database))->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
-    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
+    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId, new AvailabilityRepository($database));
 
     $get = $deviceModel->handle('GetVariables', [
         'getVariableData' => [[
@@ -40,7 +41,7 @@ it('reads and persists supported transaction meter sampling settings', function 
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
     $settings = new DeviceModelSettingsRepository($database);
-    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
     $getInitial = $deviceModel->handle('GetVariables', [
         'getVariableData' => [
@@ -99,6 +100,7 @@ it('reads and persists supported transaction meter sampling settings', function 
         $outletSessions,
         new DeviceModelSettingsRepository($database),
         $chargerId,
+        new AvailabilityRepository($database),
     );
     $getUpdated = $reopenedModel->handle('GetVariables', [
         'getVariableData' => [
@@ -136,7 +138,7 @@ it('rejects invalid transaction meter sampling settings without changing saved v
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
     $settings = new DeviceModelSettingsRepository($database);
-    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
     $set = $deviceModel->handle('SetVariables', [
         'setVariableData' => [
@@ -193,6 +195,7 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
         $outletSessions,
         new DeviceModelSettingsRepository($database),
         $chargerId,
+        new AvailabilityRepository($database),
     );
 
     $initial = $deviceModel->handle('GetVariables', [

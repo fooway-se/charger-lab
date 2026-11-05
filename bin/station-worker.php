@@ -7,6 +7,7 @@ declare(strict_types=1);
  */
 use ChargerEmulator\Protocol\StationSessionWorker;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
@@ -23,6 +24,7 @@ $worker = new StationSessionWorker(
     new ExchangeRepository($database),
     new OcppCommandRepository($database),
     new OutletSessionRepository($database),
+    new AvailabilityRepository($database),
     new DeviceModelSettingsRepository($database),
     new TransactionEventOutboxRepository($database),
     new WorkspaceSettingsRepository($database),

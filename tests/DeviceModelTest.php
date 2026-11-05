@@ -6,6 +6,7 @@ use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
@@ -15,7 +16,12 @@ it('reports supported device model variables and current outlet state', function
     $chargerId = $chargers->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(2, 'independent'))->outlets());
-    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+    );
 
     $response = $deviceModel->handle('GetVariables', [
         'getVariableData' => [
@@ -58,7 +64,12 @@ it('returns Device Model status codes for unknown and read-only variables', func
     $chargerId = $chargers->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
-    $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId);
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+    );
 
     $getResponse = $deviceModel->handle('GetVariables', [
         'getVariableData' => [
@@ -91,4 +102,31 @@ it('returns Device Model status codes for unknown and read-only variables', func
     expect($setResponse['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected');
     expect($setResponse['setVariableResult'][1]['attributeStatus'] ?? null)->toBe('NotSupportedAttributeType');
     expect($setResponse['setVariableResult'][1]['attributeType'] ?? null)->toBe('Target');
+});
+
+it('reports inoperative state through the Device Model AvailabilityState variable', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $availability = new AvailabilityRepository($database);
+    $availability->requestChange($chargerId, [
+        'evse' => ['id' => 1],
+        'operationalStatus' => 'Inoperative',
+    ]);
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        $availability,
+    );
+
+    $response = $deviceModel->handle('GetVariables', [
+        'getVariableData' => [[
+            'component' => ['name' => 'EVSE', 'evse' => ['id' => 1]],
+            'variable' => ['name' => 'AvailabilityState'],
+        ]],
+    ]);
+
+    expect($response['getVariableResult'][0]['attributeValue'] ?? null)->toBe('Unavailable');
 });

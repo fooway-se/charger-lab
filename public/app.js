@@ -190,6 +190,7 @@ function createOutletTile(outlet, isConnected) {
 function updateOutletTile(tile, outlet, isConnected) {
     const connectorStatus = outlet.connector_status || 'Available';
     const remoteStartPending = outlet.remote_start_pending === true;
+    const availabilityScheduled = connectorStatus === 'Available' && outlet.can_start_transaction === false;
     const isCharging = outlet.is_charging === true;
     tile.dataset.outletNumber = String(outlet.number);
     setTextContent(tile.querySelector('.outlet-marker'), String(outlet.number).padStart(2, '0'));
@@ -197,11 +198,11 @@ function updateOutletTile(tile, outlet, isConnected) {
     setTextContent(tile.querySelector('.outlet-details small'), `EVSE ${outlet.evse_id} · Connector ${outlet.connector_id}`);
     tile.querySelector('.charging-indicator').hidden = !isCharging;
     const badge = tile.querySelector('.outlet-tag') || tile.children[2];
-    const badgeClass = `outlet-tag outlet-status-${remoteStartPending ? 'waiting' : connectorStatus.toLowerCase()}`;
+    const badgeClass = `outlet-tag outlet-status-${remoteStartPending || availabilityScheduled ? 'waiting' : connectorStatus.toLowerCase()}`;
     if (badge.className !== badgeClass) {
         badge.className = badgeClass;
     }
-    setTextContent(badge, remoteStartPending ? 'WAITING FOR VEHICLE' : connectorStatus.toUpperCase());
+    setTextContent(badge, remoteStartPending ? 'WAITING FOR VEHICLE' : (availabilityScheduled ? 'CHANGE SCHEDULED' : connectorStatus.toUpperCase()));
     const action = tile.querySelector('.outlet-action');
     const actionName = connectorStatus === 'Occupied' && !remoteStartPending ? 'unplug' : 'plug-in';
     const actionText = remoteStartPending ? 'Connect vehicle' : (connectorStatus === 'Occupied' ? 'Unplug' : 'Plug in');
@@ -209,7 +210,9 @@ function updateOutletTile(tile, outlet, isConnected) {
         action.dataset.action = actionName;
     }
     action.dataset.outletNumber = String(outlet.number);
-    const shouldDisableAction = !isConnected;
+    const shouldDisableAction = !isConnected
+        || connectorStatus === 'Unavailable'
+        || (connectorStatus === 'Available' && outlet.can_start_transaction === false);
     if (action.disabled !== shouldDisableAction) {
         action.disabled = shouldDisableAction;
     }

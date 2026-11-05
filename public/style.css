@@ -146,6 +146,7 @@ input:disabled { background: #f5f8f6; color: #82918d; }
 @keyframes charging-meter-flow { from { transform: translateX(0); } to { transform: translateX(160%); } }
 .outlet-tag { padding: 4px 5px; border-radius: 3px; background: #edf5f0; color: #56806d; font: 500 7px var(--mono); letter-spacing: .3px; }
 .outlet-status-occupied { background: #fff4df; color: #a46b14; }
+.outlet-status-unavailable { background: #fde8e8; color: #9a3434; }
 .outlet-status-waiting { background: #eef2fc; color: #5268a3; }
 .outlet-action { min-height: 26px; margin-left: auto; padding: 0 8px; font-size: 8px; }
 .outlet-action:disabled { cursor: not-allowed; opacity: .55; }

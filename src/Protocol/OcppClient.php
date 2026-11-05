@@ -16,12 +16,14 @@ final class OcppClient
      * @param null|Closure(string, string, string): void $exchangeObserver Receives direction, action, and raw OCPP-J JSON.
      * @param null|Closure(string, array<string, mixed>): ?array<string, mixed> $incomingCallHandler Handles supported CSMS calls.
      * @param null|Closure(): ?string $bootStatusProvider Reads the latest station BootNotification status.
+     * @param null|Closure(string, array<string, mixed>, array<string, mixed>): void $incomingCallAfterResponse Runs after a supported CSMS call response is sent.
      */
     public function __construct(
         private readonly Connection $connection,
         private readonly ?Closure $exchangeObserver = null,
         private readonly ?Closure $incomingCallHandler = null,
         private readonly ?Closure $bootStatusProvider = null,
+        private readonly ?Closure $incomingCallAfterResponse = null,
     ) {
     }
 
@@ -41,12 +43,13 @@ final class OcppClient
         $outgoing = json_encode($call, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         $this->connection->send($outgoing);
         $this->observe('outgoing', $action, $outgoing);
+        $deferredIncomingCalls = [];
 
         while (true) {
             $incoming = $this->connection->receive();
             $reply = $this->decode($incoming);
             if (is_array($reply) && ($reply[0] ?? null) === 2) {
-                $this->answerIncomingCall($reply, $incoming);
+                $this->answerIncomingCall($reply, $incoming, deferredCalls: $deferredIncomingCalls);
                 continue;
             }
 
@@ -67,6 +70,8 @@ final class OcppClient
                 throw new OcppProtocolException('The OCPP-J CALLERROR response is malformed.');
             }
 
+            $this->runDeferredIncomingCalls($deferredIncomingCalls);
+
             throw new OcppProtocolException("CSMS returned OCPP-J CALLERROR {$reply[2]}: {$reply[3]}");
         }
 
@@ -77,6 +82,8 @@ final class OcppClient
         if (!is_array($reply[2])) {
             throw new OcppProtocolException('The CALLRESULT payload must be an object.');
         }
+
+        $this->runDeferredIncomingCalls($deferredIncomingCalls);
 
         return $reply[2];
     }
@@ -92,7 +99,12 @@ final class OcppClient
     /**
      * @param mixed $reply
      */
-    private function answerIncomingCall(mixed $reply, string $message, ?string $bootStatus = null): void
+    private function answerIncomingCall(
+        mixed $reply,
+        string $message,
+        ?string $bootStatus = null,
+        ?array &$deferredCalls = null,
+    ): void
     {
         if (!is_array($reply) || count($reply) !== 4 || ($reply[0] ?? null) !== 2
             || !is_string($reply[1] ?? null) || !is_string($reply[2] ?? null) || !is_array($reply[3] ?? null)) {
@@ -122,6 +134,13 @@ final class OcppClient
 
         $this->connection->send($outgoing);
         $this->observe('outgoing', $action, $outgoing);
+        if (is_array($response) && $this->incomingCallAfterResponse !== null) {
+            if ($deferredCalls === null) {
+                ($this->incomingCallAfterResponse)($action, $reply[3], $response);
+            } else {
+                $deferredCalls[] = [$action, $reply[3], $response];
+            }
+        }
     }
 
     /**
@@ -140,6 +159,20 @@ final class OcppClient
     {
         if ($this->exchangeObserver !== null) {
             ($this->exchangeObserver)($direction, $action, $message);
+        }
+    }
+
+    /**
+     * @param list<array{0:string,1:array<string, mixed>,2:array<string, mixed>}> $deferredCalls
+     */
+    private function runDeferredIncomingCalls(array $deferredCalls): void
+    {
+        if ($this->incomingCallAfterResponse === null) {
+            return;
+        }
+
+        foreach ($deferredCalls as [$action, $payload, $response]) {
+            ($this->incomingCallAfterResponse)($action, $payload, $response);
         }
     }
 }

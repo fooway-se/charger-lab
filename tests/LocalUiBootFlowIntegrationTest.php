@@ -214,6 +214,8 @@ function stopProcess($process): void
 }
 
 it('boots multiple chargers and runs a plug authorize unplug flow', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-ui-' . bin2hex(random_bytes(6));
 
     mkdir($directory, 0775, true);
@@ -1007,6 +1009,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
 })->group('integration');
 
 it('preserves a waiting remote-start deadline across worker restart without reconnecting early or duplicating events', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-remote-start-restart-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
 
@@ -1164,6 +1168,8 @@ it('preserves a waiting remote-start deadline across worker restart without reco
 })->group('integration');
 
 it('ends a remote-start transaction when the CSMS stops it before vehicle connection', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-remote-stop-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
 
@@ -1177,6 +1183,7 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
         'FAKE_CSMS_SEND_CALL' => '1',
         'FAKE_CSMS_SEND_REMOTE_START' => '1',
         'FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+        'FAKE_CSMS_SEND_CHANGE_AFTER_REMOTE_START' => '1',
         'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
         'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
     ]);
@@ -1227,7 +1234,12 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
         expect($remoteStopOutput)->toContain('RemoteStart TransactionEvent: ')
             ->and($remoteStopOutput)->toContain('RemoteStop station response: ')
             ->and($remoteStopOutput)->toContain('"status":"Accepted"')
+            ->and($remoteStopOutput)->toContain('ChangeAvailability station response: ')
+            ->and($remoteStopOutput)->toContain('"status":"Scheduled"')
+            ->and($remoteStopOutput)->toContain('RemoteStop availability status: ')
             ->and($remoteStopOutput)->toContain('RemoteStop TransactionEvent: ');
+        expect(strpos($remoteStopOutput, 'RemoteStop TransactionEvent: '))
+            ->toBeLessThan(strpos($remoteStopOutput, 'RemoteStop availability status: '));
 
         $stoppedCharger = [];
         $outlet = [];
@@ -1272,7 +1284,7 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
             },
         ));
         $startedRemoteEvent = json_decode($startedRemoteEvents[0]['message'] ?? 'null', true);
-        expect(($outlet['connector_status'] ?? null))->toBe('Available')
+        expect(($outlet['connector_status'] ?? null))->toBe('Unavailable')
             ->and($outlet['remote_start_pending'] ?? null)->toBeFalse()
             ->and($startedRemoteEvents)->toHaveCount(1)
             ->and($startedRemoteEvent[3]['meterValue'][0]['sampledValue'][0]['context'] ?? null)->toBe('Transaction.Begin')
@@ -1300,6 +1312,93 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
         }
         stopProcess($fakeCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('applies CSMS ChangeAvailability and reports the connector status', function (): void {
+    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-change-availability-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $fakeCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
+        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'FAKE_CSMS_SEND_CHANGE_AVAILABILITY' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($fakeCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'AvailabilityIntegrationCharger',
+            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Availability Test Model',
+            'serial_number' => 'AVAIL-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
+        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        if (!str_contains($csmsOutput, 'ChangeAvailability status notification: ')) {
+            $csmsOutput .= waitForProcessOutput($fakeCsms, 'ChangeAvailability status notification: ', 3_000);
+        }
+
+        expect($csmsOutput)->toContain('ChangeAvailability station response: ')
+            ->toContain('"status":"Accepted"')
+            ->toContain('"connectorStatus":"Unavailable"');
+
+        [$updatedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $updatedState = is_string($updatedStateBody) ? json_decode($updatedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($updatedState['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Unavailable');
+
+        [, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($plugHeaders[0] ?? '', '409'))->toBeFalse('An inoperative outlet must reject a simulated vehicle connection.');
+    } finally {
+        if ($app !== null) {
+            stopProcess($app);
+        }
+        if ($worker !== null) {
+            stopProcess($worker);
+        }
+        stopProcess($fakeCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

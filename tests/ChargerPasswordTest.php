@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ChargerEmulator\Controller\StationController;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -36,6 +37,7 @@ it('persists a charger password without exposing it in station state', function 
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
     $stateResponse = $controller->state(new Request('GET', '/api/state', [], [], []));
     $state = json_decode($stateResponse->body, true, flags: JSON_THROW_ON_ERROR);
@@ -84,6 +86,7 @@ it('requires at least 16 password characters for TLS WebSocket connections', fun
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
 
     $response = $controller->save(new Request('POST', '/api/charger', [], [], [

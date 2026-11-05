@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ChargerEmulator\Controller\StationController;
 use ChargerEmulator\Http\Request;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -28,6 +29,7 @@ it('validates station inputs and gates early boot retries', function (): void {
         new WorkspaceSettingsRepository($database),
         new OcppCommandRepository($database),
         new OutletSessionRepository($database),
+        new AvailabilityRepository($database),
     );
 
     $response = $controller->save(new Request('POST', '/api/charger', [], [], [
@@ -106,4 +108,37 @@ it('validates station inputs and gates early boot retries', function (): void {
 
     rmdir($directory);
 
+});
+
+it('exposes CSMS availability changes to the test bench state', function (): void {
+    $database = Database::connect(':memory:');
+    $chargers = new ChargerRepository($database);
+    $chargerId = $chargers->createDefault();
+    $outlets = new OutletSessionRepository($database);
+    $outlets->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $availability = new AvailabilityRepository($database);
+    $availability->requestChange($chargerId, [
+        'evse' => ['id' => 1],
+        'operationalStatus' => 'Inoperative',
+    ]);
+    $controller = new StationController(
+        $chargers,
+        new ExchangeRepository($database),
+        new WorkspaceSettingsRepository($database),
+        new OcppCommandRepository($database),
+        $outlets,
+        $availability,
+    );
+
+    $response = $controller->state(new Request('GET', '/api/state', [], [], []));
+    $state = json_decode($response->body, true, flags: JSON_THROW_ON_ERROR);
+    $chargers->setBootStatus($chargerId, 'Accepted');
+    $chargers->setConnectionStatus($chargerId, 'Connected');
+    $plugResponse = $controller->plugIn(new Request('POST', '/api/outlet/plug-in', [], [], [
+        'charger_id' => $chargerId,
+        'outlet_number' => 1,
+    ]));
+
+    expect($state['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Unavailable')
+        ->and($plugResponse->status)->toBe(409);
 });

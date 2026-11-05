@@ -6,10 +6,12 @@ namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\DeviceModel;
+use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\ExchangeRepository;
 use ChargerEmulator\Storage\OcppCommandRepository;
@@ -37,6 +39,7 @@ final class StationSessionWorker
         private readonly ExchangeRepository $logs,
         private readonly OcppCommandRepository $commands,
         private readonly OutletSessionRepository $outletSessions,
+        private readonly AvailabilityRepository $availability,
         private readonly DeviceModelSettingsRepository $deviceModelSettings,
         private readonly TransactionEventOutboxRepository $transactionEvents,
         private readonly WorkspaceSettingsRepository $workspaceSettings,
@@ -417,8 +420,14 @@ final class StationSessionWorker
 
     private function createClient(int $chargerId): OcppClient
     {
-        $deviceModel = new DeviceModel($this->outletSessions, $this->deviceModelSettings, $chargerId);
-        $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands);
+        $deviceModel = new DeviceModel(
+            $this->outletSessions,
+            $this->deviceModelSettings,
+            $chargerId,
+            $this->availability,
+        );
+        $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
+        $remoteStart = new RemoteStartRequestHandler($chargerId, $this->outletSessions, $this->commands, $this->availability);
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions, $this->transactionEvents);
 
@@ -432,10 +441,14 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $remoteStart, $remoteStop, $transactionStatus): ?array {
+            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $transactionStatus): ?array {
                 $deviceModelResponse = $deviceModel->handle($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
+                }
+
+                if ($action === 'ChangeAvailability') {
+                    return $changeAvailability->handle($payload);
                 }
 
                 if ($action === 'RequestStartTransaction') {
@@ -455,6 +468,20 @@ final class StationSessionWorker
                     ? $charger['boot_status']
                     : null;
             },
+            function (string $action, array $_payload, array $_response) use ($changeAvailability, $chargerId): void {
+                if ($action !== 'ChangeAvailability') {
+                    return;
+                }
+
+                foreach ($changeAvailability->takeStatusChanges() as $change) {
+                    $this->sendStatusNotification(
+                        $chargerId,
+                        $change['evse_id'],
+                        $change['connector_id'],
+                        $change['status'],
+                    );
+                }
+            },
         );
     }
 
@@ -465,13 +492,19 @@ final class StationSessionWorker
     {
         $outlets = (new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets();
         $this->outletSessions->initialize($chargerId, $outlets);
+        $this->availability->applyPendingChanges($chargerId);
         foreach ($outlets as $outlet) {
             $session = $this->outletSessions->find($chargerId, $outlet['evse_id'], $outlet['connector_id']);
             $this->sendStatusNotification(
                 $chargerId,
                 $outlet['evse_id'],
                 $outlet['connector_id'],
-                $session['connector_status'] ?? 'Available',
+                $this->availability->connectorStatus(
+                    $chargerId,
+                    $outlet['evse_id'],
+                    $outlet['connector_id'],
+                    $session['connector_status'] ?? 'Available',
+                ),
             );
         }
     }
@@ -489,7 +522,8 @@ final class StationSessionWorker
             return $this->connectRemoteStartedVehicle($chargerId, $session);
         }
 
-        if ($session === null || $session['connector_status'] !== 'Available') {
+        if ($session === null || $session['connector_status'] !== 'Available'
+            || !$this->availability->canStartTransaction($chargerId, $evseId, $connectorId)) {
             throw new RuntimeException('The selected outlet is not available.');
         }
 
@@ -528,6 +562,7 @@ final class StationSessionWorker
         $idToken = $payload['idToken'] ?? null;
         $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
         if ($session === null || $session['connector_status'] !== 'Available'
+            || !$this->availability->canStartTransaction($chargerId, $evseId, $connectorId)
             || !is_int($remoteStartId) || !is_array($idToken)) {
             throw new RuntimeException('The accepted remote-start request is no longer valid for this outlet.');
         }
@@ -565,7 +600,7 @@ final class StationSessionWorker
         $result = $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
         if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
             $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $transactionId, $session['meter_wh']);
-            $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
+            $this->reportReleasedOutlet($chargerId, $evseId, $connectorId);
             throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
         }
 
@@ -659,8 +694,8 @@ final class StationSessionWorker
             $session['transaction_id'],
             $session['meter_wh'],
         );
-        $this->sendStatusNotification($chargerId, $session['evse_id'], $session['connector_id'], 'Available');
         $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+        $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id']);
 
         return true;
     }
@@ -706,8 +741,8 @@ final class StationSessionWorker
                 $transactionId,
                 $session['meter_wh'],
             );
-            $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
             $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+            $this->reportReleasedOutlet($chargerId, $evseId, $connectorId);
 
             return ['status' => 'Stopped'];
         }
@@ -773,8 +808,8 @@ final class StationSessionWorker
 
         $queuedEvent = $this->queueTransactionEvent($chargerId, $transactionEvent);
         $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $session['transaction_id'], $meterWh);
-        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Available');
         $this->deliverTransactionEventsThrough($chargerId, $queuedEvent['id']);
+        $this->reportReleasedOutlet($chargerId, $evseId, $connectorId);
 
         return ['status' => 'Unplugged'];
     }
@@ -915,6 +950,35 @@ final class StationSessionWorker
             $chargingSequence,
         );
         $this->deliverTransactionEventsThrough($chargerId, $queuedCharging['id']);
+    }
+
+    private function reportReleasedOutlet(int $chargerId, int $evseId, int $connectorId): void
+    {
+        $changes = $this->availability->applyPendingChanges($chargerId);
+        $reportedCurrentOutlet = false;
+        foreach ($changes as $change) {
+            if ($change['evse_id'] === $evseId && $change['connector_id'] === $connectorId) {
+                $reportedCurrentOutlet = true;
+            }
+
+            $this->sendStatusNotification(
+                $chargerId,
+                $change['evse_id'],
+                $change['connector_id'],
+                $change['status'],
+            );
+        }
+
+        if (!$reportedCurrentOutlet) {
+            $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+            $status = $this->availability->connectorStatus(
+                $chargerId,
+                $evseId,
+                $connectorId,
+                $session['connector_status'] ?? 'Available',
+            );
+            $this->sendStatusNotification($chargerId, $evseId, $connectorId, $status);
+        }
     }
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void

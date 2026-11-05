@@ -93,6 +93,7 @@ function serveClient($client): void
     $pendingBootCount = (int) (getenv('FAKE_CSMS_PENDING_BOOT_COUNT') ?: 0);
     $serverCallSent = false;
     $remoteStartSent = false;
+    $changeAvailabilitySent = false;
     while (true) {
         $frame = readFrame($client);
         if ($frame === null) {
@@ -154,6 +155,51 @@ function serveClient($client): void
             writeFrame($client, 0x0, substr($reply, $splitAt));
         } else {
             writeFrame($client, 0x1, $reply);
+        }
+
+        if ($action === 'BootNotification'
+            && ($result['status'] ?? null) === 'Accepted'
+            && !$changeAvailabilitySent
+            && getenv('FAKE_CSMS_SEND_CHANGE_AVAILABILITY') === '1') {
+            $changeAvailabilitySent = true;
+            $changeAvailabilityCallId = 'fake-csms-change-availability-' . $call[1];
+            $changeAvailabilityCall = json_encode([2, $changeAvailabilityCallId, 'ChangeAvailability', [
+                'evse' => ['id' => 1],
+                'operationalStatus' => 'Inoperative',
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            writeFrame($client, 0x1, $changeAvailabilityCall);
+            $requestAnswered = false;
+            $statusNotificationReceived = false;
+            while ((!$requestAnswered || !$statusNotificationReceived) && ($stationResponse = readFrame($client)) !== null) {
+                if ($stationResponse[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationResponse[1], true);
+                if (!is_array($stationMessage)) {
+                    continue;
+                }
+
+                if (in_array($stationMessage[0] ?? null, [3, 4], true)
+                    && ($stationMessage[1] ?? null) === $changeAvailabilityCallId) {
+                    fwrite(STDOUT, 'ChangeAvailability station response: ' . $stationResponse[1] . "\n");
+                    $requestAnswered = ($stationMessage[2]['status'] ?? null) === 'Accepted';
+                } elseif (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    $statusPayload = $stationMessage[3] ?? [];
+                    if (($statusPayload['connectorStatus'] ?? null) === 'Unavailable') {
+                        fwrite(STDOUT, 'ChangeAvailability status notification: ' . $stationResponse[1] . "\n");
+                        $statusNotificationReceived = true;
+                    }
+
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                } elseif (($stationMessage[0] ?? null) === 2) {
+                    $outgoingResult = ($stationMessage[2] ?? null) === 'Heartbeat'
+                        ? ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')]
+                        : new stdClass();
+                    writeFrame($client, 0x1, json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+                }
+            }
         }
 
         if ($action === 'BootNotification'
@@ -334,6 +380,38 @@ function serveClient($client): void
                     }
                 }
 
+                if ($requestAnswered && $transactionStarted && getenv('FAKE_CSMS_SEND_CHANGE_AFTER_REMOTE_START') === '1') {
+                    $changeAvailabilityCallId = 'fake-csms-pending-availability-' . $call[1];
+                    $changeAvailabilityCall = json_encode([2, $changeAvailabilityCallId, 'ChangeAvailability', [
+                        'evse' => ['id' => 1],
+                        'operationalStatus' => 'Inoperative',
+                    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $changeAvailabilityCall);
+                    while (($stationResponse = readFrame($client)) !== null) {
+                        if ($stationResponse[0] !== 0x1) {
+                            continue;
+                        }
+
+                        $stationMessage = json_decode($stationResponse[1], true);
+                        if (!is_array($stationMessage)) {
+                            continue;
+                        }
+
+                        if (in_array($stationMessage[0] ?? null, [3, 4], true)
+                            && ($stationMessage[1] ?? null) === $changeAvailabilityCallId) {
+                            fwrite(STDOUT, 'ChangeAvailability station response: ' . $stationResponse[1] . "\n");
+                            break;
+                        }
+
+                        if (($stationMessage[0] ?? null) === 2) {
+                            $outgoingResult = ($stationMessage[2] ?? null) === 'Heartbeat'
+                                ? ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')]
+                                : new stdClass();
+                            writeFrame($client, 0x1, json_encode([3, $stationMessage[1], $outgoingResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+                        }
+                    }
+                }
+
                 if ($requestAnswered && $transactionStarted && is_string($remoteTransactionId)) {
                     $transactionStatusCallId = 'fake-csms-transaction-status-' . $call[1];
                     $transactionStatusCall = json_encode([2, $transactionStatusCallId, 'GetTransactionStatus', [
@@ -378,7 +456,8 @@ function serveClient($client): void
                     writeFrame($client, 0x1, $remoteStopCall);
                     $stopAnswered = false;
                     $remoteStopReported = false;
-                    while ((!$stopAnswered || !$remoteStopReported) && ($stationResponse = readFrame($client)) !== null) {
+                    $availabilityReported = getenv('FAKE_CSMS_SEND_CHANGE_AFTER_REMOTE_START') !== '1';
+                    while ((!$stopAnswered || !$remoteStopReported || !$availabilityReported) && ($stationResponse = readFrame($client)) !== null) {
                         if ($stationResponse[0] !== 0x1) {
                             continue;
                         }
@@ -394,6 +473,12 @@ function serveClient($client): void
                         } elseif (($stationMessage[0] ?? null) === 2) {
                             $outgoingAction = $stationMessage[2] ?? '';
                             $outgoingPayload = $stationMessage[3] ?? [];
+                            if ($outgoingAction === 'StatusNotification'
+                                && ($outgoingPayload['connectorStatus'] ?? null) === 'Unavailable') {
+                                fwrite(STDOUT, 'RemoteStop availability status: ' . $stationResponse[1] . "\n");
+                                $availabilityReported = true;
+                            }
+
                             $remoteStopReported = $outgoingAction === 'TransactionEvent'
                                 && ($remoteStopBeforePlug
                                     ? (($outgoingPayload['eventType'] ?? null) === 'Ended'

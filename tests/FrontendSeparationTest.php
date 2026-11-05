@@ -206,3 +206,14 @@ it('makes message direction labels easy to distinguish at a glance', function ()
         ->and(preg_match('/\.tag-out\s*\{[^}]*color:\s*#fff[^}]*background:\s*#1769aa/s', $styles))->toBe(1)
         ->and(preg_match('/\.tag-in\s*\{[^}]*color:\s*#fff[^}]*background:\s*#087a56/s', $styles))->toBe(1);
 });
+
+it('disables vehicle plug-in actions for inoperative outlets', function (): void {
+    $script = file_get_contents(__DIR__ . '/../public/app.js');
+    $styles = file_get_contents(__DIR__ . '/../public/style.css');
+
+    expect(!is_string($script) || !is_string($styles))->toBeFalse()
+        ->and($script)->toContain("connectorStatus === 'Unavailable'")
+        ->toContain("outlet.can_start_transaction === false")
+        ->toContain("availabilityScheduled ? 'CHANGE SCHEDULED'")
+        ->and(preg_match('/\.outlet-status-unavailable\s*\{[^}]*background:\s*#fde8e8[^}]*color:\s*#9a3434/s', $styles))->toBe(1);
+});
