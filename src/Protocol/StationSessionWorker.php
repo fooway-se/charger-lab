@@ -11,6 +11,7 @@ use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\ResetRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
+use ChargerEmulator\Domain\TriggerMessageRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
@@ -453,6 +454,12 @@ final class StationSessionWorker
         $remoteStop = new RemoteStopRequestHandler($chargerId, $this->outletSessions, $this->commands);
         $reset = new ResetRequestHandler($chargerId, $this->resets);
         $transactionStatus = new TransactionStatusRequestHandler($chargerId, $this->outletSessions, $this->transactionEvents);
+        $triggerMessage = new TriggerMessageRequestHandler(
+            $chargerId,
+            $this->outletSessions,
+            $this->availability,
+            $this->resets,
+        );
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -464,7 +471,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus): ?array {
+            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->handle($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -486,6 +493,18 @@ final class StationSessionWorker
                     return $reset->handle($payload);
                 }
 
+                if ($action === 'TriggerMessage') {
+                    $bootStatus = null;
+                    if (($payload['requestedMessage'] ?? null) === 'BootNotification') {
+                        $charger = $this->chargers->get($chargerId);
+                        $bootStatus = is_array($charger) && is_string($charger['boot_status'] ?? null)
+                            ? $charger['boot_status']
+                            : null;
+                    }
+
+                    return $triggerMessage->handle($payload, $bootStatus);
+                }
+
                 return $action === 'GetTransactionStatus' ? $transactionStatus->handle($payload) : null;
             },
             function () use ($chargerId): ?string {
@@ -495,11 +514,21 @@ final class StationSessionWorker
                     ? $charger['boot_status']
                     : null;
             },
-            function (string $action, array $_payload, array $response) use ($changeAvailability, $chargerId): void {
+            function (string $action, array $_payload, array $response) use ($changeAvailability, $chargerId, $triggerMessage): void {
                 if ($action === 'Reset') {
                     if (in_array($response['status'] ?? null, ['Accepted', 'Scheduled'], true)) {
                         $this->reportPendingResetUnavailable($chargerId);
                         $this->processPendingReset($chargerId);
+                    }
+
+                    return;
+                }
+
+                if ($action === 'TriggerMessage') {
+                    if (($response['status'] ?? null) === 'Accepted') {
+                        foreach ($triggerMessage->takeStatusNotifications() as $statusNotification) {
+                            $this->createClient($chargerId)->request('StatusNotification', $statusNotification);
+                        }
                     }
 
                     return;

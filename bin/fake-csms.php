@@ -159,6 +159,75 @@ function serveClient($client): void
 
         if ($action === 'BootNotification'
             && ($result['status'] ?? null) === 'Accepted'
+            && getenv('FAKE_CSMS_SEND_TRIGGER_MESSAGE') === '1') {
+            $expectedStatusNotifications = (int) (getenv('FAKE_CSMS_TRIGGER_EXPECTED_STATUSES') ?: 1);
+            $initialStatusNotifications = 0;
+            while ($initialStatusNotifications < $expectedStatusNotifications) {
+                $stationMessageFrame = readFrame($client);
+                if ($stationMessageFrame === null) {
+                    break;
+                }
+                if ($stationMessageFrame[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationMessageFrame[1], true);
+                if (!is_array($stationMessage)) {
+                    continue;
+                }
+
+                if (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    $initialStatusNotifications++;
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                }
+            }
+
+            $triggerCallId = 'fake-csms-trigger-message-' . $call[1];
+            $triggerCall = json_encode([2, $triggerCallId, 'TriggerMessage', [
+                'requestedMessage' => 'StatusNotification',
+            ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            fwrite(STDOUT, 'TriggerMessage CSMS call: ' . $triggerCall . "\n");
+            writeFrame($client, 0x1, $triggerCall);
+            $triggerResponseReceived = false;
+            $statusNotificationsReceived = 0;
+            while (!$triggerResponseReceived || $statusNotificationsReceived < $expectedStatusNotifications) {
+                $stationResponse = readFrame($client);
+                if ($stationResponse === null) {
+                    break;
+                }
+                if ($stationResponse[0] !== 0x1) {
+                    continue;
+                }
+
+                $stationMessage = json_decode($stationResponse[1], true);
+                if (!is_array($stationMessage)) {
+                    continue;
+                }
+
+                if (in_array($stationMessage[0] ?? null, [3, 4], true)
+                    && ($stationMessage[1] ?? null) === $triggerCallId) {
+                    fwrite(STDOUT, 'TriggerMessage station response: ' . $stationResponse[1] . "\n");
+                    $triggerResponseReceived = true;
+                    if (($stationMessage[0] ?? null) === 4) {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                if (($stationMessage[0] ?? null) === 2
+                    && ($stationMessage[2] ?? null) === 'StatusNotification') {
+                    fwrite(STDOUT, 'TriggerMessage status notification: ' . $stationResponse[1] . "\n");
+                    $statusNotificationsReceived++;
+                    $statusReply = json_encode([3, $stationMessage[1], new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                    writeFrame($client, 0x1, $statusReply);
+                }
+            }
+        }
+
+        if ($action === 'BootNotification'
+            && ($result['status'] ?? null) === 'Accepted'
             && getenv('FAKE_CSMS_SEND_RESET') === '1'
             && (($resetSentPath = getenv('FAKE_CSMS_RESET_SENT_PATH') ?: '') === '' || !is_file($resetSentPath))) {
             markResetSent($resetSentPath);
