@@ -21,21 +21,21 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
 
     $environment = [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $port,
-        'FAKE_CSMS_FRAGMENT_RESPONSE' => '1',
-        'FAKE_CSMS_BASIC_AUTH_STATION' => 'IntegrationCharger',
-        'FAKE_CSMS_BASIC_AUTH_PASSWORD' => 'integration-secret',
+        'MOCK_CSMS_PORT' => (string) $port,
+        'MOCK_CSMS_FRAGMENT_RESPONSE' => '1',
+        'MOCK_CSMS_BASIC_AUTH_STATION' => 'IntegrationCharger',
+        'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'integration-secret',
     ];
 
     $process = proc_open(
-        [PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'],
+        [PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'],
         [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']],
         $pipes,
         dirname(__DIR__),
         $environment,
     );
 
-    expect(!is_resource($process))->toBeFalse('Could not start the fake CSMS integration fixture.');
+    expect(!is_resource($process))->toBeFalse('Could not start the mock CSMS integration fixture.');
 
     try {
         stream_set_blocking($pipes[1], false);
@@ -58,7 +58,7 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
 
             usleep(20_000);
         }
-        expect(!$ready)->toBeFalse('The fake CSMS did not open its listening port.');
+        expect(!$ready)->toBeFalse('The mock CSMS did not open its listening port.');
 
         $exchanges = [];
         $client = new OcppClient(
@@ -76,7 +76,7 @@ it('exchanges OCPP frames over a WebSocket connection', function (): void {
             'reason' => 'PowerUp',
         ]);
 
-        expect(($result['status'] ?? null) !== 'Accepted')->toBeFalse('The fake CSMS did not accept BootNotification.');
+        expect(($result['status'] ?? null) !== 'Accepted')->toBeFalse('The mock CSMS did not accept BootNotification.');
         expect(count($exchanges) !== 2 || $exchanges[0][0] !== 'outgoing' || $exchanges[1][0] !== 'incoming')->toBeFalse('Expected outgoing and incoming OCPP messages to be observable for logging.');
         expect(($exchanges[0][1] ?? null) !== 'BootNotification'
             || ($exchanges[0][2][2] ?? null) !== 'BootNotification'

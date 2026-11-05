@@ -9,10 +9,22 @@ use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 
 /**
- * Answers the supported OCPP Device Model variables for one charger.
+ * Implements the OCPP Device Model variables exposed by one charger.
+ *
+ * It serves CSMS reads and writes from charger settings and outlet state
+ * so the session worker can focus on routing protocol messages.
  */
 final class DeviceModel
 {
+    private const OCPP_COMMUNICATION_VARIABLES = [
+        'MessageAttemptsTransactionEvent',
+        'MessageAttemptIntervalTransactionEvent',
+        'RetryBackOffWaitMinimum',
+        'RetryBackOffRandomRange',
+        'RetryBackOffRepeatTimes',
+        'HeartbeatInterval',
+    ];
+
     public function __construct(
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $settings,
@@ -21,11 +33,7 @@ final class DeviceModel
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array<string, mixed>|null
-     */
-    public function handle(string $action, array $payload): ?array
+    public function processVariableAction(string $action, array $payload): ?array
     {
         return match ($action) {
             'GetVariables' => $this->getVariables($payload),
@@ -34,91 +42,79 @@ final class DeviceModel
         };
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{getVariableResult:list<array<string, mixed>>}
-     */
     private function getVariables(array $payload): array
     {
-        $results = [];
-        foreach ($payload['getVariableData'] ?? [] as $request) {
-            if (!is_array($request)) {
+        $variableResults = [];
+        foreach ($payload['getVariableData'] ?? [] as $variableRequest) {
+            if (!is_array($variableRequest)) {
                 continue;
             }
 
-            $component = is_array($request['component'] ?? null) ? $request['component'] : [];
-            $variable = is_array($request['variable'] ?? null) ? $request['variable'] : [];
-            $attributeType = is_string($request['attributeType'] ?? null) ? $request['attributeType'] : 'Actual';
-            $value = $this->readValue($component, $variable);
-            $status = $value === null ? $this->unknownStatus($component) : 'Accepted';
-            if ($value !== null && $attributeType !== 'Actual') {
-                $status = 'NotSupportedAttributeType';
+            $component = $this->arrayField($variableRequest, 'component');
+            $variable = $this->arrayField($variableRequest, 'variable');
+            $attributeType = is_string($variableRequest['attributeType'] ?? null) ? $variableRequest['attributeType'] : 'Actual';
+            $attributeValue = $this->readVariableValue($component, $variable);
+            $attributeStatus = $attributeValue === null ? $this->unknownVariableStatus($component) : 'Accepted';
+            if ($attributeValue !== null && $attributeType !== 'Actual') {
+                $attributeStatus = 'NotSupportedAttributeType';
             }
 
-            $result = [
-                'attributeStatus' => $status,
+            $variableResult = [
+                'attributeStatus' => $attributeStatus,
                 'component' => $component,
                 'variable' => $variable,
                 'attributeType' => $attributeType,
             ];
-            if ($status === 'Accepted') {
-                $result['attributeValue'] = $value;
+            if ($attributeStatus === 'Accepted') {
+                $variableResult['attributeValue'] = $attributeValue;
             }
 
-            $results[] = $result;
+            $variableResults[] = $variableResult;
         }
 
-        return ['getVariableResult' => $results];
+        return ['getVariableResult' => $variableResults];
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{setVariableResult:list<array<string, mixed>>}
-     */
     private function setVariables(array $payload): array
     {
-        $results = [];
-        foreach ($payload['setVariableData'] ?? [] as $request) {
-            if (!is_array($request)) {
+        $variableResults = [];
+        foreach ($payload['setVariableData'] ?? [] as $variableRequest) {
+            if (!is_array($variableRequest)) {
                 continue;
             }
 
-            $component = is_array($request['component'] ?? null) ? $request['component'] : [];
-            $variable = is_array($request['variable'] ?? null) ? $request['variable'] : [];
-            $attributeType = is_string($request['attributeType'] ?? null) ? $request['attributeType'] : 'Actual';
-            $knownValue = $this->readValue($component, $variable);
-            if ($knownValue === null) {
-                $status = $this->unknownStatus($component);
+            $component = $this->arrayField($variableRequest, 'component');
+            $variable = $this->arrayField($variableRequest, 'variable');
+            $attributeType = is_string($variableRequest['attributeType'] ?? null) ? $variableRequest['attributeType'] : 'Actual';
+            $currentAttributeValue = $this->readVariableValue($component, $variable);
+            if ($currentAttributeValue === null) {
+                $attributeStatus = $this->unknownVariableStatus($component);
             } elseif ($attributeType !== 'Actual') {
-                $status = 'NotSupportedAttributeType';
-            } elseif ($this->isWritable($component, $variable)) {
-                $value = $request['attributeValue'] ?? null;
-                if (is_string($value) && $this->isValidSetting($variable['name'], $value)) {
-                    $this->settings->set($this->chargerId, $variable['name'], $value);
-                    $status = 'Accepted';
+                $attributeStatus = 'NotSupportedAttributeType';
+            } elseif ($this->isVariableWritable($component, $variable)) {
+                $newAttributeValue = $variableRequest['attributeValue'] ?? null;
+                if (is_string($newAttributeValue) && $this->isValidSettingValue($variable['name'], $newAttributeValue)) {
+                    $this->settings->set($this->chargerId, $variable['name'], $newAttributeValue);
+                    $attributeStatus = 'Accepted';
                 } else {
-                    $status = 'Rejected';
+                    $attributeStatus = 'Rejected';
                 }
             } else {
-                $status = 'Rejected';
+                $attributeStatus = 'Rejected';
             }
 
-            $results[] = [
+            $variableResults[] = [
                 'attributeType' => $attributeType,
-                'attributeStatus' => $status,
+                'attributeStatus' => $attributeStatus,
                 'component' => $component,
                 'variable' => $variable,
             ];
         }
 
-        return ['setVariableResult' => $results];
+        return ['setVariableResult' => $variableResults];
     }
 
-    /**
-     * @param array<string, mixed> $component
-     * @param array<string, mixed> $variable
-     */
-    private function readValue(array $component, array $variable): ?string
+    private function readVariableValue(array $component, array $variable): ?string
     {
         $componentName = $component['name'] ?? null;
         $variableName = $variable['name'] ?? null;
@@ -146,14 +142,7 @@ final class DeviceModel
         }
 
         if ($componentName === 'OCPPCommCtrlr'
-            && in_array($variableName, [
-                'MessageAttemptsTransactionEvent',
-                'MessageAttemptIntervalTransactionEvent',
-                'RetryBackOffWaitMinimum',
-                'RetryBackOffRandomRange',
-                'RetryBackOffRepeatTimes',
-                'HeartbeatInterval',
-            ], true)) {
+            && in_array($variableName, self::OCPP_COMMUNICATION_VARIABLES, true)) {
             return $this->settings->get($this->chargerId, $variableName);
         }
 
@@ -169,12 +158,16 @@ final class DeviceModel
         return $this->availabilityState($componentName, $component);
     }
 
-    /**
-     * @param array<string, mixed> $component
-     */
+    private function arrayField(array $data, string $field): array
+    {
+        $value = $data[$field] ?? null;
+
+        return is_array($value) ? $value : [];
+    }
+
     private function availabilityState(string $componentName, array $component): ?string
     {
-        $evse = is_array($component['evse'] ?? null) ? $component['evse'] : [];
+        $evse = $this->arrayField($component, 'evse');
         $evseId = $evse['id'] ?? null;
         $connectorId = $evse['connectorId'] ?? null;
         $outlets = $this->outletSessions->allForCharger($this->chargerId);
@@ -213,11 +206,7 @@ final class DeviceModel
             : 'Available';
     }
 
-    /**
-     * @param array<string, mixed> $component
-     * @param array<string, mixed> $variable
-     */
-    private function unknownStatus(array $component): string
+    private function unknownVariableStatus(array $component): string
     {
         if (!$this->componentExists($component)) {
             return 'UnknownComponent';
@@ -226,9 +215,6 @@ final class DeviceModel
         return 'UnknownVariable';
     }
 
-    /**
-     * @param array<string, mixed> $component
-     */
     private function componentExists(array $component): bool
     {
         $componentName = $component['name'] ?? null;
@@ -244,7 +230,7 @@ final class DeviceModel
             return false;
         }
 
-        $evse = is_array($component['evse'] ?? null) ? $component['evse'] : [];
+        $evse = $this->arrayField($component, 'evse');
         $evseId = $evse['id'] ?? null;
         $connectorId = $evse['connectorId'] ?? null;
         if (!is_int($evseId) || $evseId < 1) {
@@ -264,12 +250,7 @@ final class DeviceModel
         return false;
     }
 
-    /**
-     * @param array<string, mixed> $component
-     * @param array<string, mixed> $variable
-     * @return bool
-     */
-    private function isWritable(array $component, array $variable): bool
+    private function isVariableWritable(array $component, array $variable): bool
     {
         if (($component['name'] ?? null) === 'SampledDataCtrlr') {
             return in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
@@ -284,31 +265,16 @@ final class DeviceModel
         }
 
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
-            && in_array($variable['name'] ?? null, [
-                'MessageAttemptsTransactionEvent',
-                'MessageAttemptIntervalTransactionEvent',
-                'RetryBackOffWaitMinimum',
-                'RetryBackOffRandomRange',
-                'RetryBackOffRepeatTimes',
-                'HeartbeatInterval',
-            ], true);
+            && in_array($variable['name'] ?? null, self::OCPP_COMMUNICATION_VARIABLES, true);
     }
 
-    /**
-     * @return bool
-     */
-    private function isValidSetting(string $variable, string $value): bool
+    private function isValidSettingValue(string $variable, string $value): bool
     {
         if (in_array($variable, [
             'Interval',
             'TxEndedInterval',
             'TxUpdatedInterval',
-            'MessageAttemptsTransactionEvent',
-            'MessageAttemptIntervalTransactionEvent',
-            'RetryBackOffWaitMinimum',
-            'RetryBackOffRandomRange',
-            'RetryBackOffRepeatTimes',
-            'HeartbeatInterval',
+            ...self::OCPP_COMMUNICATION_VARIABLES,
             'EVConnectionTimeOut',
         ], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1

@@ -12,11 +12,6 @@ use JsonException;
  */
 final class Request
 {
-    /**
-     * @param array<string, mixed> $query
-     * @param array<string, mixed> $form
-     * @param array<string, mixed>|null $json
-     */
     public function __construct(
         public readonly string $method,
         public readonly string $path,
@@ -56,9 +51,6 @@ final class Request
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     public function body(): array
     {
         return $this->json ?? $this->form;

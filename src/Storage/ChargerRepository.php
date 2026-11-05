@@ -16,9 +16,6 @@ final class ChargerRepository
     {
     }
 
-    /**
-     * @return list<array<string, mixed>>
-     */
     public function all(): array
     {
         $chargers = $this->database->query('SELECT * FROM charger ORDER BY id')->fetchAll();
@@ -31,9 +28,6 @@ final class ChargerRepository
         return $chargers;
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     public function get(int $id): ?array
     {
         $statement = $this->database->prepare('SELECT * FROM charger WHERE id = :id');
@@ -43,9 +37,6 @@ final class ChargerRepository
         return $charger === false ? null : $charger;
     }
 
-    /**
-     * @return list<array<string, mixed>>
-     */
     public function dueBootRetries(): array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -68,9 +59,6 @@ final class ChargerRepository
         return $statement->fetchColumn() !== false;
     }
 
-    /**
-     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,csms_password?:string,outlet_count?:int,outlet_topology?:string,uses_default_csms?:bool} $charger
-     */
     public function create(array $charger): int
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -107,9 +95,6 @@ final class ChargerRepository
         return $this->create($charger);
     }
 
-    /**
-     * @param array{station_identity:string,csms_url:string,vendor_name:string,model:string,serial_number:string,csms_password:string,outlet_count:int,outlet_topology:string,uses_default_csms?:bool} $charger
-     */
     public function save(int $id, array $charger): void
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -179,9 +164,6 @@ final class ChargerRepository
         $statement->execute(['id' => $id]);
     }
 
-    /**
-     * @return array{station_identity:string,csms_url:string,csms_password:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
-     */
     private static function defaultCharger(string $csmsUrl): array
     {
         return [

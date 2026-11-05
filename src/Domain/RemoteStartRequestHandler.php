@@ -14,9 +14,6 @@ use ChargerEmulator\Storage\ResetRepository;
  */
 final class RemoteStartRequestHandler
 {
-    /**
-     * @param int $chargerId The station that received the CSMS request.
-     */
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
@@ -26,11 +23,7 @@ final class RemoteStartRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string}
-     */
-    public function handle(array $payload): array
+    public function requestStart(array $payload): array
     {
         if ($this->resets->blocksNewTransactions($this->chargerId)) {
             return ['status' => 'Rejected'];
@@ -68,10 +61,6 @@ final class RemoteStartRequestHandler
         return ['status' => 'Rejected'];
     }
 
-    /**
-     * @param mixed $idToken
-     * @return bool
-     */
     private function isIdToken(mixed $idToken): bool
     {
         if (!is_array($idToken) || !is_string($idToken['idToken'] ?? null) || $idToken['idToken'] === ''

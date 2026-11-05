@@ -26,9 +26,6 @@ final class WorkspaceSettingsRepository
         $statement->execute(['url' => $url]);
     }
 
-    /**
-     * @return array{tls_server_name:string,tls_ca_certificate:string}
-     */
     public function getTlsSettings(): array
     {
         $statement = $this->database->query('SELECT tls_server_name, tls_ca_certificate FROM workspace_settings WHERE id = 1');

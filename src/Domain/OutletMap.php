@@ -24,9 +24,6 @@ final class OutletMap
         }
     }
 
-    /**
-     * @return list<array{number:int,evse_id:int,connector_id:int}>
-     */
     public function outlets(): array
     {
         $outlets = [];

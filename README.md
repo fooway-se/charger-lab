@@ -8,7 +8,7 @@ A standalone local emulator for developer testing against OCPP 2.0.1 CSMS implem
 docker compose up --build
 ```
 
-Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled fake CSMS. Use **Setup** to edit the workspace CSMS URL and each charger's identity, password, endpoint, and outlets. **Test CSMS connection** checks the saved charger's WebSocket, TLS, Basic Authentication, and OCPP subprotocol without sending BootNotification. The **Test bench** keeps the charger cards, Connect & Boot, RFID controls, and communication logs together. Add as many charger cards as you need.
+Open [http://localhost:8080](http://localhost:8080). The app starts with one charger configured to connect to the bundled mock CSMS. Use **Setup** to edit the workspace CSMS URL and each charger's identity, password, endpoint, and outlets. **Test CSMS connection** checks the saved charger's WebSocket, TLS, Basic Authentication, and OCPP subprotocol without sending BootNotification. The **Test bench** keeps the charger cards, Connect & Boot, RFID controls, and communication logs together. Add as many charger cards as you need.
 
 Charger settings, the workspace CSMS default, and per-charger exchange logs persist in the `charger-data` Docker volume. Enter the OCPP-J endpoint URL without a station identity; the emulator appends each charger's percent-encoded identity when connecting. The app supports `ws://` and `wss://` endpoints that negotiate the `ocpp2.0.1` subprotocol. Existing databases migrate in place, preserving effective connection URLs; different endpoints become per-charger overrides.
 

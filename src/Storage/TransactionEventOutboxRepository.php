@@ -17,10 +17,6 @@ final class TransactionEventOutboxRepository
     {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}
-     */
     public function enqueue(int $chargerId, array $payload): array
     {
         $transactionInfo = is_array($payload['transactionInfo'] ?? null) ? $payload['transactionInfo'] : [];
@@ -99,9 +95,6 @@ final class TransactionEventOutboxRepository
         }
     }
 
-    /**
-     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}|null
-     */
     public function nextPending(int $chargerId, ?int $now = null): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -208,9 +201,6 @@ final class TransactionEventOutboxRepository
         return $statement->fetchColumn() !== false;
     }
 
-    /**
-     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}|null
-     */
     private function getByTransactionSequence(int $chargerId, string $transactionId, int $sequence): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -227,10 +217,6 @@ final class TransactionEventOutboxRepository
         return $row === false ? null : self::hydrate($row);
     }
 
-    /**
-     * @param array<string, mixed> $row
-     * @return array{id:int,charger_id:int,transaction_id:string,seq_no:int,message_id:string,payload:array<string,mixed>,status:string,attempt_count:int,next_attempt_at:?int}
-     */
     private static function hydrate(array $row): array
     {
         $payload = json_decode($row['payload'], true, flags: JSON_THROW_ON_ERROR);

@@ -80,7 +80,7 @@ function waitForProcessOutput($process, string $expected, int $timeoutMillisecon
             }
         }
         if (str_contains($output, $expected)) {
-            $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+            $GLOBALS['capturedMockCsmsOutput'] = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $output;
 
             return $output;
         }
@@ -88,7 +88,7 @@ function waitForProcessOutput($process, string $expected, int $timeoutMillisecon
         usleep(20_000);
     }
 
-    $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+    $GLOBALS['capturedMockCsmsOutput'] = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $output;
 
     return $output;
 }
@@ -102,7 +102,7 @@ function drainProcessOutput($process): string
 
         $output = stream_get_contents($pipes[1]);
         if (is_string($output) && $output !== '') {
-            $GLOBALS['capturedFakeCsmsOutput'] = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $output;
+            $GLOBALS['capturedMockCsmsOutput'] = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $output;
 
             return $output;
         }
@@ -214,7 +214,7 @@ function stopProcess($process): void
 }
 
 it('boots multiple chargers and runs a plug authorize unplug flow', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-ui-' . bin2hex(random_bytes(6));
 
@@ -222,28 +222,28 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
 
     $databasePath = $directory . '/emulator.sqlite';
 
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
 
     $appPort = findOpenPort();
 
-    $overrideEndpoint = "ws://127.0.0.1:{$fakeCsmsPort}/ocpp";
+    $overrideEndpoint = "ws://127.0.0.1:{$mockCsmsPort}/ocpp";
 
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '1',
-        'FAKE_CSMS_PENDING_BOOT_INTERVAL' => '6',
-        'FAKE_CSMS_BOOT_COUNT_PATH' => $directory . '/fake-csms-boot-count',
-        'FAKE_CSMS_PENDING_BOOT_COUNT' => '1',
-        'FAKE_CSMS_REJECT_STATION' => 'UiIntegrationCharger',
-        'FAKE_CSMS_BASIC_AUTH_STATION' => 'UiIntegrationCharger',
-        'FAKE_CSMS_BASIC_AUTH_PASSWORD' => 'ui-station-secret',
-        'FAKE_CSMS_SEND_CALL' => '1',
-        'FAKE_CSMS_SEND_REJECTED_CALL' => '1',
-        'FAKE_CSMS_SEND_REMOTE_START' => '1',
-        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
-        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
-        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '1',
+        'MOCK_CSMS_PENDING_BOOT_INTERVAL' => '6',
+        'MOCK_CSMS_BOOT_COUNT_PATH' => $directory . '/mock-csms-boot-count',
+        'MOCK_CSMS_PENDING_BOOT_COUNT' => '1',
+        'MOCK_CSMS_REJECT_STATION' => 'UiIntegrationCharger',
+        'MOCK_CSMS_BASIC_AUTH_STATION' => 'UiIntegrationCharger',
+        'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'ui-station-secret',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REJECTED_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_SET_METER_SETTINGS' => '1',
+        'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
     ]);
 
     $worker = null;
@@ -251,7 +251,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -327,7 +327,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         $pendingCharger = $pendingState['chargers'][0] ?? [];
         expect(($pendingCharger['has_password'] ?? false))->toBeTrue()
             ->and($pendingStateBody)->not->toContain('ui-station-secret');
-        $rejectedCallOutput = waitForProcessOutput($fakeCsms, 'Rejected station response: ', 1_000);
+        $rejectedCallOutput = waitForProcessOutput($mockCsms, 'Rejected station response: ', 1_000);
         expect($rejectedCallOutput)->toContain('"SecurityError"');
         $retryDeadline = strtotime((string) ($pendingCharger['boot_retry_at'] ?? ''));
         expect($retryDeadline)->toBeGreaterThan(time());
@@ -406,27 +406,27 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($statusPayloads[1]['connectorId'] ?? null) !== 1
             || ($statusPayloads[1]['connectorStatus'] ?? null) !== 'Available')->toBeFalse('An accepted charger boot should report Available for each configured outlet.');
 
-        $incomingCallOutput = waitForProcessOutput($fakeCsms, 'Station response: ', 1_500);
+        $incomingCallOutput = waitForProcessOutput($mockCsms, 'Station response: ', 1_500);
         expect($incomingCallOutput)->toContain('"attributeValue":"false"');
-        $setVariableOutput = waitForProcessOutput($fakeCsms, 'SetVariables station response: ', 1_500);
-        $capturedDeviceModelOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . $setVariableOutput;
+        $setVariableOutput = waitForProcessOutput($mockCsms, 'SetVariables station response: ', 1_500);
+        $capturedDeviceModelOutput = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $setVariableOutput;
         expect($capturedDeviceModelOutput)->toContain('"attributeStatus":"Rejected"');
-        $meterSettingsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $meterSettingsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($meterSettingsOutput, 'Meter settings station response: ')) {
-            $meterSettingsOutput .= waitForProcessOutput($fakeCsms, 'Meter settings station response: ', 5_000);
+            $meterSettingsOutput .= waitForProcessOutput($mockCsms, 'Meter settings station response: ', 5_000);
         }
 
         expect($meterSettingsOutput)->toContain('"attributeStatus":"Accepted"');
-        $remoteStartOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $remoteStartOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($remoteStartOutput, 'RemoteStart station response: ')) {
-            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStart station response: ', 5_000);
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStart station response: ', 5_000);
         }
 
         expect($remoteStartOutput)->toContain('"status":"Accepted"');
         expect(strpos($remoteStartOutput, 'RemoteStart station response: '))
             ->toBeLessThan(strpos($remoteStartOutput, 'RemoteStart TransactionEvent: '));
         if (!str_contains($remoteStartOutput, 'GetTransactionStatus station response: ')) {
-            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'GetTransactionStatus station response: ', 5_000);
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'GetTransactionStatus station response: ', 5_000);
         }
         expect($remoteStartOutput)->toContain('GetTransactionStatus station response: ')
             ->and($remoteStartOutput)->toContain('"ongoingIndicator":true,"messagesInQueue":false');
@@ -490,11 +490,11 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             ->and($connectedRemotePayloads[1]['seqNo'] ?? null)->toBe(2);
         file_put_contents($directory . '/remote-start-continue', 'connected', LOCK_EX);
         if (!str_contains($remoteStartOutput, 'RemoteStop station response: ')) {
-            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStop station response: ', 5_000);
         }
 
         if (!str_contains($remoteStartOutput, 'RemoteStop TransactionEvent: ')) {
-            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop TransactionEvent: ', 5_000);
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStop TransactionEvent: ', 5_000);
         }
 
         expect($remoteStartOutput)->toContain('RemoteStop station response: ');
@@ -872,7 +872,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         );
         $secondBootResult = is_string($secondBootBody) ? json_decode($secondBootBody, true, flags: JSON_THROW_ON_ERROR) : [];
         expect(!str_contains($secondBootHeaders[0] ?? '', '200')
-            || ($secondBootResult['result']['status'] ?? null) !== 'Pending')->toBeFalse('The session worker should keep multiple charger connections active against the fake CSMS.');
+            || ($secondBootResult['result']['status'] ?? null) !== 'Pending')->toBeFalse('The session worker should keep multiple charger connections active against the mock CSMS.');
         waitForBootStatus($appPort, $secondChargerId, 'Accepted', 8_000);
 
         $sharedTopology = json_encode([
@@ -917,13 +917,13 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             'DATA_PATH' => $databasePath,
         ]);
         $reconnectedOutput = waitForProcessOutput(
-            $fakeCsms,
+            $mockCsms,
             'Connected GET /ocpp/UiIntegrationCharger HTTP/1.1',
             4_000,
         );
         expect($reconnectedOutput)->toContain('Connected GET /ocpp/UiIntegrationCharger HTTP/1.1');
-        $offlineEventOutput = ($GLOBALS['capturedFakeCsmsOutput'] ?? '')
-            . waitForProcessOutput($fakeCsms, '"offline":true', 3_000);
+        $offlineEventOutput = ($GLOBALS['capturedMockCsmsOutput'] ?? '')
+            . waitForProcessOutput($mockCsms, '"offline":true', 3_000);
         expect($offlineEventOutput)->toContain('"offline":true')
             ->and($offlineEventOutput)->toContain('offline-restart-integration');
         $offlineDeliveryDatabase = new PDO('sqlite:' . $databasePath);
@@ -934,16 +934,16 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             ->and(json_decode($offlineDelivery['payload'] ?? '{}', true)['offline'] ?? null)->toBeTrue();
         unset($offlineDeliveryDatabase);
 
-        $fakeCsmsOutput = $GLOBALS['capturedFakeCsmsOutput'] ?? '';
+        $mockCsmsOutput = $GLOBALS['capturedMockCsmsOutput'] ?? '';
         foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
-            if ($process === $fakeCsms) {
-                $fakeCsmsOutput .= stream_get_contents($pipes[1]);
+            if ($process === $mockCsms) {
+                $mockCsmsOutput .= stream_get_contents($pipes[1]);
                 break;
             }
         }
-        $stationConnectionCount = substr_count($fakeCsmsOutput, 'GET /ocpp/UiIntegrationCharger HTTP/1.1');
+        $stationConnectionCount = substr_count($mockCsmsOutput, 'GET /ocpp/UiIntegrationCharger HTTP/1.1');
         expect($stationConnectionCount)->toBeGreaterThanOrEqual(2, 'The charger should establish a new OCPP-J session after the worker restart.');
-        expect(!str_contains($fakeCsmsOutput, 'GET /ocpp/DemoCharger%202 HTTP/1.1'))->toBeFalse('The fake CSMS should accept simultaneous station sessions with distinct identities.');
+        expect(!str_contains($mockCsmsOutput, 'GET /ocpp/DemoCharger%202 HTTP/1.1'))->toBeFalse('The mock CSMS should accept simultaneous station sessions with distinct identities.');
 
         $database = new PDO('sqlite:' . $databasePath, options: [PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
         $charger = $database->query('SELECT * FROM charger WHERE id = ' . $chargerId)->fetch();
@@ -981,15 +981,15 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         [$remainingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $remainingState = is_string($remainingStateBody) ? json_decode($remainingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         foreach ($GLOBALS['testProcesses'] as [$process, $pipes]) {
-            if ($process === $fakeCsms) {
-                $fakeCsmsOutput .= stream_get_contents($pipes[1]);
+            if ($process === $mockCsms) {
+                $mockCsmsOutput .= stream_get_contents($pipes[1]);
                 break;
             }
         }
         expect(!str_contains($deleteHeaders[0] ?? '', '200')
             || count($remainingState['chargers'] ?? []) !== 1
             || ($remainingState['chargers'][0]['id'] ?? null) !== $secondChargerId
-            || !str_contains($fakeCsmsOutput, 'Disconnected GET /ocpp/UiIntegrationCharger HTTP/1.1'))->toBeFalse('Removing a charger should close its persistent session and preserve the other station.');
+            || !str_contains($mockCsmsOutput, 'Disconnected GET /ocpp/UiIntegrationCharger HTTP/1.1'))->toBeFalse('Removing a charger should close its persistent session and preserve the other station.');
 
     } finally {
         if (is_resource($app)) {
@@ -998,8 +998,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
-        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/fake-csms-boot-count', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
+        stopProcess($mockCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/mock-csms-boot-count', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }
@@ -1009,29 +1009,29 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
 })->group('integration');
 
 it('preserves a waiting remote-start deadline across worker restart without reconnecting early or duplicating events', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-remote-start-restart-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
 
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_CALL' => '1',
-        'FAKE_CSMS_SEND_REMOTE_START' => '1',
-        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
-        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
-        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
+        'MOCK_CSMS_SET_METER_SETTINGS' => '1',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1050,7 +1050,7 @@ it('preserves a waiting remote-start deadline across worker restart without reco
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'RestartPendingCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Test Model',
             'serial_number' => 'RESTART-001',
@@ -1063,9 +1063,9 @@ it('preserves a waiting remote-start deadline across worker restart without reco
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200') || !is_string($bootBody))->toBeFalse('The CSMS should accept the charger boot.');
 
-        $remoteStartOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $remoteStartOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($remoteStartOutput, 'RemoteStart TransactionEvent: ')) {
-            $remoteStartOutput .= waitForProcessOutput($fakeCsms, 'RemoteStart TransactionEvent: ', 5_000);
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStart TransactionEvent: ', 5_000);
         }
         expect($remoteStartOutput)->toContain('RemoteStart station response: ')
             ->and($remoteStartOutput)->toContain('RemoteStart TransactionEvent: ');
@@ -1094,23 +1094,23 @@ it('preserves a waiting remote-start deadline across worker restart without reco
         expect($outletBeforeRestart['remote_start_pending'] ?? null)->toBeTrue()
             ->and($deadlineBeforeRestart)->toBeString();
 
-        drainProcessOutput($fakeCsms);
+        drainProcessOutput($mockCsms);
         stopProcess($worker);
-        drainProcessOutput($fakeCsms);
+        drainProcessOutput($mockCsms);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
         ]);
         waitUntilDatabaseReady($databasePath);
 
-        $earlyReconnectOutput = waitForProcessOutput($fakeCsms, 'No early reconnect expected', 250);
+        $earlyReconnectOutput = waitForProcessOutput($mockCsms, 'No early reconnect expected', 250);
         expect($earlyReconnectOutput)->not->toContain('Connected GET /ocpp/RestartPendingCharger HTTP/1.1');
         [$earlyStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $earlyState = is_string($earlyStateBody) ? json_decode($earlyStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $earlyOutlet = $earlyState['chargers'][0]['outlets'][0] ?? [];
         expect($earlyOutlet['remote_start_pending'] ?? null)->toBeTrue();
 
-        $reconnectOutput = waitForProcessOutput($fakeCsms, 'Connected GET /ocpp/RestartPendingCharger HTTP/1.1', 3_000);
+        $reconnectOutput = waitForProcessOutput($mockCsms, 'Connected GET /ocpp/RestartPendingCharger HTTP/1.1', 3_000);
         expect($reconnectOutput)->toContain('Connected GET /ocpp/RestartPendingCharger HTTP/1.1');
         usleep(250_000);
         [$stateAfterRestartBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
@@ -1157,7 +1157,7 @@ it('preserves a waiting remote-start deadline across worker restart without reco
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1168,30 +1168,30 @@ it('preserves a waiting remote-start deadline across worker restart without reco
 })->group('integration');
 
 it('ends a remote-start transaction when the CSMS stops it before vehicle connection', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-remote-stop-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
 
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_CALL' => '1',
-        'FAKE_CSMS_SEND_REMOTE_START' => '1',
-        'FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
-        'FAKE_CSMS_SEND_CHANGE_AFTER_REMOTE_START' => '1',
-        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
-        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+        'MOCK_CSMS_SEND_CHANGE_AFTER_REMOTE_START' => '1',
+        'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
+        'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1210,7 +1210,7 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'RemoteStopPendingCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Test Model',
             'serial_number' => 'REMOTE-STOP-001',
@@ -1223,12 +1223,12 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200') || !is_string($bootBody))->toBeFalse('The CSMS should accept the test charger boot.');
 
-        $remoteStopOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $remoteStopOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($remoteStopOutput, 'RemoteStop station response: ')) {
-            $remoteStopOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop station response: ', 5_000);
+            $remoteStopOutput .= waitForProcessOutput($mockCsms, 'RemoteStop station response: ', 5_000);
         }
         if (!str_contains($remoteStopOutput, 'RemoteStop TransactionEvent: ')) {
-            $remoteStopOutput .= waitForProcessOutput($fakeCsms, 'RemoteStop TransactionEvent: ', 5_000);
+            $remoteStopOutput .= waitForProcessOutput($mockCsms, 'RemoteStop TransactionEvent: ', 5_000);
         }
 
         expect($remoteStopOutput)->toContain('RemoteStart TransactionEvent: ')
@@ -1310,7 +1310,7 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $directory . '/remote-start-sent', $directory . '/remote-start-continue'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1321,24 +1321,24 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
 })->group('integration');
 
 it('applies CSMS ChangeAvailability and reports the connector status', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-change-availability-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_CHANGE_AVAILABILITY' => '1',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CHANGE_AVAILABILITY' => '1',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1357,7 +1357,7 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'AvailabilityIntegrationCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Availability Test Model',
             'serial_number' => 'AVAIL-001',
@@ -1368,11 +1368,11 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
         expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
-        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        $bootCsmsOutput = drainProcessOutput($mockCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($csmsOutput, 'ChangeAvailability status notification: ')) {
-            $csmsOutput .= waitForProcessOutput($fakeCsms, 'ChangeAvailability status notification: ', 3_000);
+            $csmsOutput .= waitForProcessOutput($mockCsms, 'ChangeAvailability status notification: ', 3_000);
         }
 
         expect($csmsOutput)->toContain('ChangeAvailability station response: ')
@@ -1397,7 +1397,7 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1408,25 +1408,25 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
 })->group('integration');
 
 it('answers TriggerMessage for every connector and sends each current StatusNotification', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-trigger-message-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_TRIGGER_MESSAGE' => '1',
-        'FAKE_CSMS_TRIGGER_EXPECTED_STATUSES' => '2',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'MOCK_CSMS_TRIGGER_EXPECTED_STATUSES' => '2',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1445,7 +1445,7 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'TriggerMessageCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Trigger Message Test Model',
             'serial_number' => 'TRIGGER-001',
@@ -1456,16 +1456,16 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
         expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
-        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        $bootCsmsOutput = drainProcessOutput($mockCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($csmsOutput, '"evseId":2,"connectorId":1')) {
-            waitForProcessOutput($fakeCsms, '"evseId":2,"connectorId":1', 3_000);
+            waitForProcessOutput($mockCsms, '"evseId":2,"connectorId":1', 3_000);
             usleep(50_000);
-            $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
+            $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
         }
-        expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"fake-csms-trigger-message-')
-            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
+        expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"mock-csms-trigger-message-')
+            ->toContain('TriggerMessage station response: [3,"mock-csms-trigger-message-')
             ->toContain('"status":"Accepted"')
             ->toContain('"requestedMessage":"StatusNotification"')
             ->toContain('"evseId":1,"connectorId":1')
@@ -1483,7 +1483,7 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1494,28 +1494,28 @@ it('answers TriggerMessage for every connector and sends each current StatusNoti
 })->group('integration');
 
 it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant EVSE', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-trigger-heartbeat-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_TRIGGER_MESSAGE' => '1',
-        'FAKE_CSMS_TRIGGER_MESSAGE' => 'Heartbeat',
-        'FAKE_CSMS_TRIGGER_EXPECTED_STATUSES' => '1',
-        'FAKE_CSMS_INITIAL_STATUS_COUNT' => '2',
-        'FAKE_CSMS_TRIGGER_INCLUDE_EVSE' => '1',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'MOCK_CSMS_TRIGGER_MESSAGE' => 'Heartbeat',
+        'MOCK_CSMS_TRIGGER_EXPECTED_STATUSES' => '1',
+        'MOCK_CSMS_INITIAL_STATUS_COUNT' => '2',
+        'MOCK_CSMS_TRIGGER_INCLUDE_EVSE' => '1',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1534,7 +1534,7 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'TriggerHeartbeatCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Trigger Heartbeat Test Model',
             'serial_number' => 'TRIGGER-HB-001',
@@ -1545,17 +1545,17 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
         expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
-        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        $bootCsmsOutput = drainProcessOutput($mockCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($csmsOutput, 'TriggerMessage Heartbeat: ')) {
-            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage Heartbeat: ', 3_000);
+            $csmsOutput .= waitForProcessOutput($mockCsms, 'TriggerMessage Heartbeat: ', 3_000);
         }
 
-        expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"fake-csms-trigger-message-')
+        expect($csmsOutput)->toContain('TriggerMessage CSMS call: [2,"mock-csms-trigger-message-')
             ->toContain('"requestedMessage":"Heartbeat"')
             ->toContain('"evse":{"id":99}')
-            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
+            ->toContain('TriggerMessage station response: [3,"mock-csms-trigger-message-')
             ->toContain('"status":"Accepted"')
             ->toContain('TriggerMessage Heartbeat: [2,')
             ->toContain(',"Heartbeat",{}]');
@@ -1572,7 +1572,7 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1583,27 +1583,27 @@ it('sends Heartbeat after accepting a TriggerMessage and ignores its irrelevant 
 })->group('integration');
 
 it('sends current MeterValues for every EVSE after accepting a TriggerMessage', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-trigger-meter-values-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_TRIGGER_MESSAGE' => '1',
-        'FAKE_CSMS_TRIGGER_MESSAGE' => 'MeterValues',
-        'FAKE_CSMS_TRIGGER_EXPECTED_METER_VALUES' => '2',
-        'FAKE_CSMS_TRIGGER_EXPECTED_STATUSES' => '2',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'MOCK_CSMS_TRIGGER_MESSAGE' => 'MeterValues',
+        'MOCK_CSMS_TRIGGER_EXPECTED_METER_VALUES' => '2',
+        'MOCK_CSMS_TRIGGER_EXPECTED_STATUSES' => '2',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1622,7 +1622,7 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'TriggerMeterValuesCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Trigger Meter Values Test Model',
             'serial_number' => 'TRIGGER-MV-001',
@@ -1633,15 +1633,15 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
         expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
-        $bootCsmsOutput = drainProcessOutput($fakeCsms);
+        $bootCsmsOutput = drainProcessOutput($mockCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($csmsOutput, 'TriggerMessage MeterValues: ')) {
-            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage MeterValues: ', 3_000);
+            $csmsOutput .= waitForProcessOutput($mockCsms, 'TriggerMessage MeterValues: ', 3_000);
         }
 
         expect($csmsOutput)->toContain('"requestedMessage":"MeterValues"')
-            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-message-')
+            ->toContain('TriggerMessage station response: [3,"mock-csms-trigger-message-')
             ->toContain('"status":"Accepted"')
             ->toContain('TriggerMessage MeterValues: [2,')
             ->toContain(',"MeterValues",{"evseId":1,"meterValue":[{"timestamp":')
@@ -1660,7 +1660,7 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1671,23 +1671,23 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
 })->group('integration');
 
 it('sends clock-aligned MeterValues at the configured UTC interval boundaries', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-clock-aligned-meter-values-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1713,7 +1713,7 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'ClockAlignedMeterValuesCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Clock Aligned Meter Values Test Model',
             'serial_number' => 'CLOCK-MV-001',
@@ -1725,9 +1725,9 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody);
-        waitForProcessOutput($fakeCsms, 'MeterValues response: ', 4_000);
+        waitForProcessOutput($mockCsms, 'MeterValues response: ', 4_000);
         usleep(50_000);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
         preg_match('/OCPP in: (\[2,"[^"]+","MeterValues",[^\n]+\])/', $csmsOutput, $meterValueMatch);
         $meterValueCall = isset($meterValueMatch[1]) ? json_decode($meterValueMatch[1], true, flags: JSON_THROW_ON_ERROR) : null;
         $meterValuePayload = is_array($meterValueCall) && is_array($meterValueCall[3] ?? null) ? $meterValueCall[3] : [];
@@ -1750,7 +1750,7 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1761,23 +1761,23 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
 })->group('integration');
 
 it('sends clock-aligned transaction samples as MeterValueClock events', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-clock-transaction-meter-values-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1802,7 +1802,7 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'ClockAlignedTransactionCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Clock Aligned Transaction Test Model',
             'serial_number' => 'CLOCK-TX-001',
@@ -1829,9 +1829,9 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         );
         expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The vehicle token should be authorized.');
 
-        waitForProcessOutput($fakeCsms, '"context":"Sample.Clock"', 5_000);
+        waitForProcessOutput($mockCsms, '"context":"Sample.Clock"', 5_000);
         usleep(50_000);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '') . drainProcessOutput($fakeCsms);
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
         preg_match('/MeterValueClock TransactionEvent: (\[2,"[^"]+","TransactionEvent",[^\n]+\])/', $csmsOutput, $transactionEventMatch);
         $transactionEvent = isset($transactionEventMatch[1])
             ? json_decode($transactionEventMatch[1], true, flags: JSON_THROW_ON_ERROR)
@@ -1854,7 +1854,7 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1865,24 +1865,24 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
 })->group('integration');
 
 it('sends a current sequenced TransactionEvent after accepting its trigger', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-trigger-transaction-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_TRIGGER_TRANSACTION_EVENT' => '1',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_TRIGGER_TRANSACTION_EVENT' => '1',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -1901,7 +1901,7 @@ it('sends a current sequenced TransactionEvent after accepting its trigger', fun
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'TriggerTransactionCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Trigger Transaction Test Model',
             'serial_number' => 'TRIGGER-TX-001',
@@ -1913,7 +1913,7 @@ it('sends a current sequenced TransactionEvent after accepting its trigger', fun
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody);
-        drainProcessOutput($fakeCsms);
+        drainProcessOutput($mockCsms);
 
         [$plugBody, $plugHeaders] = request(
             "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
@@ -1922,13 +1922,13 @@ it('sends a current sequenced TransactionEvent after accepting its trigger', fun
             'application/json',
         );
         expect(!str_contains($plugHeaders[0] ?? '', '200'))->toBeFalse('The simulated vehicle should start a transaction: ' . (string) $plugBody);
-        $csmsOutput = (string) ($GLOBALS['capturedFakeCsmsOutput'] ?? '');
+        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($csmsOutput, 'TriggerMessage transaction event: ')) {
-            $csmsOutput .= waitForProcessOutput($fakeCsms, 'TriggerMessage transaction event: ', 3_000);
+            $csmsOutput .= waitForProcessOutput($mockCsms, 'TriggerMessage transaction event: ', 3_000);
         }
 
         expect($csmsOutput)->toContain('"requestedMessage":"TransactionEvent"')
-            ->toContain('TriggerMessage station response: [3,"fake-csms-trigger-transaction-event-')
+            ->toContain('TriggerMessage station response: [3,"mock-csms-trigger-transaction-event-')
             ->toContain('"status":"Accepted"')
             ->toContain('TriggerMessage transaction event: [2,');
 
@@ -1970,7 +1970,7 @@ it('sends a current sequenced TransactionEvent after accepting its trigger', fun
         if ($worker !== null) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -1981,26 +1981,26 @@ it('sends a current sequenced TransactionEvent after accepting its trigger', fun
 })->group('integration');
 
 it('reconnects with a RemoteReset BootNotification after an idle Immediate reset', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-reset-immediate-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
     $resetSentPath = $directory . '/reset-sent';
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_RESET' => '1',
-        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_RESET' => '1',
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -2019,7 +2019,7 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'ResetIntegrationCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Reset Test Model',
             'serial_number' => 'RESET-001',
@@ -2032,11 +2032,11 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
         [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
 
-        $resetResponseOutput = waitForProcessOutput($fakeCsms, 'Reset station response: ', 3_000);
+        $resetResponseOutput = waitForProcessOutput($mockCsms, 'Reset station response: ', 3_000);
         expect($resetResponseOutput)->toContain('Reset station response: ')
             ->toContain('"status":"Accepted"');
 
-        $resetBootOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 4_000);
+        $resetBootOutput = waitForProcessOutput($mockCsms, 'RemoteReset', 4_000);
         expect($resetBootOutput)->toContain('RemoteReset');
         waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
     } finally {
@@ -2046,7 +2046,7 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -2061,32 +2061,32 @@ it('honors the requested reset timing with an active transaction ({type})', func
     string $expectedStatus,
     string $expectedStoppedReason,
 ): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-reset-on-idle-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
     $resetSentPath = $directory . '/reset-sent';
     $remoteStartSentPath = $directory . '/remote-start-sent';
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_CALL' => '1',
-        'FAKE_CSMS_SEND_REMOTE_START' => '1',
-        'FAKE_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
-        'FAKE_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
-        'FAKE_CSMS_RESET_TYPE' => $resetType,
-        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
-        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+        'MOCK_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
+        'MOCK_CSMS_RESET_TYPE' => $resetType,
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -2105,7 +2105,7 @@ it('honors the requested reset timing with an active transaction ({type})', func
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'ResetOnIdleCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Reset Test Model',
             'serial_number' => 'RESET-IDLE-001',
@@ -2117,7 +2117,7 @@ it('honors the requested reset timing with an active transaction ({type})', func
         [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
 
-        $resetOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 5_000);
+        $resetOutput = waitForProcessOutput($mockCsms, 'RemoteReset', 5_000);
         expect($resetOutput)->toContain('RemoteStart TransactionEvent: ')
             ->toContain('Reset station response: ')
             ->toContain('"status":"' . $expectedStatus . '"')
@@ -2163,7 +2163,7 @@ it('honors the requested reset timing with an active transaction ({type})', func
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath, $remoteStartSentPath] as $path) {
             if (is_file($path)) {
                 unlink($path);
@@ -2177,34 +2177,34 @@ it('honors the requested reset timing with an active transaction ({type})', func
 ])->group('integration');
 
 it('preserves an OnIdle reset across worker restart without booting before the transaction ends', function (): void {
-    $GLOBALS['capturedFakeCsmsOutput'] = '';
+    $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-reset-restart-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
-    $fakeCsmsPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
     $appPort = findOpenPort();
     $resetSentPath = $directory . '/reset-sent';
     $remoteStartSentPath = $directory . '/remote-start-sent';
     $continuePath = $directory . '/remote-start-continue';
-    $fakeCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/fake-csms.php'], [
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
         'PATH' => (string) getenv('PATH'),
-        'FAKE_CSMS_PORT' => (string) $fakeCsmsPort,
-        'FAKE_CSMS_HEARTBEAT_INTERVAL' => '30',
-        'FAKE_CSMS_SEND_CALL' => '1',
-        'FAKE_CSMS_SEND_REMOTE_START' => '1',
-        'FAKE_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
-        'FAKE_CSMS_RESET_TYPE' => 'OnIdle',
-        'FAKE_CSMS_RESET_SENT_PATH' => $resetSentPath,
-        'FAKE_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
-        'FAKE_CSMS_REMOTE_START_CONTINUE_PATH' => $continuePath,
-        'FAKE_CSMS_SET_METER_SETTINGS' => '1',
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_SEND_RESET_AFTER_REMOTE_START' => '1',
+        'MOCK_CSMS_RESET_TYPE' => 'OnIdle',
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_REMOTE_START_SENT_PATH' => $remoteStartSentPath,
+        'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $continuePath,
+        'MOCK_CSMS_SET_METER_SETTINGS' => '1',
     ]);
     $worker = null;
     $app = null;
 
     try {
-        waitUntilAvailable($fakeCsmsPort);
+        waitUntilAvailable($mockCsmsPort);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
@@ -2223,7 +2223,7 @@ it('preserves an OnIdle reset across worker restart without booting before the t
             'charger_id' => $chargerId,
             'uses_default_csms' => false,
             'station_identity' => 'ResetRestartCharger',
-            'csms_url' => "ws://127.0.0.1:{$fakeCsmsPort}/ocpp",
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
             'vendor_name' => 'Test Vendor',
             'model' => 'Reset Test Model',
             'serial_number' => 'RESET-RESTART-001',
@@ -2235,7 +2235,7 @@ it('preserves an OnIdle reset across worker restart without booting before the t
         [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
 
-        $resetResponseOutput = waitForProcessOutput($fakeCsms, 'Reset station response: ', 5_000);
+        $resetResponseOutput = waitForProcessOutput($mockCsms, 'Reset station response: ', 5_000);
         expect($resetResponseOutput)->toContain('"status":"Scheduled"');
         $database = new PDO('sqlite:' . $databasePath);
         $persistedReset = $database->query(
@@ -2244,15 +2244,15 @@ it('preserves an OnIdle reset across worker restart without booting before the t
         unset($database);
         expect($persistedReset)->toBe(['reset_type' => 'OnIdle', 'response_status' => 'Scheduled']);
 
-        drainProcessOutput($fakeCsms);
+        drainProcessOutput($mockCsms);
         stopProcess($worker);
-        drainProcessOutput($fakeCsms);
+        drainProcessOutput($mockCsms);
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
         ]);
         waitUntilDatabaseReady($databasePath);
-        $reconnectOutput = waitForProcessOutput($fakeCsms, 'Connected GET /ocpp/ResetRestartCharger HTTP/1.1', 4_000);
+        $reconnectOutput = waitForProcessOutput($mockCsms, 'Connected GET /ocpp/ResetRestartCharger HTTP/1.1', 4_000);
         expect($reconnectOutput)->toContain('Connected GET /ocpp/ResetRestartCharger HTTP/1.1')
             ->not->toContain('"reason":"RemoteReset"');
         [$waitingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
@@ -2281,7 +2281,7 @@ it('preserves an OnIdle reset across worker restart without booting before the t
         );
         expect(!str_contains($unplugHeaders[0] ?? '', '200'))->toBeFalse('The active transaction should end before the reset.');
 
-        $resetBootOutput = waitForProcessOutput($fakeCsms, 'RemoteReset', 5_000);
+        $resetBootOutput = waitForProcessOutput($mockCsms, 'RemoteReset', 5_000);
         expect($resetBootOutput)->toContain('RemoteReset');
         waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
         [$finalStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
@@ -2326,7 +2326,7 @@ it('preserves an OnIdle reset across worker restart without booting before the t
         if (is_resource($worker)) {
             stopProcess($worker);
         }
-        stopProcess($fakeCsms);
+        stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath, $remoteStartSentPath, $continuePath] as $path) {
             if (is_file($path)) {
                 unlink($path);

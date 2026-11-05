@@ -12,11 +12,6 @@ use ChargerEmulator\Storage\TransactionEventOutboxRepository;
  */
 final class TransactionStatusRequestHandler
 {
-    /**
-     * @param int $chargerId The station that received the CSMS request.
-     * @param OutletSessionRepository $outletSessions The station's persisted outlet sessions.
-     * @param TransactionEventOutboxRepository $transactionEvents The pending transaction event queue.
-     */
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
@@ -24,11 +19,7 @@ final class TransactionStatusRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{ongoingIndicator?:bool,messagesInQueue:bool}
-     */
-    public function handle(array $payload): array
+    public function getTransactionStatus(array $payload): array
     {
         $transactionId = $payload['transactionId'] ?? null;
         $hasRequestedTransaction = array_key_exists('transactionId', $payload);
@@ -46,15 +37,17 @@ final class TransactionStatusRequestHandler
             }
 
             if ($session['transaction_id'] === $transactionId) {
-                return [
-                    'ongoingIndicator' => true,
-                    'messagesInQueue' => $this->transactionEvents->hasPending($this->chargerId, $transactionId),
-                ];
+                return $this->requestedTransactionStatus($transactionId, true);
             }
         }
 
+        return $this->requestedTransactionStatus($transactionId, false);
+    }
+
+    private function requestedTransactionStatus(string $transactionId, bool $ongoing): array
+    {
         return [
-            'ongoingIndicator' => false,
+            'ongoingIndicator' => $ongoing,
             'messagesInQueue' => $this->transactionEvents->hasPending($this->chargerId, $transactionId),
         ];
     }

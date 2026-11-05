@@ -17,9 +17,6 @@ final class OcppCommandRepository
     {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     */
     public function enqueue(int $chargerId, string $action, array $payload): int
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -50,9 +47,6 @@ final class OcppCommandRepository
         return $statement->fetchColumn() !== false;
     }
 
-    /**
-     * @return array{id:int,charger_id:int,action:string,payload:array<string, mixed>}|null
-     */
     public function claimNext(): ?array
     {
         $this->database->beginTransaction();
@@ -90,9 +84,6 @@ final class OcppCommandRepository
         }
     }
 
-    /**
-     * @param array<string, mixed> $result
-     */
     public function complete(int $id, array $result): void
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -130,9 +121,6 @@ final class OcppCommandRepository
         $statement->execute(['completed_at' => gmdate(DATE_ATOM)]);
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     public function get(int $id): ?array
     {
         $statement = $this->database->prepare('SELECT * FROM ocpp_command WHERE id = :id');
@@ -154,9 +142,6 @@ final class OcppCommandRepository
         return $command;
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
     public function waitForCompletion(int $id, int $timeoutMilliseconds = 20_000): ?array
     {
         $deadline = microtime(true) + ($timeoutMilliseconds / 1000);

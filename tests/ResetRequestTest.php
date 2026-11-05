@@ -18,7 +18,7 @@ it('schedules a station reset until its active transaction ends', function (): v
     $resets = new ResetRepository($database, $sessions);
     $handler = new ResetRequestHandler($chargerId, $resets);
 
-    $response = $handler->handle(['type' => 'OnIdle']);
+    $response = $handler->requestReset(['type' => 'OnIdle']);
 
     expect($response)->toBe(['status' => 'Scheduled'])
         ->and($resets->pending($chargerId))->toBe(['type' => 'OnIdle', 'status' => 'Scheduled']);
@@ -32,9 +32,9 @@ it('accepts an idle OnIdle reset and an Immediate reset with an active transacti
     $resets = new ResetRepository($database, $sessions);
     $handler = new ResetRequestHandler($chargerId, $resets);
 
-    $idleResponse = $handler->handle(['type' => 'OnIdle']);
+    $idleResponse = $handler->requestReset(['type' => 'OnIdle']);
     $sessions->markOccupied($chargerId, 1, 1, 'immediate-reset-transaction');
-    $immediateResponse = $handler->handle(['type' => 'Immediate']);
+    $immediateResponse = $handler->requestReset(['type' => 'Immediate']);
 
     expect($idleResponse)->toBe(['status' => 'Accepted'])
         ->and($immediateResponse)->toBe(['status' => 'Accepted'])
@@ -49,8 +49,8 @@ it('rejects unsupported EVSE-only and malformed reset requests without saving th
     $resets = new ResetRepository($database, $sessions);
     $handler = new ResetRequestHandler($chargerId, $resets);
 
-    $unsupportedEvseResponse = $handler->handle(['type' => 'Immediate', 'evseId' => 1]);
-    $invalidTypeResponse = $handler->handle(['type' => 'Soft']);
+    $unsupportedEvseResponse = $handler->requestReset(['type' => 'Immediate', 'evseId' => 1]);
+    $invalidTypeResponse = $handler->requestReset(['type' => 'Soft']);
 
     expect($unsupportedEvseResponse)->toBe(['status' => 'Rejected'])
         ->and($invalidTypeResponse)->toBe(['status' => 'Rejected'])
@@ -67,7 +67,7 @@ it('preserves a scheduled reset request after reopening SQLite', function (): vo
     $sessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
     $sessions->markOccupied($chargerId, 1, 1, 'persistent-reset-transaction');
     $resets = new ResetRepository($database, $sessions);
-    $response = (new ResetRequestHandler($chargerId, $resets))->handle(['type' => 'OnIdle']);
+    $response = (new ResetRequestHandler($chargerId, $resets))->requestReset(['type' => 'OnIdle']);
     unset($resets, $sessions, $database);
 
     $reopenedDatabase = Database::connect($databasePath);

@@ -12,12 +12,6 @@ use JsonException;
  */
 final class OcppClient
 {
-    /**
-     * @param null|Closure(string, string, string): void $exchangeObserver Receives direction, action, and raw OCPP-J JSON.
-     * @param null|Closure(string, array<string, mixed>): ?array<string, mixed> $incomingCallHandler Handles supported CSMS calls.
-     * @param null|Closure(): ?string $bootStatusProvider Reads the latest station BootNotification status.
-     * @param null|Closure(string, array<string, mixed>, array<string, mixed>): void $incomingCallAfterResponse Runs after a supported CSMS call response is sent.
-     */
     public function __construct(
         private readonly Connection $connection,
         private readonly ?Closure $exchangeObserver = null,
@@ -27,103 +21,94 @@ final class OcppClient
     ) {
     }
 
-    /**
-     * @param array<string, mixed>|\stdClass $payload
-     * @return array<string, mixed>
-     */
-    public function request(string $action, array|\stdClass $payload, ?string $messageId = null): array
+    public function request(string $action, array|\stdClass $requestPayload, ?string $messageId = null): array
     {
         $messageId ??= bin2hex(random_bytes(16));
         if ($messageId === '') {
             throw new OcppProtocolException('The OCPP-J message uniqueId cannot be empty.');
         }
 
-        $call = [2, $messageId, $action, $payload];
+        $callFrame = [2, $messageId, $action, $requestPayload];
 
-        $outgoing = json_encode($call, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        $this->connection->send($outgoing);
-        $this->observe('outgoing', $action, $outgoing);
+        $callJson = json_encode($callFrame, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $this->connection->send($callJson);
+        $this->observe('outgoing', $action, $callJson);
         $deferredIncomingCalls = [];
 
         while (true) {
-            $incoming = $this->connection->receive();
-            $reply = $this->decode($incoming);
-            if (is_array($reply) && ($reply[0] ?? null) === 2) {
-                $this->answerIncomingCall($reply, $incoming, deferredCalls: $deferredIncomingCalls);
+            $responseJson = $this->connection->receive();
+            $responseFrame = $this->decode($responseJson);
+            if (is_array($responseFrame) && ($responseFrame[0] ?? null) === 2) {
+                $this->answerIncomingCall($responseFrame, $responseJson, deferredIncomingCalls: $deferredIncomingCalls);
                 continue;
             }
 
-            $this->observe('incoming', $action, $incoming);
+            $this->observe('incoming', $action, $responseJson);
             break;
         }
 
-        if (!is_array($reply) || !isset($reply[0]) || !in_array($reply[0], [3, 4], true)) {
+        if (!is_array($responseFrame) || !isset($responseFrame[0]) || !in_array($responseFrame[0], [3, 4], true)) {
             throw new OcppProtocolException('Expected an OCPP-J CALLRESULT or CALLERROR response.');
         }
 
-        if (!is_string($reply[1]) || $reply[1] !== $messageId) {
+        if (!is_string($responseFrame[1]) || $responseFrame[1] !== $messageId) {
             throw new OcppProtocolException('The OCPP-J response uniqueId does not match the request.');
         }
 
-        if ($reply[0] === 4) {
-            if (count($reply) !== 5 || !is_string($reply[2] ?? null) || !is_string($reply[3] ?? null)) {
+        if ($responseFrame[0] === 4) {
+            if (count($responseFrame) !== 5 || !is_string($responseFrame[2] ?? null) || !is_string($responseFrame[3] ?? null)) {
                 throw new OcppProtocolException('The OCPP-J CALLERROR response is malformed.');
             }
 
             $this->runDeferredIncomingCalls($deferredIncomingCalls);
 
-            throw new OcppProtocolException("CSMS returned OCPP-J CALLERROR {$reply[2]}: {$reply[3]}");
+            throw new OcppProtocolException("CSMS returned OCPP-J CALLERROR {$responseFrame[2]}: {$responseFrame[3]}");
         }
 
-        if (count($reply) !== 3) {
+        if (count($responseFrame) !== 3) {
             throw new OcppProtocolException('The OCPP-J CALLRESULT frame is malformed.');
         }
 
-        if (!is_array($reply[2])) {
+        if (!is_array($responseFrame[2])) {
             throw new OcppProtocolException('The CALLRESULT payload must be an object.');
         }
 
         $this->runDeferredIncomingCalls($deferredIncomingCalls);
 
-        return $reply[2];
+        return $responseFrame[2];
     }
 
-    /**
-     * @param string|null $bootStatus Current BootNotification status for this station.
-     */
-    public function answerIncomingCallMessage(string $message, ?string $bootStatus = null): void
+    public function answerIncomingCallMessage(string $callJson, ?string $bootStatus = null): void
     {
-        $this->answerIncomingCall($this->decode($message), $message, $bootStatus);
+        $this->answerIncomingCall($this->decode($callJson), $callJson, $bootStatus);
     }
 
-    /**
-     * @param mixed $reply
-     */
     private function answerIncomingCall(
-        mixed $reply,
-        string $message,
+        mixed $callFrame,
+        string $callJson,
         ?string $bootStatus = null,
-        ?array &$deferredCalls = null,
+        ?array &$deferredIncomingCalls = null,
     ): void
     {
-        if (!is_array($reply) || count($reply) !== 4 || ($reply[0] ?? null) !== 2
-            || !is_string($reply[1] ?? null) || !is_string($reply[2] ?? null) || !is_array($reply[3] ?? null)) {
+        if (!is_array($callFrame) || count($callFrame) !== 4 || ($callFrame[0] ?? null) !== 2
+            || !is_string($callFrame[1] ?? null) || !is_string($callFrame[2] ?? null) || !is_array($callFrame[3] ?? null)) {
             throw new OcppProtocolException('The CSMS sent a malformed OCPP-J CALL.');
         }
 
-        $action = $reply[2];
-        $this->observe('incoming', $action, $message);
+        $action = $callFrame[2];
+        $requestPayload = $callFrame[3];
+        $this->observe('incoming', $action, $callJson);
         $bootStatus ??= $this->bootStatusProvider === null ? null : ($this->bootStatusProvider)();
         $rejected = $bootStatus === 'Rejected';
-        $response = $rejected
+        $callResult = $rejected
             ? null
-            : ($this->incomingCallHandler === null ? null : ($this->incomingCallHandler)($action, $reply[3]));
-        if (is_array($response)) {
-            $outgoing = json_encode([3, $reply[1], $response], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            : ($this->incomingCallHandler === null ? null : ($this->incomingCallHandler)($action, $requestPayload));
+        if (is_array($callResult)) {
+            $responseJson = json_encode([3, $callFrame[1], $callResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } else {
-            $outgoing = json_encode([
+            $responseJson = json_encode([
                 4,
-                $reply[1],
+                $callFrame[1],
                 $rejected ? 'SecurityError' : 'NotImplemented',
                 $rejected
                     ? 'The charging station has not been accepted by the CSMS.'
@@ -132,24 +117,21 @@ final class OcppClient
             ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         }
 
-        $this->connection->send($outgoing);
-        $this->observe('outgoing', $action, $outgoing);
-        if (is_array($response) && $this->incomingCallAfterResponse !== null) {
-            if ($deferredCalls === null) {
-                ($this->incomingCallAfterResponse)($action, $reply[3], $response);
+        $this->connection->send($responseJson);
+        $this->observe('outgoing', $action, $responseJson);
+        if (is_array($callResult) && $this->incomingCallAfterResponse !== null) {
+            if ($deferredIncomingCalls === null) {
+                ($this->incomingCallAfterResponse)($action, $requestPayload, $callResult);
             } else {
-                $deferredCalls[] = [$action, $reply[3], $response];
+                $deferredIncomingCalls[] = [$action, $requestPayload, $callResult];
             }
         }
     }
 
-    /**
-     * @return mixed
-     */
-    private function decode(string $message): mixed
+    private function decode(string $ocppJson): mixed
     {
         try {
-            return json_decode($message, true, flags: JSON_THROW_ON_ERROR);
+            return json_decode($ocppJson, true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             throw new OcppProtocolException('The CSMS sent invalid JSON.', previous: $exception);
         }
@@ -162,17 +144,14 @@ final class OcppClient
         }
     }
 
-    /**
-     * @param list<array{0:string,1:array<string, mixed>,2:array<string, mixed>}> $deferredCalls
-     */
-    private function runDeferredIncomingCalls(array $deferredCalls): void
+    private function runDeferredIncomingCalls(array $deferredIncomingCalls): void
     {
         if ($this->incomingCallAfterResponse === null) {
             return;
         }
 
-        foreach ($deferredCalls as [$action, $payload, $response]) {
-            ($this->incomingCallAfterResponse)($action, $payload, $response);
+        foreach ($deferredIncomingCalls as [$action, $requestPayload, $callResult]) {
+            ($this->incomingCallAfterResponse)($action, $requestPayload, $callResult);
         }
     }
 }

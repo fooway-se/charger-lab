@@ -23,7 +23,7 @@ it('reports supported device model variables and current outlet state', function
         new AvailabilityRepository($database),
     );
 
-    $response = $deviceModel->handle('GetVariables', [
+    $response = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             ['component' => ['name' => 'ChargingStation'], 'variable' => ['name' => 'Available']],
             ['component' => ['name' => 'EVSE', 'evse' => ['id' => 2]], 'variable' => ['name' => 'AvailabilityState']],
@@ -71,7 +71,7 @@ it('returns Device Model status codes for unknown and read-only variables', func
         new AvailabilityRepository($database),
     );
 
-    $getResponse = $deviceModel->handle('GetVariables', [
+    $getResponse = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             ['component' => ['name' => 'MissingComponent'], 'variable' => ['name' => 'Available']],
             ['component' => ['name' => 'ChargingStation'], 'variable' => ['name' => 'MissingVariable']],
@@ -79,7 +79,7 @@ it('returns Device Model status codes for unknown and read-only variables', func
             ['component' => ['name' => 'AuthCtrlr'], 'variable' => ['name' => 'AuthorizeRemoteStart'], 'attributeType' => 'Target'],
         ],
     ]);
-    $setResponse = $deviceModel->handle('SetVariables', [
+    $setResponse = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [[
             'component' => ['name' => 'AuthCtrlr'],
             'variable' => ['name' => 'AuthorizeRemoteStart'],
@@ -121,7 +121,7 @@ it('reports inoperative state through the Device Model AvailabilityState variabl
         $availability,
     );
 
-    $response = $deviceModel->handle('GetVariables', [
+    $response = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [[
             'component' => ['name' => 'EVSE', 'evse' => ['id' => 1]],
             'variable' => ['name' => 'AvailabilityState'],

@@ -17,9 +17,6 @@ final class ResetRepository
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     */
     public function request(int $chargerId, array $payload): string
     {
         $type = $payload['type'] ?? null;
@@ -52,9 +49,6 @@ final class ResetRepository
         return $status;
     }
 
-    /**
-     * @return array{type:string,status:string}|null
-     */
     public function pending(int $chargerId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'

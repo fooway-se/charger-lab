@@ -37,7 +37,7 @@ it('accepts a remote start only for an available outlet and queues its token', f
         new ResetRepository($database, $sessions),
     );
 
-    $result = $handler->handle([
+    $result = $handler->requestStart([
         'remoteStartId' => 42,
         'idToken' => ['idToken' => 'RFID-42', 'type' => 'ISO14443'],
         'evseId' => 2,
@@ -86,7 +86,7 @@ it('rejects a remote start when the requested EVSE has no available outlet', fun
         new ResetRepository($database, $sessions),
     );
 
-    expect($handler->handle([
+    expect($handler->requestStart([
         'remoteStartId' => 43,
         'idToken' => ['idToken' => 'RFID-43', 'type' => 'ISO14443'],
         'evseId' => 1,
@@ -122,7 +122,7 @@ it('rejects a remote start for an inoperative EVSE', function (): void {
         new ResetRepository($database, $sessions),
     );
 
-    expect($handler->handle([
+    expect($handler->requestStart([
         'remoteStartId' => 44,
         'idToken' => ['idToken' => 'RFID-44', 'type' => 'ISO14443'],
         'evseId' => 1,
@@ -150,7 +150,7 @@ it('blocks a new remote start while an EVSE inoperative change is scheduled', fu
         new ResetRepository($database, $sessions),
     );
 
-    expect($handler->handle([
+    expect($handler->requestStart([
         'remoteStartId' => 45,
         'idToken' => ['idToken' => 'RFID-45', 'type' => 'ISO14443'],
         'evseId' => 1,
@@ -183,7 +183,7 @@ it('rejects remote starts while a station reset is pending', function (): void {
         $resets,
     );
 
-    expect($handler->handle([
+    expect($handler->requestStart([
         'remoteStartId' => 46,
         'idToken' => ['idToken' => 'RFID-46', 'type' => 'ISO14443'],
         'evseId' => 2,

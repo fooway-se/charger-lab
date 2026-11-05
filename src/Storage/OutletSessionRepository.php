@@ -17,9 +17,6 @@ final class OutletSessionRepository
     {
     }
 
-    /**
-     * @param list<array{number:int,evse_id:int,connector_id:int}> $outlets
-     */
     public function initialize(int $chargerId, array $outlets): void
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -35,9 +32,6 @@ final class OutletSessionRepository
         }
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
-     */
     public function allForCharger(int $chargerId): array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -63,9 +57,6 @@ final class OutletSessionRepository
         }, $statement->fetchAll());
     }
 
-    /**
-     * @return array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}|null
-     */
     public function find(int $chargerId, int $evseId, int $connectorId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -93,9 +84,6 @@ final class OutletSessionRepository
         ];
     }
 
-    /**
-     * @return array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}|null
-     */
     public function findByTransactionId(int $chargerId, string $transactionId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -171,9 +159,6 @@ final class OutletSessionRepository
         }
     }
 
-    /**
-     * @return list<array{charger_id:int,evse_id:int,connector_id:int,transaction_id:string,seq_no:int,meter_wh:int}>
-     */
     public function dueRemoteStarts(int $chargerId, string $now): array
     {
         $statement = $this->database->prepare(<<<'SQL'
@@ -400,9 +385,6 @@ final class OutletSessionRepository
         }
     }
 
-    /**
-     * @param array<string, mixed> $meterValue
-     */
     public function recordTransactionEndSample(
         int $chargerId,
         int $evseId,
@@ -439,10 +421,6 @@ final class OutletSessionRepository
         }
     }
 
-    /**
-     * @param array<string, mixed> $row
-     * @return array{meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>}
-     */
     private static function meterSampleFields(array $row): array
     {
         try {

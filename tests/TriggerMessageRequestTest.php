@@ -52,12 +52,12 @@ function createTriggerMessageHandler(int $outletCount = 2, string $topology = 's
 
 it('returns current status for only the requested EVSE connector', function (): void {
     [, , $chargerId, , $availability, , $handler] = createTriggerMessageHandler();
-    (new ChangeAvailabilityRequestHandler($chargerId, $availability))->handle([
+    (new ChangeAvailabilityRequestHandler($chargerId, $availability))->requestChange([
         'evse' => ['id' => 1, 'connectorId' => 2],
         'operationalStatus' => 'Inoperative',
     ]);
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'StatusNotification',
         'evse' => ['id' => 1, 'connectorId' => 2],
     ]);
@@ -73,7 +73,7 @@ it('returns current status for only the requested EVSE connector', function (): 
 it('rejects an invalid StatusNotification target without queuing messages', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler();
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'StatusNotification',
         'evse' => ['id' => 0],
     ]);
@@ -85,7 +85,7 @@ it('rejects an invalid StatusNotification target without queuing messages', func
 it('reports unsupported TriggerMessage types as NotImplemented', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler();
 
-    $response = $handler->handle(['requestedMessage' => 'FirmwareStatusNotification']);
+    $response = $handler->triggerMessage(['requestedMessage' => 'FirmwareStatusNotification']);
 
     expect($response)->toBe(['status' => 'NotImplemented'])
         ->and($handler->takeStatusNotifications())->toBe([]);
@@ -96,7 +96,7 @@ it('accepts a MeterValues trigger for a configured EVSE', function (): void {
     $sessions->markOccupied($chargerId, 1, 1, 'meter-values-transaction');
     $sessions->recordMeterSample($chargerId, 1, 1, 'meter-values-transaction', 1250, 1, gmdate(DATE_ATOM));
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'MeterValues',
         'evse' => ['id' => 1],
     ]);
@@ -112,7 +112,7 @@ it('sends one current MeterValues request per EVSE when the target is absent', f
     $sessions->markOccupied($chargerId, 2, 1, 'second-meter-transaction');
     $sessions->recordMeterSample($chargerId, 2, 1, 'second-meter-transaction', 2500, 1, gmdate(DATE_ATOM));
 
-    $response = $handler->handle(['requestedMessage' => 'MeterValues']);
+    $response = $handler->triggerMessage(['requestedMessage' => 'MeterValues']);
 
     expect($response)->toBe(['status' => 'Accepted'])
         ->and($handler->takeMeterValueRequests())->toBe([
@@ -125,7 +125,7 @@ it('rejects MeterValues when no aligned measurands are configured', function ():
     [, , $chargerId, , , , $handler, $settings] = createTriggerMessageHandler(1, 'independent');
     $settings->set($chargerId, 'Measurands', '');
 
-    $response = $handler->handle(['requestedMessage' => 'MeterValues']);
+    $response = $handler->triggerMessage(['requestedMessage' => 'MeterValues']);
 
     expect($response)->toBe(['status' => 'Rejected'])
         ->and($handler->takeMeterValueRequests())->toBe([]);
@@ -138,7 +138,7 @@ it('reports the current combined meter register at the EVSE level for shared con
     $sessions->markOccupied($chargerId, 1, 2, 'second-shared-meter-transaction');
     $sessions->recordMeterSample($chargerId, 1, 2, 'second-shared-meter-transaction', 2500, 1, gmdate(DATE_ATOM));
 
-    $response = $handler->handle(['requestedMessage' => 'MeterValues', 'evse' => ['id' => 1, 'connectorId' => 2]]);
+    $response = $handler->triggerMessage(['requestedMessage' => 'MeterValues', 'evse' => ['id' => 1, 'connectorId' => 2]]);
 
     expect($response)->toBe(['status' => 'Accepted'])
         ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 3750]]);
@@ -147,7 +147,7 @@ it('reports the current combined meter register at the EVSE level for shared con
 it('accepts a Heartbeat trigger even when the CSMS includes an irrelevant EVSE', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler(1, 'independent');
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'Heartbeat',
         'evse' => ['id' => 99],
     ]);
@@ -162,7 +162,7 @@ it('accepts a TransactionEvent trigger for a matching active transaction', funct
     [, , $chargerId, $sessions, , , $handler] = createTriggerMessageHandler();
     $sessions->markOccupied($chargerId, 1, 2, 'active-shared-transaction');
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'TransactionEvent',
         'evse' => ['id' => 1, 'connectorId' => 2],
     ]);
@@ -178,7 +178,7 @@ it('accepts a TransactionEvent trigger for a matching active transaction', funct
 it('rejects a TransactionEvent trigger when its target has no active transaction', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler();
 
-    $response = $handler->handle([
+    $response = $handler->triggerMessage([
         'requestedMessage' => 'TransactionEvent',
         'evse' => ['id' => 1],
     ]);
@@ -192,7 +192,7 @@ it('schedules a TransactionEvent for every active EVSE when the request has no E
     $sessions->markOccupied($chargerId, 1, 1, 'active-first-transaction');
     $sessions->markOccupied($chargerId, 2, 1, 'active-second-transaction');
 
-    $response = $handler->handle(['requestedMessage' => 'TransactionEvent']);
+    $response = $handler->triggerMessage(['requestedMessage' => 'TransactionEvent']);
     $transactionSessions = $handler->takeTransactionSessions();
 
     expect($response)->toBe(['status' => 'Accepted'])
@@ -206,7 +206,7 @@ it('schedules a TransactionEvent for every active EVSE when the request has no E
 it('rejects a triggered BootNotification after the station was accepted', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler(1, 'independent');
 
-    expect($handler->handle(['requestedMessage' => 'BootNotification'], 'Accepted'))
+    expect($handler->triggerMessage(['requestedMessage' => 'BootNotification'], 'Accepted'))
         ->toBe(['status' => 'Rejected'])
         ->and($handler->takeStatusNotifications())->toBe([]);
 });

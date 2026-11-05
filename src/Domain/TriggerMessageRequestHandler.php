@@ -40,11 +40,7 @@ final class TriggerMessageRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string}
-     */
-    public function handle(array $payload, ?string $bootStatus = null): array
+    public function triggerMessage(array $payload, ?string $bootStatus = null): array
     {
         $this->statusNotifications = [];
         $this->heartbeatRequested = false;
@@ -52,34 +48,34 @@ final class TriggerMessageRequestHandler
         $this->meterValueRequests = [];
         $requestedMessage = $payload['requestedMessage'] ?? null;
         if (!is_string($requestedMessage)) {
-            return ['status' => 'Rejected'];
+            return $this->statusResult('Rejected');
         }
 
         if ($requestedMessage === 'BootNotification' && $bootStatus === 'Accepted') {
-            return ['status' => 'Rejected'];
+            return $this->statusResult('Rejected');
         }
 
         if ($requestedMessage === 'Heartbeat') {
             $this->heartbeatRequested = true;
 
-            return ['status' => 'Accepted'];
+            return $this->statusResult('Accepted');
         }
 
         if (!in_array($requestedMessage, ['StatusNotification', 'TransactionEvent', 'MeterValues'], true)) {
-            return ['status' => 'NotImplemented'];
+            return $this->statusResult('NotImplemented');
         }
 
         $outlets = $this->outletSessions->allForCharger($this->chargerId);
         $evse = $payload['evse'] ?? null;
         if (array_key_exists('evse', $payload) && !is_array($evse)) {
-            return ['status' => 'Rejected'];
+            return $this->statusResult('Rejected');
         }
 
         $evseId = is_array($evse) ? ($evse['id'] ?? null) : null;
         $connectorId = is_array($evse) ? ($evse['connectorId'] ?? null) : null;
         if ($evse !== null && (!is_int($evseId) || $evseId < 1
             || ($connectorId !== null && (!is_int($connectorId) || $connectorId < 1)))) {
-            return ['status' => 'Rejected'];
+            return $this->statusResult('Rejected');
         }
 
         $outlets = array_values(array_filter($outlets, static fn (array $outlet): bool =>
@@ -87,7 +83,7 @@ final class TriggerMessageRequestHandler
             && ($requestedMessage === 'MeterValues' || $connectorId === null || $outlet['connector_id'] === $connectorId)
         ));
         if ($outlets === []) {
-            return ['status' => 'Rejected'];
+            return $this->statusResult('Rejected');
         }
 
         if ($requestedMessage === 'TransactionEvent') {
@@ -98,15 +94,15 @@ final class TriggerMessageRequestHandler
                     && $outlet['transaction_id'] !== '',
             ));
             if ($this->transactionSessions === []) {
-                return ['status' => 'Rejected'];
+                return $this->statusResult('Rejected');
             }
 
-            return ['status' => 'Accepted'];
+            return $this->statusResult('Accepted');
         }
 
         if ($requestedMessage === 'MeterValues') {
             if ($this->settings->get($this->chargerId, 'Measurands') !== 'Energy.Active.Import.Register') {
-                return ['status' => 'Rejected'];
+                return $this->statusResult('Rejected');
             }
 
             $metersByEvse = [];
@@ -118,7 +114,7 @@ final class TriggerMessageRequestHandler
                 $this->meterValueRequests[] = ['evse_id' => (int) $meterEvseId, 'meter_wh' => $meterWh];
             }
 
-            return ['status' => 'Accepted'];
+            return $this->statusResult('Accepted');
         }
 
         $pendingReset = $this->resets->pending($this->chargerId);
@@ -141,12 +137,9 @@ final class TriggerMessageRequestHandler
             ];
         }
 
-        return ['status' => 'Accepted'];
+        return $this->statusResult('Accepted');
     }
 
-    /**
-     * @return list<array{timestamp:string,connectorStatus:string,evseId:int,connectorId:int}>
-     */
     public function takeStatusNotifications(): array
     {
         $statusNotifications = $this->statusNotifications;
@@ -163,9 +156,6 @@ final class TriggerMessageRequestHandler
         return $heartbeatRequested;
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
-     */
     public function takeTransactionSessions(): array
     {
         $transactionSessions = $this->transactionSessions;
@@ -174,14 +164,16 @@ final class TriggerMessageRequestHandler
         return $transactionSessions;
     }
 
-    /**
-     * @return list<array{evse_id:int,meter_wh:int}>
-     */
     public function takeMeterValueRequests(): array
     {
         $meterValueRequests = $this->meterValueRequests;
         $this->meterValueRequests = [];
 
         return $meterValueRequests;
+    }
+
+    private function statusResult(string $status): array
+    {
+        return ['status' => $status];
     }
 }

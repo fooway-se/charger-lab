@@ -166,7 +166,7 @@ final class Database
             $firstCharger = $chargerRows[0] ?? null;
             $storedUrl = is_array($firstCharger)
                 ? OcppConnectionUrl::endpointFromConnectionUrl($firstCharger['csms_url'], $firstCharger['station_identity'])
-                : 'ws://fake-csms:9000/ocpp';
+                : 'ws://mock-csms:9000/ocpp';
             $statement = $pdo->prepare('INSERT INTO workspace_settings (id, default_csms_url) VALUES (1, :url)');
             $statement->execute(['url' => $storedUrl]);
         }

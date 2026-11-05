@@ -18,7 +18,7 @@ it('accepts a remote stop only for an active transaction and queues its outlet',
     $sessions->markOccupied($chargerId, 1, 1, 'active-transaction');
     $handler = new RemoteStopRequestHandler($chargerId, $sessions, new OcppCommandRepository($database));
 
-    $result = $handler->handle(['transactionId' => 'active-transaction']);
+    $result = $handler->requestStop(['transactionId' => 'active-transaction']);
     $command = (new OcppCommandRepository($database))->claimNext();
 
     expect($result)->toBe(['status' => 'Accepted'])
@@ -47,7 +47,7 @@ it('rejects a remote stop for an unknown transaction without queuing work', func
     $commands = new OcppCommandRepository($database);
     $handler = new RemoteStopRequestHandler($chargerId, $sessions, $commands);
 
-    expect($handler->handle(['transactionId' => 'missing-transaction']))
+    expect($handler->requestStop(['transactionId' => 'missing-transaction']))
         ->toBe(['status' => 'Rejected'])
         ->and($commands->claimNext())->toBeNull();
 

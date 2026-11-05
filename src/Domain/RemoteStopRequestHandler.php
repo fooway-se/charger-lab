@@ -12,9 +12,6 @@ use ChargerEmulator\Storage\OutletSessionRepository;
  */
 final class RemoteStopRequestHandler
 {
-    /**
-     * @param int $chargerId The station that received the CSMS request.
-     */
     public function __construct(
         private readonly int $chargerId,
         private readonly OutletSessionRepository $outletSessions,
@@ -22,11 +19,7 @@ final class RemoteStopRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string}
-     */
-    public function handle(array $payload): array
+    public function requestStop(array $payload): array
     {
         $transactionId = $payload['transactionId'] ?? null;
         if (!is_string($transactionId) || $transactionId === '' || strlen($transactionId) > 36) {

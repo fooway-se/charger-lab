@@ -24,6 +24,8 @@ use Throwable;
  */
 final class StationController
 {
+    private readonly ChargerInput $chargerInput;
+
     public function __construct(
         private readonly ChargerRepository $chargers,
         private readonly ExchangeRepository $logs,
@@ -33,6 +35,7 @@ final class StationController
         private readonly AvailabilityRepository $availability,
         private readonly ResetRepository $resets,
     ) {
+        $this->chargerInput = new ChargerInput($this->chargers, $this->settings);
     }
 
     public function state(Request $request): Response
@@ -102,10 +105,10 @@ final class StationController
     public function saveWorkspaceSettings(Request $request): Response
     {
         try {
-            $url = $this->requiredString($request->body(), 'default_csms_url');
-            $this->validateCsmsUrl($url);
+            $url = $this->chargerInput->requiredString($request->body(), 'default_csms_url');
+            $this->chargerInput->validateCsmsUrl($url);
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         $this->settings->saveCsmsUrl($url);
@@ -122,10 +125,10 @@ final class StationController
                 throw new InvalidArgumentException('TLS server name must be a string.');
             }
             $serverName = trim($serverName);
-            $this->validateTlsServerName($serverName);
+            $this->chargerInput->validateTlsServerName($serverName);
 
             $current = $this->settings->getTlsSettings();
-            $clearCertificate = $this->booleanValue($input, 'clear_tls_ca_certificate', false);
+            $clearCertificate = $this->chargerInput->booleanValue($input, 'clear_tls_ca_certificate', false);
             $certificate = $clearCertificate ? '' : ($input['tls_ca_certificate'] ?? '');
             if (!is_string($certificate)) {
                 throw new InvalidArgumentException('TLS CA certificate must be a PEM string.');
@@ -141,7 +144,7 @@ final class StationController
                 throw new InvalidArgumentException('TLS CA certificate must contain a valid PEM X.509 certificate.');
             }
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         $this->settings->saveTlsSettings($serverName, $certificate);
@@ -156,9 +159,9 @@ final class StationController
     public function testConnection(Request $request): Response
     {
         try {
-            $chargerId = $this->chargerId($request->body());
+            $chargerId = $this->chargerInput->chargerId($request->body());
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         $charger = $this->chargers->get($chargerId);
@@ -207,10 +210,10 @@ final class StationController
     {
         try {
             $input = $request->body();
-            $id = $this->chargerId($input);
-            $charger = $this->validatedCharger($id, $input);
+            $id = $this->chargerInput->chargerId($input);
+            $charger = $this->chargerInput->validatedCharger($id, $input);
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         $current = $this->chargers->get($id);
@@ -254,9 +257,9 @@ final class StationController
     public function clearLog(Request $request): Response
     {
         try {
-            $this->logs->clear($this->chargerId($request->body()));
+            $this->logs->clear($this->chargerInput->chargerId($request->body()));
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         return Response::json(200, ['notice' => 'Exchange log cleared.']);
@@ -265,9 +268,9 @@ final class StationController
     public function delete(Request $request): Response
     {
         try {
-            $id = $this->chargerId($request->body());
+            $id = $this->chargerInput->chargerId($request->body());
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         if (count($this->chargers->all()) < 2) {
@@ -299,8 +302,8 @@ final class StationController
         $outlet = null;
         try {
             $input = $request->body();
-            $id = $this->chargerId($input);
-            $charger = $this->validatedCharger($id, $input);
+            $id = $this->chargerInput->chargerId($input);
+            $charger = $this->chargerInput->validatedCharger($id, $input);
             $current = $this->chargers->get($id);
             if ($action === 'BootNotification'
                 && in_array($current['boot_status'] ?? null, ['Pending', 'Rejected'], true)
@@ -312,9 +315,9 @@ final class StationController
             if ($action === 'Authorize' && ($current['boot_status'] ?? null) !== 'Accepted') {
                 return Response::json(409, ['error' => 'Accept BootNotification before authorizing a vehicle.']);
             }
-            $token = $action === 'Authorize' ? $this->requiredString($request->body(), 'rfid_token') : null;
+            $token = $action === 'Authorize' ? $this->chargerInput->requiredString($request->body(), 'rfid_token') : null;
             if ($action === 'Authorize' && array_key_exists('outlet_number', $input)) {
-                $outletNumber = $this->integerValue($input, 'outlet_number', 0);
+                $outletNumber = $this->chargerInput->integerValue($input, 'outlet_number', 0);
                 foreach ((new OutletMap($charger['outlet_count'], $charger['outlet_topology']))->outlets() as $candidate) {
                     if ($candidate['number'] === $outletNumber) {
                         $outlet = ['evse_id' => $candidate['evse_id'], 'connector_id' => $candidate['connector_id']];
@@ -338,7 +341,7 @@ final class StationController
                 }
             }
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         if (in_array($action, ['Authorize', 'LocalStop'], true) && trim((string) $token) === '') {
@@ -386,13 +389,13 @@ final class StationController
     {
         try {
             $input = $request->body();
-            $id = $this->chargerId($input);
+            $id = $this->chargerInput->chargerId($input);
             $charger = $this->chargers->get($id);
             if ($charger === null) {
                 throw new InvalidArgumentException('Select a valid charger.');
             }
 
-            $outletNumber = $this->integerValue($input, 'outlet_number', 0);
+            $outletNumber = $this->chargerInput->integerValue($input, 'outlet_number', 0);
             $outlet = null;
             foreach ((new OutletMap((int) $charger['outlet_count'], $charger['outlet_topology']))->outlets() as $candidate) {
                 if ($candidate['number'] === $outletNumber) {
@@ -422,7 +425,7 @@ final class StationController
                 return Response::json(409, ['error' => 'The selected outlet has no vehicle to unplug.']);
             }
         } catch (InvalidArgumentException $exception) {
-            return Response::json(422, ['error' => $exception->getMessage()]);
+            return $this->invalidInputResponse($exception);
         }
 
         $commandId = $this->commands->enqueue($id, $action, [
@@ -442,57 +445,6 @@ final class StationController
         return Response::json(200, ['notice' => $action === 'PlugIn' ? 'Vehicle plugged in.' : 'Vehicle unplugged.', 'result' => $result]);
     }
 
-    /**
-     * @param array<string, mixed> $input
-     * @return array{station_identity:string,csms_url:string,csms_password:string,vendor_name:string,model:string,serial_number:string,outlet_count:int,outlet_topology:string,uses_default_csms:bool}
-     */
-    private function validatedCharger(int $id, array $input): array
-    {
-        $current = $this->chargers->get($id);
-        if ($current === null) {
-            throw new InvalidArgumentException('The requested charger does not exist.');
-        }
-
-        $charger = [
-            'station_identity' => $this->stringValue($input, 'station_identity', $current['station_identity']),
-            'csms_url' => $this->stringValue($input, 'csms_url', $current['csms_url']),
-            'csms_password' => $this->passwordValue($input, $current['csms_password']),
-            'vendor_name' => $this->stringValue($input, 'vendor_name', $current['vendor_name']),
-            'model' => $this->stringValue($input, 'model', $current['model']),
-            'serial_number' => $this->stringValue($input, 'serial_number', $current['serial_number']),
-            'outlet_count' => $this->integerValue($input, 'outlet_count', (int) $current['outlet_count']),
-            'outlet_topology' => $this->stringValue($input, 'outlet_topology', $current['outlet_topology']),
-            'uses_default_csms' => $this->booleanValue($input, 'uses_default_csms', (bool) $current['uses_default_csms']),
-        ];
-
-        $charger['csms_url'] = $charger['uses_default_csms']
-            ? $this->settings->getCsmsUrl()
-            : $this->stringValue($input, 'csms_url', $current['csms_url']);
-
-        if ($charger['station_identity'] === '' || $charger['vendor_name'] === '' || $charger['model'] === '') {
-            throw new InvalidArgumentException('Station identity, vendor, and model are required.');
-        }
-
-        if ($this->chargers->identityInUse($charger['station_identity'], $id)) {
-            throw new InvalidArgumentException('Each charger needs a unique station identity.');
-        }
-
-        $this->validateCsmsUrl($charger['csms_url']);
-        if (str_starts_with($charger['csms_url'], 'wss://')
-            && $charger['csms_password'] !== ''
-            && strlen($charger['csms_password']) < 16) {
-            throw new InvalidArgumentException('Security Profile 2 CSMS passwords must be at least 16 characters.');
-        }
-
-        new OutletMap($charger['outlet_count'], $charger['outlet_topology']);
-
-        return $charger;
-    }
-
-    /**
-     * @param array<string, mixed> $charger
-     * @return array<string, mixed>
-     */
     private function publicCharger(array $charger): array
     {
         $charger['has_password'] = ($charger['csms_password'] ?? '') !== '';
@@ -501,131 +453,8 @@ final class StationController
         return $charger;
     }
 
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function chargerId(array $input): int
+    private function invalidInputResponse(InvalidArgumentException $exception): Response
     {
-        $id = $this->integerValue($input, 'charger_id', 0);
-        if ($id < 1 || $this->chargers->get($id) === null) {
-            throw new InvalidArgumentException('Select a valid charger.');
-        }
-
-        return $id;
-    }
-
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function stringValue(array $input, string $key, string $fallback): string
-    {
-        if (!array_key_exists($key, $input)) {
-            return $fallback;
-        }
-
-        if (!is_string($input[$key])) {
-            throw new InvalidArgumentException("{$key} must be a string.");
-        }
-
-        return trim($input[$key]);
-    }
-
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function integerValue(array $input, string $key, int $fallback): int
-    {
-        if (!array_key_exists($key, $input)) {
-            return $fallback;
-        }
-
-        $value = $input[$key];
-        if (is_int($value)) {
-            return $value;
-        }
-        if (is_string($value) && ctype_digit($value)) {
-            return (int) $value;
-        }
-
-        throw new InvalidArgumentException("{$key} must be a whole number.");
-    }
-
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function requiredString(array $input, string $key): string
-    {
-        if (!isset($input[$key]) || !is_string($input[$key])) {
-            throw new InvalidArgumentException("{$key} must be a string.");
-        }
-
-        return trim($input[$key]);
-    }
-
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function booleanValue(array $input, string $key, bool $fallback): bool
-    {
-        if (!array_key_exists($key, $input)) {
-            return $fallback;
-        }
-
-        if (is_bool($input[$key])) {
-            return $input[$key];
-        }
-        if (is_string($input[$key]) && in_array(strtolower($input[$key]), ['1', 'true', 'on'], true)) {
-            return true;
-        }
-        if (is_string($input[$key]) && in_array(strtolower($input[$key]), ['0', 'false', 'off'], true)) {
-            return false;
-        }
-
-        throw new InvalidArgumentException("{$key} must be a boolean value.");
-    }
-
-    /**
-     * @param array<string, mixed> $input
-     */
-    private function passwordValue(array $input, string $currentPassword): string
-    {
-        if ($this->booleanValue($input, 'clear_csms_password', false)) {
-            return '';
-        }
-
-        $password = $input['csms_password'] ?? '';
-        if (!is_string($password)) {
-            throw new InvalidArgumentException('csms_password must be a string.');
-        }
-
-        if ($password === '') {
-            return $currentPassword;
-        }
-        if (strlen($password) > 1024) {
-            throw new InvalidArgumentException('CSMS password must be 1024 bytes or fewer.');
-        }
-
-        return $password;
-    }
-
-    private function validateCsmsUrl(string $url): void
-    {
-        $parts = parse_url($url);
-        if (!is_array($parts) || !in_array($parts['scheme'] ?? '', ['ws', 'wss'], true) || !isset($parts['host'])) {
-            throw new InvalidArgumentException('Enter a CSMS WebSocket URL starting with ws:// or wss://.');
-        }
-    }
-
-    private function validateTlsServerName(string $serverName): void
-    {
-        if ($serverName === '') {
-            return;
-        }
-
-        if (strlen($serverName) > 253
-            || (filter_var($serverName, FILTER_VALIDATE_IP) === false
-                && preg_match('/^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$/D', $serverName) !== 1)) {
-            throw new InvalidArgumentException('TLS server name must be a hostname or IP address.');
-        }
+        return Response::json(422, ['error' => $exception->getMessage()]);
     }
 }

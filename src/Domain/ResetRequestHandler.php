@@ -17,11 +17,7 @@ final class ResetRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string}
-     */
-    public function handle(array $payload): array
+    public function requestReset(array $payload): array
     {
         return ['status' => $this->resets->request($this->chargerId, $payload)];
     }

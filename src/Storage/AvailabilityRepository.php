@@ -16,10 +16,6 @@ final class AvailabilityRepository
     {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string,changes:list<array{evse_id:int,connector_id:int,status:string}>}
-     */
     public function requestChange(int $chargerId, array $payload): array
     {
         $operationalStatus = $payload['operationalStatus'] ?? null;
@@ -99,9 +95,6 @@ final class AvailabilityRepository
         return true;
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,status:string}>
-     */
     public function applyPendingChanges(int $chargerId): array
     {
         $this->database->beginTransaction();
@@ -154,10 +147,6 @@ final class AvailabilityRepository
         }
     }
 
-    /**
-     * @param array<string, mixed> $outlet
-     * @return array{evse_id:int,connector_id:int,connector_status:string}
-     */
     private function normalizeOutlet(array $outlet): array
     {
         return [
@@ -167,9 +156,6 @@ final class AvailabilityRepository
         ];
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,connector_status:string}>
-     */
     private function matchingOutlets(int $chargerId, string $scope, int $evseId, int $connectorId): array
     {
         $sql = match ($scope) {
@@ -192,9 +178,6 @@ final class AvailabilityRepository
         return array_map(fn (array $outlet): array => $this->normalizeOutlet($outlet), $statement->fetchAll());
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,connector_status:string}>
-     */
     private function allOutlets(int $chargerId): array
     {
         $statement = $this->database->prepare('SELECT evse_id, connector_id, connector_status FROM outlet_session WHERE charger_id = :charger_id');
@@ -203,10 +186,6 @@ final class AvailabilityRepository
         return array_map(fn (array $outlet): array => $this->normalizeOutlet($outlet), $statement->fetchAll());
     }
 
-    /**
-     * @param list<array{evse_id:int,connector_id:int,connector_status:string}> $outlets
-     * @return array<string, string>
-     */
     private function statusSnapshot(int $chargerId, array $outlets): array
     {
         $statuses = [];
@@ -223,11 +202,6 @@ final class AvailabilityRepository
         return $statuses;
     }
 
-    /**
-     * @param list<array{evse_id:int,connector_id:int,connector_status:string}> $outlets
-     * @param array<string, string> $before
-     * @return list<array{evse_id:int,connector_id:int,status:string}>
-     */
     private function statusChanges(int $chargerId, array $outlets, array $before): array
     {
         $changes = [];

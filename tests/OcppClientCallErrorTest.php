@@ -74,7 +74,7 @@ final class DeferredIncomingCallConnection implements Connection
 
     public function receive(): string
     {
-        return array_shift($this->incomingMessages) ?? throw new RuntimeException('No fake CSMS response is queued.');
+        return array_shift($this->incomingMessages) ?? throw new RuntimeException('No mock CSMS response is queued.');
     }
 }
 

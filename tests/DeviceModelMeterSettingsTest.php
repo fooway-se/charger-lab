@@ -17,13 +17,13 @@ it('exposes the EV connection timeout used for remote starts', function (): void
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
     $deviceModel = new DeviceModel($outletSessions, new DeviceModelSettingsRepository($database), $chargerId, new AvailabilityRepository($database));
 
-    $get = $deviceModel->handle('GetVariables', [
+    $get = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [[
             'component' => ['name' => 'TxCtrlr'],
             'variable' => ['name' => 'EVConnectionTimeOut'],
         ]],
     ]);
-    $set = $deviceModel->handle('SetVariables', [
+    $set = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [[
             'component' => ['name' => 'TxCtrlr'],
             'variable' => ['name' => 'EVConnectionTimeOut'],
@@ -43,7 +43,7 @@ it('reads and persists supported transaction meter sampling settings', function 
     $settings = new DeviceModelSettingsRepository($database);
     $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
-    $getInitial = $deviceModel->handle('GetVariables', [
+    $getInitial = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -67,7 +67,7 @@ it('reads and persists supported transaction meter sampling settings', function 
             ],
         ],
     ]);
-    $set = $deviceModel->handle('SetVariables', [
+    $set = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -102,7 +102,7 @@ it('reads and persists supported transaction meter sampling settings', function 
         $chargerId,
         new AvailabilityRepository($database),
     );
-    $getUpdated = $reopenedModel->handle('GetVariables', [
+    $getUpdated = $reopenedModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -140,7 +140,7 @@ it('reads and persists aligned meter value settings', function (): void {
     $settings = new DeviceModelSettingsRepository($database);
     $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
-    $getInitial = $deviceModel->handle('GetVariables', [
+    $getInitial = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'AlignedDataCtrlr'],
@@ -156,7 +156,7 @@ it('reads and persists aligned meter value settings', function (): void {
             ],
         ],
     ]);
-    $setInvalid = $deviceModel->handle('SetVariables', [
+    $setInvalid = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [[
             'component' => ['name' => 'AlignedDataCtrlr'],
             'variable' => ['name' => 'Measurands'],
@@ -171,7 +171,7 @@ it('reads and persists aligned meter value settings', function (): void {
             'attributeValue' => 'sometimes',
         ]],
     ]);
-    $set = $deviceModel->handle('SetVariables', [
+    $set = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [
             [
                 'component' => ['name' => 'AlignedDataCtrlr'],
@@ -196,7 +196,7 @@ it('reads and persists aligned meter value settings', function (): void {
         $chargerId,
         new AvailabilityRepository($database),
     );
-    $getUpdated = $reopenedModel->handle('GetVariables', [
+    $getUpdated = $reopenedModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'AlignedDataCtrlr'],
@@ -227,7 +227,7 @@ it('rejects invalid transaction meter sampling settings without changing saved v
     $settings = new DeviceModelSettingsRepository($database);
     $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
 
-    $set = $deviceModel->handle('SetVariables', [
+    $set = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -256,7 +256,7 @@ it('rejects invalid transaction meter sampling settings without changing saved v
             ],
         ],
     ]);
-    $get = $deviceModel->handle('GetVariables', [
+    $get = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -285,7 +285,7 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
         new AvailabilityRepository($database),
     );
 
-    $initial = $deviceModel->handle('GetVariables', [
+    $initial = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
@@ -313,7 +313,7 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
             ],
         ],
     ]);
-    $set = $deviceModel->handle('SetVariables', [
+    $set = $deviceModel->processVariableAction('SetVariables', [
         'setVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
@@ -347,7 +347,7 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
             ],
         ],
     ]);
-    $updated = $deviceModel->handle('GetVariables', [
+    $updated = $deviceModel->processVariableAction('GetVariables', [
         'getVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],

@@ -23,11 +23,11 @@ it('reports whether a requested transaction or any transaction is ongoing', func
     $events = new TransactionEventOutboxRepository($database);
     $handler = new TransactionStatusRequestHandler($chargerId, $sessions, $events);
 
-    expect($handler->handle(['transactionId' => 'active-transaction']))
+    expect($handler->getTransactionStatus(['transactionId' => 'active-transaction']))
         ->toBe(['ongoingIndicator' => true, 'messagesInQueue' => false])
-        ->and($handler->handle(['transactionId' => 'unknown-transaction']))
+        ->and($handler->getTransactionStatus(['transactionId' => 'unknown-transaction']))
         ->toBe(['ongoingIndicator' => false, 'messagesInQueue' => false])
-        ->and($handler->handle([]))
+        ->and($handler->getTransactionStatus([]))
         ->toBe(['messagesInQueue' => false]);
 
     $events->enqueue($chargerId, [
@@ -35,9 +35,9 @@ it('reports whether a requested transaction or any transaction is ongoing', func
         'seqNo' => 0,
         'transactionInfo' => ['transactionId' => 'active-transaction'],
     ]);
-    expect($handler->handle(['transactionId' => 'active-transaction']))
+    expect($handler->getTransactionStatus(['transactionId' => 'active-transaction']))
         ->toBe(['ongoingIndicator' => true, 'messagesInQueue' => true])
-        ->and($handler->handle([]))
+        ->and($handler->getTransactionStatus([]))
         ->toBe(['messagesInQueue' => true]);
 
     unset($handler, $sessions, $database);

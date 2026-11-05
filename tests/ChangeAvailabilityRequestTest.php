@@ -25,7 +25,7 @@ it('changes and persists only the requested EVSE availability', function (): voi
     $availability = new AvailabilityRepository($database);
     $handler = new ChangeAvailabilityRequestHandler($chargerId, $availability);
 
-    $response = $handler->handle([
+    $response = $handler->requestChange([
         'evse' => ['id' => 1],
         'operationalStatus' => 'Inoperative',
     ]);
@@ -44,7 +44,7 @@ it('schedules inoperative availability until an active EVSE transaction ends', f
     $availability = new AvailabilityRepository($database);
     $handler = new ChangeAvailabilityRequestHandler($chargerId, $availability);
 
-    $response = $handler->handle([
+    $response = $handler->requestChange([
         'evse' => ['id' => 1],
         'operationalStatus' => 'Inoperative',
     ]);
@@ -66,15 +66,15 @@ it('preserves connector-specific inoperative state when the parent EVSE becomes 
     $availability = new AvailabilityRepository($database);
     $handler = new ChangeAvailabilityRequestHandler($chargerId, $availability);
 
-    $connectorResponse = $handler->handle([
+    $connectorResponse = $handler->requestChange([
         'evse' => ['id' => 1, 'connectorId' => 1],
         'operationalStatus' => 'Inoperative',
     ]);
-    $evseResponse = $handler->handle([
+    $evseResponse = $handler->requestChange([
         'evse' => ['id' => 1],
         'operationalStatus' => 'Inoperative',
     ]);
-    $restoreEvseResponse = $handler->handle([
+    $restoreEvseResponse = $handler->requestChange([
         'evse' => ['id' => 1],
         'operationalStatus' => 'Operative',
     ]);
@@ -94,7 +94,7 @@ it('keeps explicit availability state after reopening the SQLite database', func
     $chargerId = (new ChargerRepository($database))->createDefault();
     $sessions = new OutletSessionRepository($database);
     $sessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
-    (new ChangeAvailabilityRequestHandler($chargerId, new AvailabilityRepository($database)))->handle([
+    (new ChangeAvailabilityRequestHandler($chargerId, new AvailabilityRepository($database)))->requestChange([
         'operationalStatus' => 'Inoperative',
     ]);
     unset($sessions, $database);
@@ -126,7 +126,7 @@ it('keeps a scheduled availability change until the active transaction ends afte
     $response = (new ChangeAvailabilityRequestHandler(
         $chargerId,
         new AvailabilityRepository($database),
-    ))->handle([
+    ))->requestChange([
         'evse' => ['id' => 1],
         'operationalStatus' => 'Inoperative',
     ]);

@@ -33,9 +33,6 @@ final class OcppConnectionUrl
         return self::build($parts, (string) $parts['path']);
     }
 
-    /**
-     * @return array<string, mixed>
-     */
     private static function parse(string $url): array
     {
         $parts = parse_url($url);
@@ -46,9 +43,6 @@ final class OcppConnectionUrl
         return $parts;
     }
 
-    /**
-     * @param array<string, mixed> $parts
-     */
     private static function build(array $parts, string $path): string
     {
         $host = (string) $parts['host'];

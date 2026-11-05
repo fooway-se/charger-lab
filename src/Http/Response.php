@@ -9,9 +9,6 @@ namespace ChargerEmulator\Http;
  */
 final class Response
 {
-    /**
-     * @param array<string, string> $headers
-     */
     public function __construct(
         public readonly int $status,
         public readonly array $headers,
@@ -19,9 +16,6 @@ final class Response
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $data
-     */
     public static function json(int $status, array $data): self
     {
         return new self(

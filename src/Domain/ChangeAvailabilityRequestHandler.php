@@ -22,11 +22,7 @@ final class ChangeAvailabilityRequestHandler
     ) {
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @return array{status:string}
-     */
-    public function handle(array $payload): array
+    public function requestChange(array $payload): array
     {
         $result = $this->availability->requestChange($this->chargerId, $payload);
         $this->statusChanges = $result['changes'];
@@ -34,9 +30,6 @@ final class ChangeAvailabilityRequestHandler
         return ['status' => $result['status']];
     }
 
-    /**
-     * @return list<array{evse_id:int,connector_id:int,status:string}>
-     */
     public function takeStatusChanges(): array
     {
         $changes = $this->statusChanges;

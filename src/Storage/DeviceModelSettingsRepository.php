@@ -50,6 +50,13 @@ final class DeviceModelSettingsRepository
         return $value === false ? self::DEFAULTS[$variable] : (string) $value;
     }
 
+    public function getInteger(int $chargerId, string $variable, int $default, int $minimum): int
+    {
+        $value = filter_var($this->get($chargerId, $variable), FILTER_VALIDATE_INT);
+
+        return is_int($value) && $value >= $minimum ? $value : $default;
+    }
+
     public function set(int $chargerId, string $variable, string $value): void
     {
         if (!array_key_exists($variable, self::DEFAULTS)) {
