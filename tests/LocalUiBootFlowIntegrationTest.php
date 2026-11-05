@@ -1636,8 +1636,8 @@ it('sends current MeterValues for every EVSE after accepting a TriggerMessage', 
         $bootCsmsOutput = drainProcessOutput($mockCsms);
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody . ' CSMS: ' . $bootCsmsOutput);
         $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
-        if (!str_contains($csmsOutput, 'TriggerMessage MeterValues: ')) {
-            $csmsOutput .= waitForProcessOutput($mockCsms, 'TriggerMessage MeterValues: ', 3_000);
+        if (!str_contains($csmsOutput, ',"MeterValues",{"evseId":2,"meterValue":')) {
+            $csmsOutput .= waitForProcessOutput($mockCsms, ',"MeterValues",{"evseId":2,"meterValue":', 3_000);
         }
 
         expect($csmsOutput)->toContain('"requestedMessage":"MeterValues"')
@@ -1829,7 +1829,7 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         );
         expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The vehicle token should be authorized.');
 
-        waitForProcessOutput($mockCsms, '"context":"Sample.Clock"', 5_000);
+        waitForProcessOutput($mockCsms, 'MeterValueClock TransactionEvent: ', 5_000);
         usleep(50_000);
         $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
         preg_match('/MeterValueClock TransactionEvent: (\[2,"[^"]+","TransactionEvent",[^\n]+\])/', $csmsOutput, $transactionEventMatch);
