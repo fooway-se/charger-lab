@@ -528,6 +528,7 @@ final class StationSessionWorker
             $this->chargers->setBootStatus($chargerId, $bootStatus);
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
             $this->reportAvailableOutlets($chargerId, $charger);
+            $this->sendSecurityEventNotification($chargerId, 'StartupOfTheDevice');
 
             return;
         }
@@ -1243,6 +1244,14 @@ final class StationSessionWorker
         if (!isset($result['currentTime']) || !is_string($result['currentTime'])) {
             throw new OcppProtocolException('The CSMS Heartbeat response did not include currentTime.');
         }
+    }
+
+    private function sendSecurityEventNotification(int $chargerId, string $type): void
+    {
+        $this->createOcppClient($chargerId)->request('SecurityEventNotification', [
+            'type' => $type,
+            'timestamp' => gmdate('Y-m-d\\TH:i:s\\Z'),
+        ]);
     }
 
     private function sendTriggeredTransactionEvent(int $chargerId, array $session): void

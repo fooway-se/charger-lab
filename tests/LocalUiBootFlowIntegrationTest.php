@@ -458,6 +458,16 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             $dataTransferOutput .= waitForProcessOutput($mockCsms, 'DataTransfer station response: ', 3_000);
         }
         expect($dataTransferOutput)->toContain('"status":"UnknownVendorId"');
+        $securityEventOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($securityEventOutput, 'SecurityEventNotification CALL: ')) {
+            $securityEventOutput .= waitForProcessOutput($mockCsms, 'SecurityEventNotification CALL: ', 3_000);
+        }
+        preg_match('/SecurityEventNotification CALL: (\[[^\r\n]+\])/', $securityEventOutput, $securityEventMatch);
+        $securityEventCall = json_decode($securityEventMatch[1] ?? '[]', true, flags: JSON_THROW_ON_ERROR);
+        $securityEvent = $securityEventCall[3] ?? [];
+        expect($securityEventCall[2] ?? null)->toBe('SecurityEventNotification')
+            ->and($securityEvent['type'] ?? null)->toBe('StartupOfTheDevice')
+            ->and(preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/', $securityEvent['timestamp'] ?? ''))->toBe(1);
         [$remotePendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $remotePendingState = is_string($remotePendingStateBody) ? json_decode($remotePendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $remotePendingOutlet = $remotePendingState['chargers'][0]['outlets'][0] ?? [];

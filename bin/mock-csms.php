@@ -124,9 +124,12 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
         ? nextBootStatus($session->bootNotifications, $session->pendingBootCount, $session->bootCountPath, $session->stationKey)
         : null;
     $result = [];
-    if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'MeterValues', 'StatusNotification', 'TransactionEvent'], true)) {
+    if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'MeterValues', 'StatusNotification', 'TransactionEvent', 'SecurityEventNotification'], true)) {
         $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
     } else {
+        if ($action === 'SecurityEventNotification') {
+            fwrite(STDOUT, 'SecurityEventNotification CALL: ' . $payload . "\n");
+        }
         $result = match ($action) {
             'BootNotification' => [
                 'status' => $bootStatus,
@@ -140,6 +143,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
             'MeterValues' => new stdClass(),
             'StatusNotification' => new stdClass(),
             'TransactionEvent' => stationCallResult('TransactionEvent', $call[3] ?? []),
+            'SecurityEventNotification' => new stdClass(),
         };
         $replyFrame = [3, $call[1], $result];
     }
@@ -247,6 +251,8 @@ function sendBootTriggerMessage($client, array $call, array $result): void
             if (($stationMessage[0] ?? null) === 2 && ($stationMessage[2] ?? null) === 'StatusNotification') {
                 $initialStatusNotifications++;
                 sendStationCallResult($client, $stationMessage[1], new stdClass());
+            } elseif (($stationMessage[0] ?? null) === 2) {
+                respondToStationCall($client, $stationMessage);
             }
         }
 
@@ -292,6 +298,8 @@ function sendBootTriggerMessage($client, array $call, array $result): void
                 };
                 fwrite(STDOUT, $triggeredMessageLabel . $stationResponsePayload . "\n");
                 $triggeredMessagesReceived++;
+                respondToStationCall($client, $stationMessage);
+            } elseif (($stationMessage[0] ?? null) === 2) {
                 respondToStationCall($client, $stationMessage);
             }
         }
@@ -873,6 +881,10 @@ function sendStationCallResult($client, string $messageId, array|stdClass $paylo
 
 function respondToStationCall($client, array $message): void
 {
+    if (($message[2] ?? null) === 'SecurityEventNotification') {
+        fwrite(STDOUT, 'SecurityEventNotification CALL: ' . json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
+    }
+
     sendStationCallResult(
         $client,
         $message[1],
