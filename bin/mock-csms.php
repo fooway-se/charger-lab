@@ -287,9 +287,66 @@ function sendResetAfterBoot($client, array $call, array $result): void
     if (($result['status'] ?? null) === 'Accepted'
         && getenv('MOCK_CSMS_SEND_RESET') === '1'
         && (($resetSentPath = getenv('MOCK_CSMS_RESET_SENT_PATH') ?: '') === '' || !is_file($resetSentPath))) {
+        if (getenv('MOCK_CSMS_SEND_NETWORK_PROFILE') === '1') {
+            configureNetworkProfile($client, $call[1]);
+        }
+
         markResetSent($resetSentPath);
         sendResetCall($client, 'mock-csms-reset-' . $call[1], getenv('MOCK_CSMS_RESET_TYPE') ?: 'Immediate');
     }
+}
+
+function configureNetworkProfile($client, string $bootMessageId): void
+{
+    $profileUrl = getenv('MOCK_CSMS_NETWORK_PROFILE_URL') ?: '';
+    $profileCallId = 'mock-csms-network-profile-' . $bootMessageId;
+    $profileCall = json_encode([2, $profileCallId, 'SetNetworkProfile', [
+        'configurationSlot' => 1,
+        'connectionData' => [
+            'ocppVersion' => 'OCPP20',
+            'ocppTransport' => 'JSON',
+            'ocppCsmsUrl' => $profileUrl,
+            'messageTimeout' => 8,
+            'securityProfile' => 1,
+            'ocppInterface' => 'Wired0',
+        ],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $profileCall);
+    waitForStationResponse($client, $profileCallId, 'SetNetworkProfile station response');
+
+    $priorityCallId = 'mock-csms-network-priority-' . $bootMessageId;
+    $priorityCall = json_encode([2, $priorityCallId, 'SetVariables', [
+        'setVariableData' => [[
+            'component' => ['name' => 'OCPPCommCtrlr'],
+            'variable' => ['name' => 'NetworkConfigurationPriority'],
+            'attributeType' => 'Actual',
+            'attributeValue' => getenv('MOCK_CSMS_NETWORK_PRIORITY') ?: '1,0',
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $priorityCall);
+    waitForStationResponse($client, $priorityCallId, 'Network priority station response');
+
+    $retrySettingsCallId = 'mock-csms-network-retry-settings-' . $bootMessageId;
+    $retrySettingsCall = json_encode([2, $retrySettingsCallId, 'SetVariables', [
+        'setVariableData' => [[
+            'component' => ['name' => 'OCPPCommCtrlr'],
+            'variable' => ['name' => 'NetworkProfileConnectionAttempts'],
+            'attributeType' => 'Actual',
+            'attributeValue' => getenv('MOCK_CSMS_NETWORK_PROFILE_ATTEMPTS') ?: '3',
+        ], [
+            'component' => ['name' => 'OCPPCommCtrlr'],
+            'variable' => ['name' => 'RetryBackOffWaitMinimum'],
+            'attributeType' => 'Actual',
+            'attributeValue' => '1',
+        ], [
+            'component' => ['name' => 'OCPPCommCtrlr'],
+            'variable' => ['name' => 'RetryBackOffRandomRange'],
+            'attributeType' => 'Actual',
+            'attributeValue' => '0',
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $retrySettingsCall);
+    waitForStationResponse($client, $retrySettingsCallId, 'Network retry settings station response');
 }
 
 function triggerTransactionEventAfterStart($client, string $payload, array $call, MockCsmsSession $session): void

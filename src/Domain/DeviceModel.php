@@ -24,6 +24,7 @@ final class DeviceModel
         'RetryBackOffRepeatTimes',
         'HeartbeatInterval',
         'NetworkConfigurationPriority',
+        'NetworkProfileConnectionAttempts',
     ];
 
     private const REPORT_VARIABLES = [
@@ -49,6 +50,7 @@ final class DeviceModel
             'RetryBackOffRepeatTimes' => ['integer', 'ReadWrite', true],
             'HeartbeatInterval' => ['integer', 'ReadWrite', true],
             'NetworkConfigurationPriority' => ['MemberList', 'ReadWrite', true, '0,1,2'],
+            'NetworkProfileConnectionAttempts' => ['integer', 'ReadWrite', true],
         ],
     ];
 
@@ -413,7 +415,7 @@ final class DeviceModel
         ], true)) {
             return preg_match('/^(0|[1-9][0-9]*)$/', $value) === 1
                 && filter_var($value, FILTER_VALIDATE_INT) !== false
-                && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'EVConnectionTimeOut'], true) || (int) $value > 0);
+                && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'NetworkProfileConnectionAttempts', 'EVConnectionTimeOut'], true) || (int) $value > 0);
         }
 
         if ($variable === 'SendDuringIdle') {

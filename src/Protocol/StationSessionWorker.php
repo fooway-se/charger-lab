@@ -34,9 +34,7 @@ final class StationSessionWorker
 {
     private const SIMULATED_SESSION_ENERGY_WH = 1000;
 
-    /**
-     * @var array<int, array{connection:?WebSocketConnection,url:string,username:string,password:string,tls_server_name:string,tls_ca_certificate:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float}>
-     */
+    /** @var array<int, array{connection:?WebSocketConnection,url:string,connection_timeout:int,username:string,password:string,tls_server_name:string,tls_ca_certificate:string,heartbeat_interval:int,next_heartbeat_at:?float,boot_payload:array<string,mixed>,next_boot_at:?float,reconnect_attempt:int,next_reconnect_at:?float,network_profiles:array,network_profile_index:int,network_profile_attempts:int}> */
     private array $sessions = [];
 
     private readonly TransactionEventDelivery $transactionEventDelivery;
@@ -98,6 +96,8 @@ final class StationSessionWorker
             $csmsRejectedMessage = $this->isOcppCallError($exception);
             $retryWaiting = $exception instanceof TransactionEventRetryPendingException;
             if (!$csmsRejectedMessage && !$retryWaiting && $queuedCommand['action'] !== 'BootNotification' && $hadSession) {
+                $this->scheduleReconnect($chargerId);
+            } elseif (!$csmsRejectedMessage && !$retryWaiting && $queuedCommand['action'] === 'BootNotification' && isset($this->sessions[$chargerId])) {
                 $this->scheduleReconnect($chargerId);
             } elseif (!$csmsRejectedMessage && !$retryWaiting) {
                 unset($this->sessions[$chargerId]);
@@ -185,13 +185,41 @@ final class StationSessionWorker
 
     private function ensureOcppConnection(int $chargerId, array $charger, string $action): void
     {
-        $connectionUrl = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
-        $tlsSettings = $this->workspaceSettings->getTlsSettings();
         $session = $this->sessions[$chargerId] ?? null;
+        if ($session === null) {
+            $profiles = $this->prioritizedNetworkProfiles($chargerId, $charger);
+            $this->sessions[$chargerId] = [
+                'connection' => null,
+                'url' => '',
+                'connection_timeout' => 8,
+                'username' => $charger['station_identity'],
+                'password' => $charger['csms_password'],
+                'tls_server_name' => '',
+                'tls_ca_certificate' => '',
+                'heartbeat_interval' => 300,
+                'next_heartbeat_at' => null,
+                'boot_payload' => [],
+                'next_boot_at' => null,
+                'reconnect_attempt' => 0,
+                'next_reconnect_at' => null,
+                'network_profiles' => $profiles,
+                'network_profile_index' => 0,
+                'network_profile_attempts' => 0,
+            ];
+            $this->selectNetworkProfile($chargerId, 0, $charger);
+            $session = $this->sessions[$chargerId];
+        }
+
+        $profileEntry = $session['network_profiles'][$session['network_profile_index']];
+        $profile = $profileEntry['connectionData'];
+        $username = $profileEntry['username'];
+        $password = $profileEntry['password'];
+        $connectionUrl = $session['url'];
+        $tlsSettings = $this->workspaceSettings->getTlsSettings();
         if ($session !== null
             && $session['url'] === $connectionUrl
-            && $session['username'] === $charger['station_identity']
-            && $session['password'] === $charger['csms_password']
+            && $session['username'] === $username
+            && $session['password'] === $password
             && $session['tls_server_name'] === $tlsSettings['tls_server_name']
             && $session['tls_ca_certificate'] === $tlsSettings['tls_ca_certificate']
             && $session['connection'] !== null) {
@@ -204,16 +232,11 @@ final class StationSessionWorker
         }
 
         $this->sessions[$chargerId] = [
-            'connection' => new WebSocketConnection(
-                $connectionUrl,
-                username: $charger['station_identity'],
-                password: $charger['csms_password'],
-                tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
-                tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
-            ),
+            'connection' => null,
             'url' => $connectionUrl,
-            'username' => $charger['station_identity'],
-            'password' => $charger['csms_password'],
+            'connection_timeout' => $profile['messageTimeout'],
+            'username' => $username,
+            'password' => $password,
             'tls_server_name' => $tlsSettings['tls_server_name'],
             'tls_ca_certificate' => $tlsSettings['tls_ca_certificate'],
             'heartbeat_interval' => 300,
@@ -222,7 +245,19 @@ final class StationSessionWorker
             'next_boot_at' => null,
             'reconnect_attempt' => 0,
             'next_reconnect_at' => null,
+            'network_profiles' => $session['network_profiles'],
+            'network_profile_index' => $session['network_profile_index'],
+            'network_profile_attempts' => 0,
         ];
+        $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
+            $connectionUrl,
+            timeoutSeconds: $profile['messageTimeout'],
+            username: $username,
+            password: $password,
+            tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
+            tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
+        );
+        $this->networkProfiles->rememberSuccessful($chargerId, $profile, $username, $password);
     }
 
     private function queueDueBootRetries(): void
@@ -261,21 +296,23 @@ final class StationSessionWorker
 
                         return true;
                     }
-                    $this->sessions[$chargerId]['username'] = $charger['station_identity'];
-                    $this->sessions[$chargerId]['password'] = $charger['csms_password'];
                     $tlsSettings = $this->workspaceSettings->getTlsSettings();
                     $this->sessions[$chargerId]['tls_server_name'] = $tlsSettings['tls_server_name'];
                     $this->sessions[$chargerId]['tls_ca_certificate'] = $tlsSettings['tls_ca_certificate'];
                     $this->meterValueReporter->resetSchedule($chargerId);
                     $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
                         $session['url'],
-                        username: $charger['station_identity'],
-                        password: $charger['csms_password'],
+                        timeoutSeconds: $session['connection_timeout'],
+                        username: $session['username'],
+                        password: $session['password'],
                         tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
                         tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
                     );
                     $this->sessions[$chargerId]['reconnect_attempt'] = 0;
                     $this->sessions[$chargerId]['next_reconnect_at'] = null;
+                    $this->sessions[$chargerId]['network_profile_attempts'] = 0;
+                    $profile = $session['network_profiles'][$session['network_profile_index']]['connectionData'];
+                    $this->networkProfiles->rememberSuccessful($chargerId, $profile, $session['username'], $session['password']);
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $session['heartbeat_interval'];
                     $this->chargers->setConnectionStatus($chargerId, 'Connected');
                     $session = $this->sessions[$chargerId];
@@ -366,12 +403,13 @@ final class StationSessionWorker
                 continue;
             }
 
-            $url = OcppConnectionUrl::fromEndpoint($charger['csms_url'], $charger['station_identity']);
+            $profiles = $this->prioritizedNetworkProfiles($chargerId, $charger);
             $tlsSettings = $this->workspaceSettings->getTlsSettings();
             $this->transactionEvents->markPendingOffline($chargerId);
             $this->sessions[$chargerId] = [
                 'connection' => null,
-                'url' => $url,
+                'url' => '',
+                'connection_timeout' => 8,
                 'username' => $charger['station_identity'],
                 'password' => $charger['csms_password'],
                 'tls_server_name' => $tlsSettings['tls_server_name'],
@@ -382,7 +420,11 @@ final class StationSessionWorker
                 'next_boot_at' => $resetReconnecting ? microtime(true) : null,
                 'reconnect_attempt' => 1,
                 'next_reconnect_at' => microtime(true) + $this->nextReconnectDelay($chargerId, 1),
+                'network_profiles' => $profiles,
+                'network_profile_index' => 0,
+                'network_profile_attempts' => 0,
             ];
+            $this->selectNetworkProfile($chargerId, 0, $charger);
         }
     }
 
@@ -390,6 +432,25 @@ final class StationSessionWorker
     {
         if (!isset($this->sessions[$chargerId])) {
             return;
+        }
+
+        $connectionFailedBeforeOpen = $this->sessions[$chargerId]['connection'] === null;
+        if ($connectionFailedBeforeOpen) {
+            $attempts = $this->sessions[$chargerId]['network_profile_attempts'] + 1;
+            $maximumAttempts = $this->deviceModelSettingInt($chargerId, 'NetworkProfileConnectionAttempts', 3, 1);
+            if ($attempts >= $maximumAttempts) {
+                $charger = $this->chargers->get($chargerId);
+                if ($charger === null) {
+                    unset($this->sessions[$chargerId]);
+
+                    return;
+                }
+                $index = ($this->sessions[$chargerId]['network_profile_index'] + 1)
+                    % count($this->sessions[$chargerId]['network_profiles']);
+                $this->selectNetworkProfile($chargerId, $index, $charger);
+                $attempts = 0;
+            }
+            $this->sessions[$chargerId]['network_profile_attempts'] = $attempts;
         }
 
         $this->transactionEvents->markPendingOffline($chargerId);
@@ -413,6 +474,27 @@ final class StationSessionWorker
             $attempt,
             $randomSeconds,
         );
+    }
+
+    private function prioritizedNetworkProfiles(int $chargerId, array $charger): array
+    {
+        $priority = $this->deviceModelSettings->get($chargerId, 'NetworkConfigurationPriority') ?? '0';
+        $profiles = $this->networkProfiles->prioritized($chargerId, $charger, $priority);
+
+        return $profiles === [] ? $this->networkProfiles->prioritized($chargerId, $charger, '0') : $profiles;
+    }
+
+    private function selectNetworkProfile(int $chargerId, int $index, array $charger): void
+    {
+        $profile = $this->sessions[$chargerId]['network_profiles'][$index];
+        $this->sessions[$chargerId]['network_profile_index'] = $index;
+        $this->sessions[$chargerId]['url'] = OcppConnectionUrl::fromEndpoint(
+            $profile['connectionData']['ocppCsmsUrl'],
+            $charger['station_identity'],
+        );
+        $this->sessions[$chargerId]['connection_timeout'] = $profile['connectionData']['messageTimeout'];
+        $this->sessions[$chargerId]['username'] = $profile['username'];
+        $this->sessions[$chargerId]['password'] = $profile['password'];
     }
 
     private function deviceModelSettingInt(int $chargerId, string $variable, int $default, int $minimum): int
@@ -675,6 +757,9 @@ final class StationSessionWorker
 
         $this->resets->markReconnecting($chargerId);
         $this->sessions[$chargerId]['connection'] = null;
+        $this->sessions[$chargerId]['network_profiles'] = $this->prioritizedNetworkProfiles($chargerId, $charger);
+        $this->sessions[$chargerId]['network_profile_attempts'] = 0;
+        $this->selectNetworkProfile($chargerId, 0, $charger);
         $this->sessions[$chargerId]['boot_payload'] = $this->resetBootPayload($charger);
         $this->sessions[$chargerId]['next_boot_at'] = microtime(true);
         $this->sessions[$chargerId]['next_heartbeat_at'] = null;

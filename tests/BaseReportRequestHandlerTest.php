@@ -58,6 +58,7 @@ it('reports controller variables for ConfigurationInventory', function (): void 
     $networkPriority = array_values(array_filter($entries, static fn (array $entry): bool => ($entry['variable']['name'] ?? null) === 'NetworkConfigurationPriority'))[0] ?? [];
     expect($networkPriority['variableAttribute'][0]['value'] ?? null)->toBe('0')
         ->and($networkPriority['variableCharacteristics']['valuesList'] ?? null)->toBe('0,1,2');
+    expect(array_column(array_column($entries, 'variable'), 'name'))->toContain('NetworkProfileConnectionAttempts');
 });
 
 it('reports current outlet availability for SummaryInventory', function (): void {

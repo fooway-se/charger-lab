@@ -2008,6 +2008,8 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
         'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
         'MOCK_CSMS_SEND_RESET' => '1',
         'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_SEND_NETWORK_PROFILE' => '1',
+        'MOCK_CSMS_NETWORK_PROFILE_URL' => "ws://127.0.0.1:{$mockCsmsPort}/backup",
     ]);
     $worker = null;
     $app = null;
@@ -2051,7 +2053,88 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
 
         $resetBootOutput = waitForProcessOutput($mockCsms, 'RemoteReset', 4_000);
         expect($resetBootOutput)->toContain('RemoteReset');
+        expect((string) ($GLOBALS['capturedMockCsmsOutput'] ?? ''))
+            ->toContain('Connected GET /backup/ResetIntegrationCharger');
         waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($mockCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('falls back to the last successful profile when the prioritized profile cannot connect', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-network-profile-fallback-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $unreachablePort = findOpenPort();
+    $appPort = findOpenPort();
+    $resetSentPath = $directory . '/reset-sent';
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_RESET' => '1',
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_SEND_NETWORK_PROFILE' => '1',
+        'MOCK_CSMS_NETWORK_PROFILE_URL' => "ws://127.0.0.1:{$unreachablePort}/unreachable",
+        'MOCK_CSMS_NETWORK_PRIORITY' => '1',
+        'MOCK_CSMS_NETWORK_PROFILE_ATTEMPTS' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($mockCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ProfileFallbackCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Network Profile Fallback Model',
+            'serial_number' => 'PROFILE-FALLBACK-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
+
+        waitForProcessOutput($mockCsms, 'Reset station response: ', 3_000);
+        $fallbackOutput = waitForProcessOutput($mockCsms, 'Connected GET /ocpp/ProfileFallbackCharger', 10_000);
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+        $output = $fallbackOutput . (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        expect(substr_count($output, 'Connected GET /ocpp/ProfileFallbackCharger'))
+            ->toBeGreaterThanOrEqual(2, 'After slot 1 fails, the station should reconnect with its last successful slot 0 profile.');
     } finally {
         if (is_resource($app)) {
             stopProcess($app);

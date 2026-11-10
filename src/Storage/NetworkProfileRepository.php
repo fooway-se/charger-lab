@@ -40,4 +40,71 @@ final class NetworkProfileRepository
 
         return $connectionData === false ? null : json_decode($connectionData, true, flags: JSON_THROW_ON_ERROR);
     }
+
+    public function prioritized(int $chargerId, array $charger, string $priority): array
+    {
+        $profiles = [];
+        foreach (explode(',', $priority) as $slot) {
+            $slot = (int) $slot;
+            $connectionData = $this->get($chargerId, $slot);
+            if ($connectionData === null && $slot === 0) {
+                $secure = str_starts_with($charger['csms_url'], 'wss://');
+                $connectionData = [
+                    'ocppVersion' => 'OCPP20',
+                    'ocppTransport' => 'JSON',
+                    'ocppCsmsUrl' => $charger['csms_url'],
+                    'messageTimeout' => 8,
+                    'securityProfile' => $secure ? 2 : 1,
+                    'ocppInterface' => 'Wired0',
+                ];
+            }
+
+            if ($connectionData !== null) {
+                $profiles[] = [
+                    'slot' => $slot,
+                    'connectionData' => $connectionData,
+                    'username' => $charger['station_identity'],
+                    'password' => $charger['csms_password'],
+                ];
+            }
+        }
+
+        $lastSuccessful = $this->lastSuccessful($chargerId);
+        $lastSuccessfulIsPrioritized = array_any($profiles, static fn (array $profile): bool => [
+            'connectionData' => $profile['connectionData'],
+            'username' => $profile['username'],
+            'password' => $profile['password'],
+        ] === $lastSuccessful);
+        if ($lastSuccessful !== null && !$lastSuccessfulIsPrioritized) {
+            $profiles[] = ['slot' => 'last-successful', ...$lastSuccessful];
+        }
+
+        return $profiles;
+    }
+
+    public function rememberSuccessful(int $chargerId, array $connectionData, string $username, string $password): void
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            INSERT INTO network_profile_state (charger_id, last_successful_profile)
+            VALUES (:charger_id, :profile)
+            ON CONFLICT (charger_id) DO UPDATE SET last_successful_profile = excluded.last_successful_profile
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'profile' => json_encode([
+                'connectionData' => $connectionData,
+                'username' => $username,
+                'password' => $password,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        ]);
+    }
+
+    public function lastSuccessful(int $chargerId): ?array
+    {
+        $statement = $this->database->prepare('SELECT last_successful_profile FROM network_profile_state WHERE charger_id = :charger_id');
+        $statement->execute(['charger_id' => $chargerId]);
+        $profile = $statement->fetchColumn();
+
+        return $profile === false ? null : json_decode($profile, true, flags: JSON_THROW_ON_ERROR);
+    }
 }

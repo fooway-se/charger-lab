@@ -398,6 +398,12 @@ final class Database
                 PRIMARY KEY (charger_id, configuration_slot)
             )
             SQL);
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS network_profile_state (
+                charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
+                last_successful_profile TEXT NOT NULL
+            )
+            SQL);
     }
 
     private static function migrateDeviceModelSettings(PDO $pdo): void
@@ -405,7 +411,8 @@ final class Database
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
         if ($schema !== false && str_contains((string) $schema, "'Interval'")
             && str_contains((string) $schema, "'SendDuringIdle'")
-            && str_contains((string) $schema, "'NetworkConfigurationPriority'")) {
+            && str_contains((string) $schema, "'NetworkConfigurationPriority'")
+            && str_contains((string) $schema, "'NetworkProfileConnectionAttempts'")) {
             return;
         }
 
@@ -416,7 +423,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'NetworkProfileConnectionAttempts', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )

@@ -28,6 +28,7 @@ final class DeviceModelSettingsRepository
         'RetryBackOffRepeatTimes' => '3',
         'HeartbeatInterval' => '300',
         'NetworkConfigurationPriority' => '0',
+        'NetworkProfileConnectionAttempts' => '3',
         'EVConnectionTimeOut' => '30',
     ];
 
