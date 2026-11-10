@@ -124,7 +124,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
         ? nextBootStatus($session->bootNotifications, $session->pendingBootCount, $session->bootCountPath, $session->stationKey)
         : null;
     $result = [];
-    if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'MeterValues', 'StatusNotification', 'TransactionEvent', 'SecurityEventNotification'], true)) {
+    if (!in_array($action, ['BootNotification', 'Authorize', 'Heartbeat', 'MeterValues', 'StatusNotification', 'TransactionEvent', 'SecurityEventNotification', 'FirmwareStatusNotification'], true)) {
         $replyFrame = [4, $call[1], 'NotImplemented', 'Unsupported action: ' . (string) $action, new stdClass()];
     } else {
         if ($action === 'SecurityEventNotification') {
@@ -144,6 +144,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
             'StatusNotification' => new stdClass(),
             'TransactionEvent' => stationCallResult('TransactionEvent', $call[3] ?? []),
             'SecurityEventNotification' => new stdClass(),
+            'FirmwareStatusNotification' => new stdClass(),
         };
         $replyFrame = [3, $call[1], $result];
     }
@@ -294,6 +295,7 @@ function sendBootTriggerMessage($client, array $call, array $result): void
                 $triggeredMessageLabel = match ($requestedMessage) {
                     'StatusNotification' => 'TriggerMessage status notification: ',
                     'MeterValues' => 'TriggerMessage MeterValues: ',
+                'FirmwareStatusNotification' => 'TriggerMessage FirmwareStatusNotification: ',
                     default => 'TriggerMessage Heartbeat: ',
                 };
                 fwrite(STDOUT, $triggeredMessageLabel . $stationResponsePayload . "\n");

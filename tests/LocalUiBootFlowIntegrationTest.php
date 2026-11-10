@@ -244,6 +244,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'MOCK_CSMS_SEND_REMOTE_START' => '1',
         'MOCK_CSMS_SEND_UNLOCK_CONNECTOR' => '1',
         'MOCK_CSMS_SEND_DATA_TRANSFER' => '1',
+        'MOCK_CSMS_SEND_TRIGGER_MESSAGE' => '1',
+        'MOCK_CSMS_TRIGGER_MESSAGE' => 'FirmwareStatusNotification',
         'MOCK_CSMS_SET_METER_SETTINGS' => '1',
         'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
         'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
@@ -468,6 +470,15 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         expect($securityEventCall[2] ?? null)->toBe('SecurityEventNotification')
             ->and($securityEvent['type'] ?? null)->toBe('StartupOfTheDevice')
             ->and(preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/', $securityEvent['timestamp'] ?? ''))->toBe(1);
+        $firmwareStatusOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($firmwareStatusOutput, 'TriggerMessage FirmwareStatusNotification: ')) {
+            $firmwareStatusOutput .= waitForProcessOutput($mockCsms, 'TriggerMessage FirmwareStatusNotification: ', 3_000);
+        }
+        preg_match('/TriggerMessage FirmwareStatusNotification: (\[[^\r\n]+\])/', $firmwareStatusOutput, $firmwareStatusMatch);
+        $firmwareStatusCall = json_decode($firmwareStatusMatch[1] ?? '[]', true, flags: JSON_THROW_ON_ERROR);
+        expect($firmwareStatusCall[2] ?? null)->toBe('FirmwareStatusNotification')
+            ->and($firmwareStatusCall[3]['status'] ?? null)->toBe('Idle')
+            ->and(array_key_exists('requestId', $firmwareStatusCall[3] ?? []))->toBeFalse();
         [$remotePendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $remotePendingState = is_string($remotePendingStateBody) ? json_decode($remotePendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $remotePendingOutlet = $remotePendingState['chargers'][0]['outlets'][0] ?? [];

@@ -21,6 +21,8 @@ final class TriggerMessageRequestHandler
 
     private bool $heartbeatRequested = false;
 
+    private bool $firmwareStatusNotificationRequested = false;
+
     /**
      * @var list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
      */
@@ -44,6 +46,7 @@ final class TriggerMessageRequestHandler
     {
         $this->statusNotifications = [];
         $this->heartbeatRequested = false;
+        $this->firmwareStatusNotificationRequested = false;
         $this->transactionSessions = [];
         $this->meterValueRequests = [];
         $requestedMessage = $payload['requestedMessage'] ?? null;
@@ -57,6 +60,12 @@ final class TriggerMessageRequestHandler
 
         if ($requestedMessage === 'Heartbeat') {
             $this->heartbeatRequested = true;
+
+            return $this->statusResult('Accepted');
+        }
+
+        if ($requestedMessage === 'FirmwareStatusNotification') {
+            $this->firmwareStatusNotificationRequested = true;
 
             return $this->statusResult('Accepted');
         }
@@ -154,6 +163,14 @@ final class TriggerMessageRequestHandler
         $this->heartbeatRequested = false;
 
         return $heartbeatRequested;
+    }
+
+    public function takeFirmwareStatusNotificationRequest(): bool
+    {
+        $requested = $this->firmwareStatusNotificationRequested;
+        $this->firmwareStatusNotificationRequested = false;
+
+        return $requested;
     }
 
     public function takeTransactionSessions(): array

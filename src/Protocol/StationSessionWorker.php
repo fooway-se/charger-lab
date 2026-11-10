@@ -648,6 +648,12 @@ final class StationSessionWorker
                             $this->sendHeartbeat($chargerId);
                         }
 
+                        if ($triggerMessage->takeFirmwareStatusNotificationRequest()) {
+                            $this->createOcppClient($chargerId)->request('FirmwareStatusNotification', [
+                                'status' => 'Idle',
+                            ]);
+                        }
+
                         foreach ($triggerMessage->takeStatusNotifications() as $statusNotification) {
                             $this->createOcppClient($chargerId)->request('StatusNotification', $statusNotification);
                         }

@@ -85,10 +85,19 @@ it('rejects an invalid StatusNotification target without queuing messages', func
 it('reports unsupported TriggerMessage types as NotImplemented', function (): void {
     [, , , , , , $handler] = createTriggerMessageHandler();
 
-    $response = $handler->triggerMessage(['requestedMessage' => 'FirmwareStatusNotification']);
+    $response = $handler->triggerMessage(['requestedMessage' => 'UnsupportedMessage']);
 
     expect($response)->toBe(['status' => 'NotImplemented'])
         ->and($handler->takeStatusNotifications())->toBe([]);
+});
+
+it('accepts a FirmwareStatusNotification trigger when no update is active', function (): void {
+    [, , , , , , $handler] = createTriggerMessageHandler();
+
+    $response = $handler->triggerMessage(['requestedMessage' => 'FirmwareStatusNotification']);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeFirmwareStatusNotificationRequest())->toBeTrue();
 });
 
 it('accepts a MeterValues trigger for a configured EVSE', function (): void {
