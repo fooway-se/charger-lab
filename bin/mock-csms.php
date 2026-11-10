@@ -160,6 +160,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
     if ($action === 'BootNotification') {
         sendBaseReportAfterBoot($client, $call, $result, $session);
         sendBootTriggerMessage($client, $call, $result);
+        sendDataTransferAfterBoot($client, $call, $result);
         sendResetAfterBoot($client, $call, $result);
         changeAvailabilityAfterBoot($client, $call, $result, $session);
         runConfiguredServerCalls($client, $call, $result, $session);
@@ -169,6 +170,21 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
     if ($action === 'TransactionEvent') {
         triggerTransactionEventAfterStart($client, $payload, $call, $session);
     }
+}
+
+function sendDataTransferAfterBoot($client, array $call, array $result): void
+{
+    if (($result['status'] ?? null) !== 'Accepted' || getenv('MOCK_CSMS_SEND_DATA_TRANSFER') !== '1') {
+        return;
+    }
+
+    $messageId = 'mock-csms-data-transfer-' . $call[1];
+    $request = json_encode([2, $messageId, 'DataTransfer', [
+        'vendorId' => 'com.example.unknown',
+        'messageId' => 'UnsupportedCommand',
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $request);
+    waitForStationResponse($client, $messageId, 'DataTransfer station response');
 }
 
 function sendBaseReportAfterBoot($client, array $call, array $result, MockCsmsSession $session): void

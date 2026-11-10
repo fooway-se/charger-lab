@@ -243,6 +243,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'MOCK_CSMS_SEND_REJECTED_CALL' => '1',
         'MOCK_CSMS_SEND_REMOTE_START' => '1',
         'MOCK_CSMS_SEND_UNLOCK_CONNECTOR' => '1',
+        'MOCK_CSMS_SEND_DATA_TRANSFER' => '1',
         'MOCK_CSMS_SET_METER_SETTINGS' => '1',
         'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
         'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
@@ -435,6 +436,9 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         if (!str_contains($remoteStartOutput, 'RemoteStart station response: ')) {
             $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStart station response: ', 5_000);
         }
+        if (!str_contains($remoteStartOutput, 'RemoteStart TransactionEvent: ')) {
+            $remoteStartOutput .= waitForProcessOutput($mockCsms, 'RemoteStart TransactionEvent: ', 5_000);
+        }
 
         expect($remoteStartOutput)->toContain('"status":"Accepted"');
         expect(strpos($remoteStartOutput, 'RemoteStart station response: '))
@@ -449,6 +453,11 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             $unlockOutput .= waitForProcessOutput($mockCsms, 'UnlockConnector station response: ', 3_000);
         }
         expect($unlockOutput)->toContain('"status":"OngoingAuthorizedTransaction"');
+        $dataTransferOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($dataTransferOutput, 'DataTransfer station response: ')) {
+            $dataTransferOutput .= waitForProcessOutput($mockCsms, 'DataTransfer station response: ', 3_000);
+        }
+        expect($dataTransferOutput)->toContain('"status":"UnknownVendorId"');
         [$remotePendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $remotePendingState = is_string($remotePendingStateBody) ? json_decode($remotePendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $remotePendingOutlet = $remotePendingState['chargers'][0]['outlets'][0] ?? [];

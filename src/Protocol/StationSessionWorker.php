@@ -6,6 +6,7 @@ namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Domain\BaseReportRequestHandler;
 use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
+use ChargerEmulator\Domain\DataTransferRequestHandler;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
@@ -567,6 +568,7 @@ final class StationSessionWorker
         );
         $networkProfile = new SetNetworkProfileRequestHandler($this->networkProfiles, $chargerId);
         $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
+        $dataTransfer = new DataTransferRequestHandler();
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -578,7 +580,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -594,6 +596,10 @@ final class StationSessionWorker
 
                 if ($action === 'UnlockConnector') {
                     return $unlockConnector->unlock($payload);
+                }
+
+                if ($action === 'DataTransfer') {
+                    return $dataTransfer->transfer($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {
