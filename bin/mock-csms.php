@@ -471,6 +471,7 @@ function runConfiguredServerCalls($client, array $call, array $result, MockCsmsS
     $session->serverCallSent = true;
     $bootCallId = $call[1];
     requestLocalListVersion($client, $bootCallId);
+    sendLocalAuthorizationList($client, $bootCallId);
     configureRemoteStartAuthorization($client, $bootCallId);
     configureMeterTestSettings($client, $bootCallId);
     runRemoteStartScenario($client, $call, $session);
@@ -486,6 +487,30 @@ function requestLocalListVersion($client, string $bootCallId): void
     $call = json_encode([2, $messageId, 'GetLocalListVersion', new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     writeFrame($client, 0x1, $call);
     waitForStationResponse($client, $messageId, 'GetLocalListVersion station response');
+}
+
+function sendLocalAuthorizationList($client, string $bootCallId): void
+{
+    if (getenv('MOCK_CSMS_SEND_LOCAL_LIST') !== '1') {
+        return;
+    }
+
+    $messageId = 'mock-csms-send-local-list-' . $bootCallId;
+    $call = json_encode([2, $messageId, 'SendLocalList', [
+        'versionNumber' => 1,
+        'updateType' => 'Full',
+        'localAuthorizationList' => [[
+            'idToken' => ['idToken' => 'MOCK-LOCAL-1', 'type' => 'ISO14443'],
+            'idTokenInfo' => ['status' => 'Accepted'],
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $call);
+    waitForStationResponse($client, $messageId, 'SendLocalList station response');
+
+    $versionCallId = 'mock-csms-local-list-version-after-update-' . $bootCallId;
+    $versionCall = json_encode([2, $versionCallId, 'GetLocalListVersion', new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $versionCall);
+    waitForStationResponse($client, $versionCallId, 'GetLocalListVersion after SendLocalList station response');
 }
 
 function configureRemoteStartAuthorization($client, string $bootCallId): void

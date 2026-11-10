@@ -17,6 +17,7 @@ use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use ChargerEmulator\Storage\NetworkProfileRepository;
+use ChargerEmulator\Storage\LocalAuthorizationListRepository;
 
 require __DIR__ . '/../src/autoload.php';
 
@@ -33,5 +34,6 @@ $worker = new StationSessionWorker(
     new TransactionEventOutboxRepository($database),
     new WorkspaceSettingsRepository($database),
     new NetworkProfileRepository($database),
+    new LocalAuthorizationListRepository($database),
 );
 $worker->run();

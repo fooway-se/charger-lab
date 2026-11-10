@@ -5,12 +5,19 @@ declare(strict_types=1);
 namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Protocol\OcppCallErrorException;
+use ChargerEmulator\Storage\LocalAuthorizationListRepository;
 
 /**
  * Reports the version of the station's local authorization list.
  */
 final class GetLocalListVersionRequestHandler
 {
+    public function __construct(
+        private readonly int $chargerId,
+        private readonly LocalAuthorizationListRepository $authorizationLists,
+    ) {
+    }
+
     public function getVersion(array $payload): array
     {
         $customData = $payload['customData'] ?? null;
@@ -24,6 +31,6 @@ final class GetLocalListVersionRequestHandler
             throw new OcppCallErrorException('FormationViolation', 'GetLocalListVersion only accepts a valid customData object.');
         }
 
-        return ['versionNumber' => 0];
+        return ['versionNumber' => $this->authorizationLists->version($this->chargerId)];
     }
 }

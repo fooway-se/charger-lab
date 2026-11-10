@@ -4,20 +4,38 @@ declare(strict_types=1);
 
 use ChargerEmulator\Domain\GetLocalListVersionRequestHandler;
 use ChargerEmulator\Protocol\OcppCallErrorException;
+use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\LocalAuthorizationListRepository;
+
+function createLocalListVersionHandler(): array
+{
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $lists = new LocalAuthorizationListRepository($database);
+
+    return [$lists, new GetLocalListVersionRequestHandler($chargerId, $lists)];
+}
 
 it('reports version zero when no local authorization list is installed', function (): void {
-    expect((new GetLocalListVersionRequestHandler())->getVersion([]))
+    [, $handler] = createLocalListVersionHandler();
+
+    expect($handler->getVersion([]))
         ->toBe(['versionNumber' => 0]);
 });
 
 it('accepts the optional OCPP customData object', function (): void {
-    expect((new GetLocalListVersionRequestHandler())->getVersion([
+    [, $handler] = createLocalListVersionHandler();
+
+    expect($handler->getVersion([
         'customData' => ['vendorId' => 'com.example.csms'],
     ]))->toBe(['versionNumber' => 0]);
 });
 
 it('returns FormationViolation for a GetLocalListVersion payload outside its schema', function (array $payload): void {
-    expect(fn () => (new GetLocalListVersionRequestHandler())->getVersion($payload))
+    [, $handler] = createLocalListVersionHandler();
+
+    expect(fn () => $handler->getVersion($payload))
         ->toThrow(OcppCallErrorException::class, 'GetLocalListVersion only accepts a valid customData object.');
 })->with([
     'unknown property' => [['unexpected' => true]],

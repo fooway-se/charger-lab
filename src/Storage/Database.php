@@ -38,6 +38,7 @@ final class Database
             self::migrateTransactionEventOutbox($pdo);
             self::migrateResetRequests($pdo);
             self::migrateNetworkProfiles($pdo);
+            self::migrateLocalAuthorizationList($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -402,6 +403,17 @@ final class Database
             CREATE TABLE IF NOT EXISTS network_profile_state (
                 charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
                 last_successful_profile TEXT NOT NULL
+            )
+            SQL);
+    }
+
+    private static function migrateLocalAuthorizationList(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS local_authorization_list (
+                charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
+                version_number INTEGER NOT NULL CHECK (version_number > 0),
+                entries TEXT NOT NULL
             )
             SQL);
     }

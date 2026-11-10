@@ -14,6 +14,7 @@ use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\ResetRequestHandler;
+use ChargerEmulator\Domain\SendLocalListRequestHandler;
 use ChargerEmulator\Domain\SetNetworkProfileRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Domain\TriggerMessageRequestHandler;
@@ -27,6 +28,7 @@ use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\NetworkProfileRepository;
+use ChargerEmulator\Storage\LocalAuthorizationListRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use RuntimeException;
 use Throwable;
@@ -56,6 +58,7 @@ final class StationSessionWorker
         private readonly TransactionEventOutboxRepository $transactionEvents,
         private readonly WorkspaceSettingsRepository $workspaceSettings,
         private readonly NetworkProfileRepository $networkProfiles,
+        private readonly LocalAuthorizationListRepository $authorizationLists,
     ) {
         $this->transactionEventDelivery = new TransactionEventDelivery(
             $this->transactionEvents,
@@ -573,7 +576,8 @@ final class StationSessionWorker
         $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
         $dataTransfer = new DataTransferRequestHandler();
         $clearCache = new ClearCacheRequestHandler();
-        $localListVersion = new GetLocalListVersionRequestHandler();
+        $localListVersion = new GetLocalListVersionRequestHandler($chargerId, $this->authorizationLists);
+        $sendLocalList = new SendLocalListRequestHandler($chargerId, $this->authorizationLists);
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -585,7 +589,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $localListVersion, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $localListVersion, $sendLocalList, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -613,6 +617,10 @@ final class StationSessionWorker
 
                 if ($action === 'GetLocalListVersion') {
                     return $localListVersion->getVersion($payload);
+                }
+
+                if ($action === 'SendLocalList') {
+                    return $sendLocalList->send($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {
