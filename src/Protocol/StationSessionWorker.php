@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Protocol;
 
-use ChargerEmulator\Domain\OutletMap;
-use ChargerEmulator\Domain\DeviceModel;
+use ChargerEmulator\Domain\BaseReportRequestHandler;
 use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
+use ChargerEmulator\Domain\DeviceModel;
+use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\ResetRequestHandler;
@@ -459,6 +460,7 @@ final class StationSessionWorker
             $chargerId,
             $this->availability,
         );
+        $baseReport = new BaseReportRequestHandler($deviceModel);
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
         $remoteStart = new RemoteStartRequestHandler(
             $chargerId,
@@ -488,10 +490,14 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
+                }
+
+                if ($action === 'GetBaseReport') {
+                    return $baseReport->getBaseReport($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {
@@ -523,7 +529,7 @@ final class StationSessionWorker
             function () use ($chargerId): ?string {
                 return $this->currentBootStatus($this->chargers->get($chargerId));
             },
-            function (string $action, array $_payload, array $response) use ($changeAvailability, $chargerId, $triggerMessage): void {
+            function (string $action, array $_payload, array $response) use ($baseReport, $changeAvailability, $chargerId, $triggerMessage): void {
                 if ($action === 'Reset') {
                     if (in_array($response['status'] ?? null, ['Accepted', 'Scheduled'], true)) {
                         $this->reportPendingResetUnavailable($chargerId);
@@ -553,6 +559,15 @@ final class StationSessionWorker
                                 'meterValue' => $this->meterValueReporter->value($meterValueRequest['meter_wh'], 'Trigger'),
                             ]);
                         }
+                    }
+
+                    return;
+                }
+
+                if ($action === 'GetBaseReport' && ($response['status'] ?? null) === 'Accepted') {
+                    $report = $baseReport->takeReport();
+                    if ($report !== null) {
+                        $this->createOcppClient($chargerId)->request('NotifyReport', $report);
                     }
 
                     return;

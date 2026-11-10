@@ -289,11 +289,11 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
         'getVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptsTransactionEvent'],
+                'variable' => ['name' => 'MessageAttempts', 'instance' => 'TransactionEvent'],
             ],
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
+                'variable' => ['name' => 'MessageAttemptInterval', 'instance' => 'TransactionEvent'],
             ],
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
@@ -317,12 +317,12 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
         'setVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptsTransactionEvent'],
+                'variable' => ['name' => 'MessageAttempts', 'instance' => 'TransactionEvent'],
                 'attributeValue' => '4',
             ],
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
+                'variable' => ['name' => 'MessageAttemptInterval', 'instance' => 'TransactionEvent'],
                 'attributeValue' => '7',
             ],
             [
@@ -351,11 +351,11 @@ it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr',
         'getVariableData' => [
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptsTransactionEvent'],
+                'variable' => ['name' => 'MessageAttempts', 'instance' => 'TransactionEvent'],
             ],
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],
-                'variable' => ['name' => 'MessageAttemptIntervalTransactionEvent'],
+                'variable' => ['name' => 'MessageAttemptInterval', 'instance' => 'TransactionEvent'],
             ],
             [
                 'component' => ['name' => 'OCPPCommCtrlr'],

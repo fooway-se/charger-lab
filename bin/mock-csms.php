@@ -158,6 +158,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
     }
 
     if ($action === 'BootNotification') {
+        sendBaseReportAfterBoot($client, $call, $result, $session);
         sendBootTriggerMessage($client, $call, $result);
         sendResetAfterBoot($client, $call, $result);
         changeAvailabilityAfterBoot($client, $call, $result, $session);
@@ -167,6 +168,50 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
 
     if ($action === 'TransactionEvent') {
         triggerTransactionEventAfterStart($client, $payload, $call, $session);
+    }
+}
+
+function sendBaseReportAfterBoot($client, array $call, array $result, MockCsmsSession $session): void
+{
+    if (($result['status'] ?? null) !== 'Accepted'
+        || $session->baseReportSent
+        || getenv('MOCK_CSMS_SEND_BASE_REPORT') !== '1') {
+        return;
+    }
+
+    $session->baseReportSent = true;
+    $messageId = 'mock-csms-base-report-' . $call[1];
+    $request = json_encode([2, $messageId, 'GetBaseReport', [
+        'requestId' => 71,
+        'reportBase' => 'FullInventory',
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    fwrite(STDOUT, 'GetBaseReport CSMS call: ' . $request . "\n");
+    writeFrame($client, 0x1, $request);
+    $requestAccepted = false;
+    $reportReceived = false;
+
+    while (!$requestAccepted || !$reportReceived) {
+        $response = readOcppMessage($client);
+        if ($response === null) {
+            return;
+        }
+
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) === 3 && ($message[1] ?? null) === $messageId) {
+            fwrite(STDOUT, 'GetBaseReport station response: ' . $payload . "\n");
+            $requestAccepted = ($message[2]['status'] ?? null) === 'Accepted';
+            if (!$requestAccepted) {
+                return;
+            }
+        } elseif (($message[0] ?? null) === 2 && ($message[2] ?? null) === 'NotifyReport') {
+            fwrite(STDOUT, 'NotifyReport station call: ' . $payload . "\n");
+            $reportReceived = ($message[3]['requestId'] ?? null) === 71
+                && ($message[3]['tbc'] ?? null) === false
+                && is_array($message[3]['reportData'] ?? null);
+            sendStationCallResult($client, $message[1], new stdClass());
+        } elseif (($message[0] ?? null) === 2) {
+            sendStationCallResult($client, $message[1], stationCallResult($message[2] ?? '', $message[3] ?? []));
+        }
     }
 }
 
@@ -603,6 +648,8 @@ final class MockCsmsSession
     public bool $changeAvailabilitySent = false;
 
     public bool $triggerTransactionEventSent = false;
+
+    public bool $baseReportSent = false;
 
     public function __construct(
         public readonly string $stationKey,

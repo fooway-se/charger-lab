@@ -25,6 +25,31 @@ final class DeviceModel
         'HeartbeatInterval',
     ];
 
+    private const REPORT_VARIABLES = [
+        'AuthCtrlr' => ['AuthorizeRemoteStart' => ['boolean', 'ReadOnly', true]],
+        'TxCtrlr' => ['EVConnectionTimeOut' => ['integer', 'ReadWrite', true]],
+        'AlignedDataCtrlr' => [
+            'Interval' => ['integer', 'ReadWrite', true],
+            'Measurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'SendDuringIdle' => ['boolean', 'ReadWrite', true],
+        ],
+        'SampledDataCtrlr' => [
+            'TxStartedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'TxEndedInterval' => ['integer', 'ReadWrite', true],
+            'TxEndedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'TxUpdatedInterval' => ['integer', 'ReadWrite', true],
+            'TxUpdatedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+        ],
+        'OCPPCommCtrlr' => [
+            'MessageAttempts' => ['integer', 'ReadWrite', true, null, 'TransactionEvent'],
+            'MessageAttemptInterval' => ['integer', 'ReadWrite', true, null, 'TransactionEvent'],
+            'RetryBackOffWaitMinimum' => ['integer', 'ReadWrite', true],
+            'RetryBackOffRandomRange' => ['integer', 'ReadWrite', true],
+            'RetryBackOffRepeatTimes' => ['integer', 'ReadWrite', true],
+            'HeartbeatInterval' => ['integer', 'ReadWrite', true],
+        ],
+    ];
+
     public function __construct(
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $settings,
@@ -40,6 +65,88 @@ final class DeviceModel
             'SetVariables' => $this->setVariables($payload),
             default => null,
         };
+    }
+
+    public function inventory(string $reportBase): array
+    {
+        $report = [];
+        if ($reportBase !== 'ConfigurationInventory') {
+            foreach ($this->physicalComponents() as $component) {
+                $report[] = $this->reportVariable($component, ['name' => 'AvailabilityState'], 'OptionList', 'ReadOnly', false, false, 'Available,Occupied,Unavailable');
+                if ($reportBase === 'FullInventory') {
+                    $report[] = $this->reportVariable($component, ['name' => 'Available'], 'boolean', 'ReadOnly', false, false);
+                }
+            }
+        }
+
+        if ($reportBase !== 'SummaryInventory') {
+            foreach (self::REPORT_VARIABLES as $componentName => $variables) {
+                foreach ($variables as $variableName => $definition) {
+                    [$dataType, $mutability, $persistent] = $definition;
+                    if ($reportBase === 'ConfigurationInventory' && $mutability === 'ReadOnly') {
+                        continue;
+                    }
+
+                    $report[] = $this->reportVariable(
+                        ['name' => $componentName],
+                        ['name' => $variableName, ...(($definition[4] ?? null) === null ? [] : ['instance' => $definition[4]])],
+                        $dataType,
+                        $mutability,
+                        $persistent,
+                        $componentName === 'AuthCtrlr',
+                        $definition[3] ?? null,
+                    );
+                }
+            }
+        }
+
+        return $report;
+    }
+
+    private function physicalComponents(): array
+    {
+        $components = [['name' => 'ChargingStation']];
+        $reportedEvses = [];
+        foreach ($this->outletSessions->allForCharger($this->chargerId) as $outlet) {
+            $evse = ['id' => $outlet['evse_id']];
+            if (!isset($reportedEvses[$outlet['evse_id']])) {
+                $components[] = ['name' => 'EVSE', 'evse' => $evse];
+                $reportedEvses[$outlet['evse_id']] = true;
+            }
+            $components[] = ['name' => 'Connector', 'evse' => [...$evse, 'connectorId' => $outlet['connector_id']]];
+        }
+
+        return $components;
+    }
+
+    private function reportVariable(
+        array $component,
+        array $variable,
+        string $dataType,
+        string $mutability,
+        bool $persistent,
+        bool $constant,
+        ?string $valuesList = null,
+    ): array
+    {
+        $value = $this->readVariableValue($component, $variable);
+
+        return [
+            'component' => $component,
+            'variable' => $variable,
+            'variableAttribute' => [[
+                'type' => 'Actual',
+                'value' => $value,
+                'mutability' => $mutability,
+                'persistent' => $persistent,
+                'constant' => $constant,
+            ]],
+            'variableCharacteristics' => [
+                'dataType' => $dataType,
+                ...($valuesList === null ? [] : ['valuesList' => $valuesList]),
+                'supportsMonitoring' => false,
+            ],
+        ];
     }
 
     private function getVariables(array $payload): array
@@ -86,6 +193,7 @@ final class DeviceModel
             $component = $this->arrayField($variableRequest, 'component');
             $variable = $this->arrayField($variableRequest, 'variable');
             $attributeType = is_string($variableRequest['attributeType'] ?? null) ? $variableRequest['attributeType'] : 'Actual';
+            $settingName = $this->settingName($component, $variable);
             $currentAttributeValue = $this->readVariableValue($component, $variable);
             if ($currentAttributeValue === null) {
                 $attributeStatus = $this->unknownVariableStatus($component);
@@ -93,8 +201,8 @@ final class DeviceModel
                 $attributeStatus = 'NotSupportedAttributeType';
             } elseif ($this->isVariableWritable($component, $variable)) {
                 $newAttributeValue = $variableRequest['attributeValue'] ?? null;
-                if (is_string($newAttributeValue) && $this->isValidSettingValue($variable['name'], $newAttributeValue)) {
-                    $this->settings->set($this->chargerId, $variable['name'], $newAttributeValue);
+                if (is_string($newAttributeValue) && $this->isValidSettingValue($settingName, $newAttributeValue)) {
+                    $this->settings->set($this->chargerId, $settingName, $newAttributeValue);
                     $attributeStatus = 'Accepted';
                 } else {
                     $attributeStatus = 'Rejected';
@@ -141,9 +249,10 @@ final class DeviceModel
             return $this->settings->get($this->chargerId, $variableName);
         }
 
+        $settingName = $this->settingName($component, $variable);
         if ($componentName === 'OCPPCommCtrlr'
-            && in_array($variableName, self::OCPP_COMMUNICATION_VARIABLES, true)) {
-            return $this->settings->get($this->chargerId, $variableName);
+            && in_array($settingName, self::OCPP_COMMUNICATION_VARIABLES, true)) {
+            return $this->settings->get($this->chargerId, $settingName);
         }
 
         if ($variableName === 'Available' && in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
@@ -265,7 +374,22 @@ final class DeviceModel
         }
 
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
-            && in_array($variable['name'] ?? null, self::OCPP_COMMUNICATION_VARIABLES, true);
+            && in_array($this->settingName($component, $variable), self::OCPP_COMMUNICATION_VARIABLES, true);
+    }
+
+    private function settingName(array $component, array $variable): string
+    {
+        $name = $variable['name'] ?? '';
+        if (($component['name'] ?? null) === 'OCPPCommCtrlr'
+            && ($variable['instance'] ?? null) === 'TransactionEvent') {
+            return match ($name) {
+                'MessageAttempts' => 'MessageAttemptsTransactionEvent',
+                'MessageAttemptInterval' => 'MessageAttemptIntervalTransactionEvent',
+                default => $name,
+            };
+        }
+
+        return $name;
     }
 
     private function isValidSettingValue(string $variable, string $value): bool

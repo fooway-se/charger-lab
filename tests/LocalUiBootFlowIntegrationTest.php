@@ -239,6 +239,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'MOCK_CSMS_BASIC_AUTH_STATION' => 'UiIntegrationCharger',
         'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'ui-station-secret',
         'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_BASE_REPORT' => '1',
         'MOCK_CSMS_SEND_REJECTED_CALL' => '1',
         'MOCK_CSMS_SEND_REMOTE_START' => '1',
         'MOCK_CSMS_SET_METER_SETTINGS' => '1',
@@ -376,6 +377,17 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || !str_contains($pendingAuthorizeHeaders[0] ?? '', '409'))->toBeFalse('A Rejected station must send no station calls or vehicle actions before retry.');
 
         waitForBootStatus($appPort, $chargerId, 'Accepted', 8_000);
+        $baseReportOutput = waitForProcessOutput($mockCsms, 'NotifyReport station call: ', 3_000);
+        expect($baseReportOutput)->toContain('GetBaseReport station response: [3,"mock-csms-base-report-')
+            ->toContain('"status":"Accepted"')
+            ->toContain('NotifyReport station call: [2,')
+            ->toContain('"requestId":71')
+            ->toContain('"variableCharacteristics"');
+        $baseReportResponsePosition = strpos($baseReportOutput, 'GetBaseReport station response:');
+        $notifyReportPosition = strpos($baseReportOutput, 'NotifyReport station call:');
+        expect($baseReportResponsePosition)->toBeInt()
+            ->and($notifyReportPosition)->toBeInt()
+            ->and($baseReportResponsePosition)->toBeLessThan($notifyReportPosition);
         [$bootStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $bootState = is_string($bootStateBody) ? json_decode($bootStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $statusEntries = array_values(array_filter(
@@ -406,7 +418,8 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             || ($statusPayloads[1]['connectorId'] ?? null) !== 1
             || ($statusPayloads[1]['connectorStatus'] ?? null) !== 'Available')->toBeFalse('An accepted charger boot should report Available for each configured outlet.');
 
-        $incomingCallOutput = waitForProcessOutput($mockCsms, 'Station response: ', 1_500);
+        $incomingCallOutput = ($GLOBALS['capturedMockCsmsOutput'] ?? '')
+            . waitForProcessOutput($mockCsms, 'Station response: ', 1_500);
         expect($incomingCallOutput)->toContain('"attributeValue":"false"');
         $setVariableOutput = waitForProcessOutput($mockCsms, 'SetVariables station response: ', 1_500);
         $capturedDeviceModelOutput = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $setVariableOutput;
