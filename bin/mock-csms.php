@@ -470,9 +470,22 @@ function runConfiguredServerCalls($client, array $call, array $result, MockCsmsS
 
     $session->serverCallSent = true;
     $bootCallId = $call[1];
+    requestLocalListVersion($client, $bootCallId);
     configureRemoteStartAuthorization($client, $bootCallId);
     configureMeterTestSettings($client, $bootCallId);
     runRemoteStartScenario($client, $call, $session);
+}
+
+function requestLocalListVersion($client, string $bootCallId): void
+{
+    if (getenv('MOCK_CSMS_SEND_LOCAL_LIST_VERSION') !== '1') {
+        return;
+    }
+
+    $messageId = 'mock-csms-local-list-version-' . $bootCallId;
+    $call = json_encode([2, $messageId, 'GetLocalListVersion', new stdClass()], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $call);
+    waitForStationResponse($client, $messageId, 'GetLocalListVersion station response');
 }
 
 function configureRemoteStartAuthorization($client, string $bootCallId): void

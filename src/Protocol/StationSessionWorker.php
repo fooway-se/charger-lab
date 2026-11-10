@@ -9,6 +9,7 @@ use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
 use ChargerEmulator\Domain\ClearCacheRequestHandler;
 use ChargerEmulator\Domain\DataTransferRequestHandler;
 use ChargerEmulator\Domain\DeviceModel;
+use ChargerEmulator\Domain\GetLocalListVersionRequestHandler;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
@@ -572,6 +573,7 @@ final class StationSessionWorker
         $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
         $dataTransfer = new DataTransferRequestHandler();
         $clearCache = new ClearCacheRequestHandler();
+        $localListVersion = new GetLocalListVersionRequestHandler();
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -583,7 +585,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $localListVersion, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -607,6 +609,10 @@ final class StationSessionWorker
 
                 if ($action === 'ClearCache') {
                     return $clearCache->clear($payload);
+                }
+
+                if ($action === 'GetLocalListVersion') {
+                    return $localListVersion->getVersion($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {

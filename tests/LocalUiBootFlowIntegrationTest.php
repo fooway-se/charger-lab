@@ -239,6 +239,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'MOCK_CSMS_BASIC_AUTH_STATION' => 'UiIntegrationCharger',
         'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'ui-station-secret',
         'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_LOCAL_LIST_VERSION' => '1',
         'MOCK_CSMS_SEND_BASE_REPORT' => '1',
         'MOCK_CSMS_SEND_REJECTED_CALL' => '1',
         'MOCK_CSMS_SEND_REMOTE_START' => '1',
@@ -460,6 +461,12 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
             $dataTransferOutput .= waitForProcessOutput($mockCsms, 'DataTransfer station response: ', 3_000);
         }
         expect($dataTransferOutput)->toContain('"status":"UnknownVendorId"');
+        $localListVersionOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($localListVersionOutput, 'GetLocalListVersion station response: ')) {
+            $localListVersionOutput .= waitForProcessOutput($mockCsms, 'GetLocalListVersion station response: ', 3_000);
+        }
+        expect($localListVersionOutput)->toContain('GetLocalListVersion station response: [3,"mock-csms-local-list-version-')
+            ->toContain('"versionNumber":0');
         $securityEventOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
         if (!str_contains($securityEventOutput, 'SecurityEventNotification CALL: ')) {
             $securityEventOutput .= waitForProcessOutput($mockCsms, 'SecurityEventNotification CALL: ', 3_000);
