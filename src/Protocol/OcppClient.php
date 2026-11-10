@@ -100,10 +100,24 @@ final class OcppClient
         $this->observe('incoming', $action, $callJson);
         $bootStatus ??= $this->bootStatusProvider === null ? null : ($this->bootStatusProvider)();
         $rejected = $bootStatus === 'Rejected';
-        $callResult = $rejected
-            ? null
-            : ($this->incomingCallHandler === null ? null : ($this->incomingCallHandler)($action, $requestPayload));
-        if (is_array($callResult)) {
+        $callError = null;
+        try {
+            $callResult = $rejected
+                ? null
+                : ($this->incomingCallHandler === null ? null : ($this->incomingCallHandler)($action, $requestPayload));
+        } catch (OcppCallErrorException $exception) {
+            $callError = $exception;
+            $callResult = null;
+        }
+        if ($callError instanceof OcppCallErrorException) {
+            $responseJson = json_encode([
+                4,
+                $callFrame[1],
+                $callError->errorCode,
+                $callError->getMessage(),
+                $callError->errorDetails,
+            ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        } elseif (is_array($callResult)) {
             $responseJson = json_encode([3, $callFrame[1], $callResult], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         } else {
             $responseJson = json_encode([

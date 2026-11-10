@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use ChargerEmulator\Protocol\Connection;
 use ChargerEmulator\Protocol\OcppClient;
+use ChargerEmulator\Protocol\OcppCallErrorException;
 use ChargerEmulator\Protocol\OcppProtocolException;
 
 final class CallErrorConnection implements Connection
@@ -98,6 +99,26 @@ it('returns SecurityError for CSMS calls while boot status is Rejected', functio
     expect($response[2])->toBe('SecurityError');
     expect($response[3])->toBe('The charging station has not been accepted by the CSMS.');
     expect($response[4])->toBeInstanceOf(stdClass::class);
+});
+
+it('returns a request handler OCPP-J CALLERROR with its protocol details', function (): void {
+    $connection = new IncomingCallConnection();
+    $client = new OcppClient(
+        $connection,
+        incomingCallHandler: static fn (): never => throw new OcppCallErrorException(
+            'FormationViolation',
+            'UnlockConnector requires integer evseId and connectorId values.',
+        ),
+    );
+
+    $client->answerIncomingCallMessage('[2,"invalid-unlock","UnlockConnector",{}]');
+    $response = json_decode((string) $connection->sentMessage, flags: JSON_THROW_ON_ERROR);
+
+    expect($response[0])->toBe(4)
+        ->and($response[1])->toBe('invalid-unlock')
+        ->and($response[2])->toBe('FormationViolation')
+        ->and($response[3])->toBe('UnlockConnector requires integer evseId and connectorId values.')
+        ->and($response[4])->toBeInstanceOf(stdClass::class);
 });
 
 it('runs availability follow-up messages after returning the CSMS call response', function (): void {

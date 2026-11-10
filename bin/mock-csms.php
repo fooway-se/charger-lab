@@ -580,6 +580,16 @@ function sendRemoteStart($client, string $bootCallId): ?string
         }
     }
 
+    if (getenv('MOCK_CSMS_SEND_UNLOCK_CONNECTOR') === '1') {
+        $unlockCallId = 'mock-csms-unlock-connector-' . $bootCallId;
+        $unlockCall = json_encode([2, $unlockCallId, 'UnlockConnector', [
+            'evseId' => 1,
+            'connectorId' => 1,
+        ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        writeFrame($client, 0x1, $unlockCall);
+        waitForStationResponse($client, $unlockCallId, 'UnlockConnector station response');
+    }
+
     return is_string($transactionId) && $requestAccepted ? $transactionId : null;
 }
 

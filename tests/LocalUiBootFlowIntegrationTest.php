@@ -242,6 +242,7 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         'MOCK_CSMS_SEND_BASE_REPORT' => '1',
         'MOCK_CSMS_SEND_REJECTED_CALL' => '1',
         'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_SEND_UNLOCK_CONNECTOR' => '1',
         'MOCK_CSMS_SET_METER_SETTINGS' => '1',
         'MOCK_CSMS_REMOTE_START_SENT_PATH' => $directory . '/remote-start-sent',
         'MOCK_CSMS_REMOTE_START_CONTINUE_PATH' => $directory . '/remote-start-continue',
@@ -443,6 +444,11 @@ it('boots multiple chargers and runs a plug authorize unplug flow', function ():
         }
         expect($remoteStartOutput)->toContain('GetTransactionStatus station response: ')
             ->and($remoteStartOutput)->toContain('"ongoingIndicator":true,"messagesInQueue":false');
+        $unlockOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($unlockOutput, 'UnlockConnector station response: ')) {
+            $unlockOutput .= waitForProcessOutput($mockCsms, 'UnlockConnector station response: ', 3_000);
+        }
+        expect($unlockOutput)->toContain('"status":"OngoingAuthorizedTransaction"');
         [$remotePendingStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
         $remotePendingState = is_string($remotePendingStateBody) ? json_decode($remotePendingStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         $remotePendingOutlet = $remotePendingState['chargers'][0]['outlets'][0] ?? [];

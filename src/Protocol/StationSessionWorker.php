@@ -14,6 +14,7 @@ use ChargerEmulator\Domain\ResetRequestHandler;
 use ChargerEmulator\Domain\SetNetworkProfileRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Domain\TriggerMessageRequestHandler;
+use ChargerEmulator\Domain\UnlockConnectorRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
@@ -565,6 +566,7 @@ final class StationSessionWorker
             $this->deviceModelSettings,
         );
         $networkProfile = new SetNetworkProfileRequestHandler($this->networkProfiles, $chargerId);
+        $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -576,7 +578,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -588,6 +590,10 @@ final class StationSessionWorker
 
                 if ($action === 'SetNetworkProfile') {
                     return $networkProfile->setNetworkProfile($payload);
+                }
+
+                if ($action === 'UnlockConnector') {
+                    return $unlockConnector->unlock($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {
