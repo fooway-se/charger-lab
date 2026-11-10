@@ -11,6 +11,7 @@ use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\ResetRequestHandler;
+use ChargerEmulator\Domain\SetNetworkProfileRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Domain\TriggerMessageRequestHandler;
 use ChargerEmulator\Storage\ChargerRepository;
@@ -21,6 +22,7 @@ use ChargerEmulator\Storage\OcppCommandRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\ResetRepository;
+use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use RuntimeException;
 use Throwable;
@@ -51,6 +53,7 @@ final class StationSessionWorker
         private readonly DeviceModelSettingsRepository $deviceModelSettings,
         private readonly TransactionEventOutboxRepository $transactionEvents,
         private readonly WorkspaceSettingsRepository $workspaceSettings,
+        private readonly NetworkProfileRepository $networkProfiles,
     ) {
         $this->transactionEventDelivery = new TransactionEventDelivery(
             $this->transactionEvents,
@@ -479,6 +482,7 @@ final class StationSessionWorker
             $this->resets,
             $this->deviceModelSettings,
         );
+        $networkProfile = new SetNetworkProfileRequestHandler($this->networkProfiles, $chargerId);
 
         $connection = $this->sessions[$chargerId]['connection'];
         if (!$connection instanceof WebSocketConnection) {
@@ -490,7 +494,7 @@ final class StationSessionWorker
             function (string $direction, string $action, string $message) use ($chargerId): void {
                 $this->logs->record($chargerId, $direction, $action, $message);
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -498,6 +502,10 @@ final class StationSessionWorker
 
                 if ($action === 'GetBaseReport') {
                     return $baseReport->getBaseReport($payload);
+                }
+
+                if ($action === 'SetNetworkProfile') {
+                    return $networkProfile->setNetworkProfile($payload);
                 }
 
                 if ($action === 'ChangeAvailability') {

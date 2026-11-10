@@ -23,6 +23,7 @@ final class DeviceModel
         'RetryBackOffRandomRange',
         'RetryBackOffRepeatTimes',
         'HeartbeatInterval',
+        'NetworkConfigurationPriority',
     ];
 
     private const REPORT_VARIABLES = [
@@ -47,6 +48,7 @@ final class DeviceModel
             'RetryBackOffRandomRange' => ['integer', 'ReadWrite', true],
             'RetryBackOffRepeatTimes' => ['integer', 'ReadWrite', true],
             'HeartbeatInterval' => ['integer', 'ReadWrite', true],
+            'NetworkConfigurationPriority' => ['MemberList', 'ReadWrite', true, '0,1,2'],
         ],
     ];
 
@@ -394,6 +396,14 @@ final class DeviceModel
 
     private function isValidSettingValue(string $variable, string $value): bool
     {
+        if ($variable === 'NetworkConfigurationPriority') {
+            $slots = explode(',', $value);
+
+            return $slots !== ['']
+                && count($slots) === count(array_unique($slots))
+                && array_all($slots, static fn (string $slot): bool => in_array($slot, ['0', '1', '2'], true));
+        }
+
         if (in_array($variable, [
             'Interval',
             'TxEndedInterval',

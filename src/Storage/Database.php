@@ -37,6 +37,7 @@ final class Database
             self::migrateDeviceModelSettings($pdo);
             self::migrateTransactionEventOutbox($pdo);
             self::migrateResetRequests($pdo);
+            self::migrateNetworkProfiles($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -387,11 +388,24 @@ final class Database
         }
     }
 
+    private static function migrateNetworkProfiles(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS network_profile (
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                configuration_slot INTEGER NOT NULL CHECK (configuration_slot BETWEEN 0 AND 2),
+                connection_data TEXT NOT NULL,
+                PRIMARY KEY (charger_id, configuration_slot)
+            )
+            SQL);
+    }
+
     private static function migrateDeviceModelSettings(PDO $pdo): void
     {
         $schema = $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'device_model_setting'")->fetchColumn();
         if ($schema !== false && str_contains((string) $schema, "'Interval'")
-            && str_contains((string) $schema, "'SendDuringIdle'")) {
+            && str_contains((string) $schema, "'SendDuringIdle'")
+            && str_contains((string) $schema, "'NetworkConfigurationPriority'")) {
             return;
         }
 
@@ -402,7 +416,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )

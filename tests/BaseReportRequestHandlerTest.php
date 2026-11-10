@@ -55,6 +55,9 @@ it('reports controller variables for ConfigurationInventory', function (): void 
     expect(array_column(array_column($entries, 'variable'), 'name'))->not->toContain('AuthorizeRemoteStart');
     $retrySetting = array_values(array_filter($entries, static fn (array $entry): bool => ($entry['variable']['name'] ?? null) === 'MessageAttempts'))[0] ?? [];
     expect($retrySetting['variable']['instance'] ?? null)->toBe('TransactionEvent');
+    $networkPriority = array_values(array_filter($entries, static fn (array $entry): bool => ($entry['variable']['name'] ?? null) === 'NetworkConfigurationPriority'))[0] ?? [];
+    expect($networkPriority['variableAttribute'][0]['value'] ?? null)->toBe('0')
+        ->and($networkPriority['variableCharacteristics']['valuesList'] ?? null)->toBe('0,1,2');
 });
 
 it('reports current outlet availability for SummaryInventory', function (): void {

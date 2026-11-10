@@ -130,3 +130,32 @@ it('reports inoperative state through the Device Model AvailabilityState variabl
 
     expect($response['getVariableResult'][0]['attributeValue'] ?? null)->toBe('Unavailable');
 });
+
+it('accepts a unique network profile priority using supported slots', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+    );
+
+    $response = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'NetworkConfigurationPriority'],
+        'attributeType' => 'Actual',
+        'attributeValue' => '1,0',
+    ], [
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'NetworkConfigurationPriority'],
+        'attributeType' => 'Actual',
+        'attributeValue' => '1,1',
+    ]]]);
+
+    expect($response['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
+        ->and($response['setVariableResult'][1]['attributeStatus'] ?? null)->toBe('Rejected')
+        ->and((new DeviceModelSettingsRepository($database))->get($chargerId, 'NetworkConfigurationPriority'))->toBe('1,0');
+});
