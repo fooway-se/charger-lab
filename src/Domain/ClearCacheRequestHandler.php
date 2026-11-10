@@ -1,0 +1,29 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ChargerEmulator\Domain;
+
+use ChargerEmulator\Protocol\OcppCallErrorException;
+
+/**
+ * Clears the authorization cache; this station currently keeps no cached tokens.
+ */
+final class ClearCacheRequestHandler
+{
+    public function clear(array $payload): array
+    {
+        $customData = $payload['customData'] ?? null;
+        if (array_diff(array_keys($payload), ['customData']) !== []
+            || (array_key_exists('customData', $payload)
+                && (!is_array($customData)
+                    || array_diff(array_keys($customData), ['vendorId']) !== []
+                    || !is_string($customData['vendorId'] ?? null)
+                    || $customData['vendorId'] === ''
+                    || strlen($customData['vendorId']) > 255))) {
+            throw new OcppCallErrorException('FormationViolation', 'ClearCache only accepts a valid customData object.');
+        }
+
+        return ['status' => 'Accepted'];
+    }
+}
