@@ -50,6 +50,23 @@ it('persists local RFID stop state only for the matching active transaction toke
         ->and($stopped['id_token'])->toBe('TAG-1');
 });
 
+it('keeps clock-aligned samples from resetting the periodic transaction meter interval', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->markOccupied($chargerId, 1, 1, 'meter-schedule-tx');
+
+    $periodicSampleAt = '2026-11-10T10:00:00Z';
+    $sessions->recordMeterSample($chargerId, 1, 1, 'meter-schedule-tx', 100, 1, $periodicSampleAt);
+    $sessions->recordMeterSample($chargerId, 1, 1, 'meter-schedule-tx', 200, 2, null);
+
+    $session = $sessions->find($chargerId, 1, 1);
+    expect($session['meter_wh'])->toBe(200)
+        ->and($session['seq_no'])->toBe(2)
+        ->and($session['meter_updated_at'])->toBe($periodicSampleAt);
+});
+
 it('migrates active outlet sessions to allow persisted local RFID stops', function (): void {
     $directory = sys_get_temp_dir() . '/charger-local-stop-migration-' . bin2hex(random_bytes(6));
     mkdir($directory);

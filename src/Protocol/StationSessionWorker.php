@@ -10,11 +10,13 @@ use ChargerEmulator\Domain\ClearCacheRequestHandler;
 use ChargerEmulator\Domain\DataTransferRequestHandler;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\GetLocalListVersionRequestHandler;
+use ChargerEmulator\Domain\MeterMeasurands;
 use ChargerEmulator\Domain\OutletMap;
 use ChargerEmulator\Domain\RemoteStartRequestHandler;
 use ChargerEmulator\Domain\RemoteStopRequestHandler;
 use ChargerEmulator\Domain\ResetRequestHandler;
 use ChargerEmulator\Domain\SendLocalListRequestHandler;
+use ChargerEmulator\Domain\SimulatedMeter;
 use ChargerEmulator\Domain\SetNetworkProfileRequestHandler;
 use ChargerEmulator\Domain\TransactionStatusRequestHandler;
 use ChargerEmulator\Domain\TriggerMessageRequestHandler;
@@ -683,9 +685,17 @@ final class StationSessionWorker
                         }
 
                         foreach ($triggerMessage->takeMeterValueRequests() as $meterValueRequest) {
+                            $measurands = MeterMeasurands::parse(
+                                $this->deviceModelSettings->get($chargerId, 'Measurands') ?? '',
+                            ) ?? [];
                             $this->createOcppClient($chargerId)->request('MeterValues', [
                                 'evseId' => $meterValueRequest['evse_id'],
-                                'meterValue' => $this->meterValueReporter->value($meterValueRequest['meter_wh'], 'Trigger'),
+                                'meterValue' => $this->meterValueReporter->value(
+                                    $meterValueRequest['meter_wh'],
+                                    'Trigger',
+                                    measurands: $measurands,
+                                    powerW: $meterValueRequest['power_w'],
+                                ),
                             ]);
                         }
                     }
@@ -1303,8 +1313,17 @@ final class StationSessionWorker
             'transactionInfo' => $transactionInfo,
             'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
         ];
-        if ($this->deviceModelSettings->get($chargerId, 'TxUpdatedMeasurands') === 'Energy.Active.Import.Register') {
-            $event['meterValue'] = $this->meterValueReporter->value($session['meter_wh'], 'Trigger', $timestamp);
+        $measurands = MeterMeasurands::parse(
+            $this->deviceModelSettings->get($chargerId, 'TxUpdatedMeasurands') ?? '',
+        ) ?? [];
+        if ($measurands !== []) {
+            $event['meterValue'] = $this->meterValueReporter->value(
+                $session['meter_wh'],
+                'Trigger',
+                $timestamp,
+                $measurands,
+                SimulatedMeter::powerForOutlet($session),
+            );
         }
 
         $queuedEvent = $this->transactionEventDelivery->enqueueForActiveTransaction(

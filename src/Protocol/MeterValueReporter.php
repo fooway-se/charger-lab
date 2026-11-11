@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Domain\ClockAlignedMeterValueSchedule;
+use ChargerEmulator\Domain\MeterMeasurands;
+use ChargerEmulator\Domain\SimulatedMeter;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use Closure;
@@ -37,32 +39,49 @@ final class MeterValueReporter
 
     public function beginTransactionValue(int $chargerId, int $meterWh): ?array
     {
-        if ($this->settings->get($chargerId, 'TxStartedMeasurands') !== 'Energy.Active.Import.Register') {
+        $measurands = $this->configuredMeasurands($chargerId, 'TxStartedMeasurands');
+        if ($measurands === []) {
             return null;
         }
 
-        return $this->value($meterWh, 'Transaction.Begin');
+        return $this->value($meterWh, 'Transaction.Begin', measurands: $measurands);
     }
 
     public function endTransactionValue(int $chargerId, int $meterWh): ?array
     {
-        if ($this->settings->get($chargerId, 'TxEndedMeasurands') !== 'Energy.Active.Import.Register') {
+        $measurands = $this->configuredMeasurands($chargerId, 'TxEndedMeasurands');
+        if ($measurands === []) {
             return null;
         }
 
-        return $this->value($meterWh, 'Transaction.End');
+        return $this->value($meterWh, 'Transaction.End', measurands: $measurands);
     }
 
-    public function value(int $meterWh, string $context, ?string $sampledAt = null): array
+    /**
+     * @param list<string> $measurands
+     * @return list<array{timestamp:string,sampledValue:list<array<string,mixed>>}>
+     */
+    public function value(
+        int $meterWh,
+        string $context,
+        ?string $sampledAt = null,
+        array $measurands = [MeterMeasurands::ENERGY_REGISTER],
+        int $powerW = 0,
+    ): array
     {
+        $sampledValues = [];
+        foreach ($measurands as $measurand) {
+            $sampledValues[] = [
+                'value' => $measurand === MeterMeasurands::ENERGY_REGISTER ? $meterWh : $powerW,
+                'context' => $context,
+                'measurand' => $measurand,
+                'unitOfMeasure' => ['unit' => $measurand === MeterMeasurands::ENERGY_REGISTER ? 'Wh' : 'W'],
+            ];
+        }
+
         return [[
             'timestamp' => $sampledAt ?? gmdate(DATE_ATOM),
-            'sampledValue' => [[
-                'value' => $meterWh,
-                'context' => $context,
-                'measurand' => 'Energy.Active.Import.Register',
-                'unitOfMeasure' => ['unit' => 'Wh'],
-            ]],
+            'sampledValue' => $sampledValues,
         ]];
     }
 
@@ -73,10 +92,12 @@ final class MeterValueReporter
 
     public function sendPeriodic(int $chargerId): bool
     {
-        $interval = $this->meterValueInterval($chargerId, 'TxUpdatedInterval', 'TxUpdatedMeasurands');
-        if ($interval === null) {
+        $sampling = $this->meterValueSettings($chargerId, 'TxUpdatedInterval', 'TxUpdatedMeasurands');
+        if ($sampling === null) {
             return false;
         }
+        $interval = $sampling['interval'];
+        $measurands = $sampling['measurands'];
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
             if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
@@ -100,7 +121,12 @@ final class MeterValueReporter
                 'timestamp' => $sampledAt,
                 'triggerReason' => 'MeterValuePeriodic',
                 'seqNo' => $sequence,
-                'meterValue' => $this->value($meterWh, 'Sample.Periodic'),
+                'meterValue' => $this->value(
+                    $meterWh,
+                    'Sample.Periodic',
+                    measurands: $measurands,
+                    powerW: SimulatedMeter::powerForOutlet($session),
+                ),
                 'transactionInfo' => [
                     'transactionId' => $session['transaction_id'],
                     'chargingState' => 'Charging',
@@ -127,12 +153,14 @@ final class MeterValueReporter
 
     public function sendClockAligned(int $chargerId): bool
     {
-        $interval = $this->meterValueInterval($chargerId, 'Interval', 'Measurands');
-        if ($interval === null) {
+        $sampling = $this->meterValueSettings($chargerId, 'Interval', 'Measurands');
+        if ($sampling === null) {
             unset($this->alignedSchedules[$chargerId]);
 
             return false;
         }
+        $interval = $sampling['interval'];
+        $measurands = $sampling['measurands'];
 
         $now = time();
         $schedule = new ClockAlignedMeterValueSchedule();
@@ -178,7 +206,13 @@ final class MeterValueReporter
                     'timestamp' => $sampledAt,
                     'triggerReason' => 'MeterValueClock',
                     'seqNo' => $sequence,
-                    'meterValue' => $this->value($meterWh, 'Sample.Clock', $sampledAt),
+                    'meterValue' => $this->value(
+                        $meterWh,
+                        'Sample.Clock',
+                        $sampledAt,
+                        $measurands,
+                        SimulatedMeter::powerForOutlet($session),
+                    ),
                     'transactionInfo' => [
                         'transactionId' => $session['transaction_id'],
                         'chargingState' => $session['remote_start_pending'] ? 'Idle' : 'Charging',
@@ -193,7 +227,7 @@ final class MeterValueReporter
                     $session['transaction_id'],
                     $meterWh,
                     $sequence,
-                    $sampledAt,
+                    null,
                 );
                 $this->transactionEvents->deliverThrough($chargerId, $queuedEvent['id']);
             }
@@ -206,13 +240,15 @@ final class MeterValueReporter
                 continue;
             }
 
-            $metersByEvse[$evseId] = ($metersByEvse[$evseId] ?? 0) + $outlet['meter_wh'];
+            $metersByEvse[$evseId] ??= ['meter_wh' => 0, 'power_w' => 0];
+            $metersByEvse[$evseId]['meter_wh'] += $outlet['meter_wh'];
+            $metersByEvse[$evseId]['power_w'] += SimulatedMeter::powerForOutlet($outlet);
         }
 
-        foreach ($metersByEvse as $evseId => $meterWh) {
+        foreach ($metersByEvse as $evseId => $meter) {
             ($this->ocppClientFactory)($chargerId)->request('MeterValues', [
                 'evseId' => (int) $evseId,
-                'meterValue' => $this->value($meterWh, 'Sample.Clock', $sampledAt),
+                'meterValue' => $this->value($meter['meter_wh'], 'Sample.Clock', $sampledAt, $measurands, $meter['power_w']),
             ]);
         }
 
@@ -221,10 +257,12 @@ final class MeterValueReporter
 
     public function sampleTransactionEnd(int $chargerId): bool
     {
-        $interval = $this->meterValueInterval($chargerId, 'TxEndedInterval', 'TxEndedMeasurands');
-        if ($interval === null) {
+        $sampling = $this->meterValueSettings($chargerId, 'TxEndedInterval', 'TxEndedMeasurands');
+        if ($sampling === null) {
             return false;
         }
+        $interval = $sampling['interval'];
+        $measurands = $sampling['measurands'];
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
             if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
@@ -241,7 +279,13 @@ final class MeterValueReporter
 
             $sampledAt = gmdate(DATE_ATOM);
             $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
-            $meterValue = $this->value($meterWh, 'Sample.Periodic', $sampledAt)[0];
+            $meterValue = $this->value(
+                $meterWh,
+                'Sample.Periodic',
+                $sampledAt,
+                $measurands,
+                SimulatedMeter::powerForOutlet($session),
+            )[0];
             $this->outletSessions->recordTransactionEndSample(
                 $chargerId,
                 $session['evse_id'],
@@ -258,14 +302,24 @@ final class MeterValueReporter
         return false;
     }
 
-    private function meterValueInterval(int $chargerId, string $intervalVariable, string $measurandVariable): ?int
+    /** @return array{interval:int,measurands:list<string>}|null */
+    private function meterValueSettings(int $chargerId, string $intervalVariable, string $measurandVariable): ?array
     {
         $interval = $this->settings->getInteger($chargerId, $intervalVariable, 0, 1);
-        if ($interval === 0 || $this->settings->get($chargerId, $measurandVariable) !== 'Energy.Active.Import.Register') {
+        $measurands = $this->configuredMeasurands($chargerId, $measurandVariable);
+        if ($interval === 0 || $measurands === []) {
             return null;
         }
 
-        return $interval;
+        return ['interval' => $interval, 'measurands' => $measurands];
+    }
+
+    /** @return list<string> */
+    private function configuredMeasurands(int $chargerId, string $variable): array
+    {
+        $measurands = MeterMeasurands::parse($this->settings->get($chargerId, $variable) ?? '');
+
+        return $measurands ?? [];
     }
 
 }

@@ -29,7 +29,7 @@ final class TriggerMessageRequestHandler
     private array $transactionSessions = [];
 
     /**
-     * @var list<array{evse_id:int,meter_wh:int}>
+     * @var list<array{evse_id:int,meter_wh:int,power_w:int}>
      */
     private array $meterValueRequests = [];
 
@@ -110,17 +110,24 @@ final class TriggerMessageRequestHandler
         }
 
         if ($requestedMessage === 'MeterValues') {
-            if ($this->settings->get($this->chargerId, 'Measurands') !== 'Energy.Active.Import.Register') {
+            $measurands = MeterMeasurands::parse($this->settings->get($this->chargerId, 'Measurands') ?? '');
+            if ($measurands === null || $measurands === []) {
                 return $this->statusResult('Rejected');
             }
 
             $metersByEvse = [];
             foreach ($outlets as $outlet) {
                 $evseId = $outlet['evse_id'];
-                $metersByEvse[$evseId] = ($metersByEvse[$evseId] ?? 0) + $outlet['meter_wh'];
+                $metersByEvse[$evseId] ??= ['meter_wh' => 0, 'power_w' => 0];
+                $metersByEvse[$evseId]['meter_wh'] += $outlet['meter_wh'];
+                $metersByEvse[$evseId]['power_w'] += SimulatedMeter::powerForOutlet($outlet);
             }
-            foreach ($metersByEvse as $meterEvseId => $meterWh) {
-                $this->meterValueRequests[] = ['evse_id' => (int) $meterEvseId, 'meter_wh' => $meterWh];
+            foreach ($metersByEvse as $meterEvseId => $meter) {
+                $this->meterValueRequests[] = [
+                    'evse_id' => (int) $meterEvseId,
+                    'meter_wh' => $meter['meter_wh'],
+                    'power_w' => $meter['power_w'],
+                ];
             }
 
             return $this->statusResult('Accepted');

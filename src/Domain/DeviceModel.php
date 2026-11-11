@@ -32,15 +32,15 @@ final class DeviceModel
         'TxCtrlr' => ['EVConnectionTimeOut' => ['integer', 'ReadWrite', true]],
         'AlignedDataCtrlr' => [
             'Interval' => ['integer', 'ReadWrite', true],
-            'Measurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'Measurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
             'SendDuringIdle' => ['boolean', 'ReadWrite', true],
         ],
         'SampledDataCtrlr' => [
-            'TxStartedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'TxStartedMeasurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
             'TxEndedInterval' => ['integer', 'ReadWrite', true],
-            'TxEndedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'TxEndedMeasurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
             'TxUpdatedInterval' => ['integer', 'ReadWrite', true],
-            'TxUpdatedMeasurands' => ['MemberList', 'ReadWrite', true, 'Energy.Active.Import.Register'],
+            'TxUpdatedMeasurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
         ],
         'OCPPCommCtrlr' => [
             'MessageAttempts' => ['integer', 'ReadWrite', true, null, 'TransactionEvent'],
@@ -430,6 +430,6 @@ final class DeviceModel
             return true;
         }
 
-        return $value === 'Energy.Active.Import.Register';
+        return MeterMeasurands::parse($value) !== null;
     }
 }

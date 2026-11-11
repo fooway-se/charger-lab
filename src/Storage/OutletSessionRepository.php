@@ -363,11 +363,12 @@ final class OutletSessionRepository
         string $transactionId,
         int $meterWh,
         int $sequence,
-        string $sampledAt,
+        ?string $periodicSampledAt,
     ): void {
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
-            SET meter_wh = :meter_wh, seq_no = :seq_no, meter_updated_at = :sampled_at
+            SET meter_wh = :meter_wh, seq_no = :seq_no,
+                meter_updated_at = COALESCE(:periodic_sampled_at, meter_updated_at)
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Occupied' AND transaction_id = :transaction_id
             SQL);
@@ -378,7 +379,7 @@ final class OutletSessionRepository
             'transaction_id' => $transactionId,
             'meter_wh' => $meterWh,
             'seq_no' => $sequence,
-            'sampled_at' => $sampledAt,
+            'periodic_sampled_at' => $periodicSampledAt,
         ]);
         if ($statement->rowCount() !== 1) {
             throw new RuntimeException('The active outlet transaction changed before its meter sample was saved.');

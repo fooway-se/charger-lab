@@ -3,20 +3,19 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f4f7f6">
+    <meta name="theme-color" content="#c7d4cd">
     <title>Charger Lab · OCPP 2.0.1</title>
-    <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/style.css?v=2">
     <script src="/app.js" defer></script>
 </head>
 <body>
 <header class="topbar">
     <a class="brand" href="/" aria-label="Charger Lab home"><span class="brand-mark">ϟ</span><span>charger<span class="brand-light">lab</span></span></a>
-    <div class="topbar-right"><span class="profile-pill"><span class="live-dot"></span> OCPP 2.0.1 · Core</span><span class="topbar-caption">LOCAL DEVELOPER TOOL</span></div>
+    <div class="topbar-right"><span class="profile-pill"><span class="live-dot"></span> OCPP 2.0.1 · Core</span></div>
 </header>
 <main class="page-shell">
     <section class="page-heading">
-        <div><p class="eyebrow">WORKSPACE / CHARGING STATIONS</p><h1>Station simulator</h1><p class="subtitle">Bring virtual chargers online and inspect each message stream.</p></div>
-        <div class="session-label"><span class="session-icon">◉</span> PRIVATE LOCAL SESSION</div>
+        <div><h1>Station simulator</h1><p class="subtitle">Bring virtual chargers online and inspect each message stream.</p></div>
     </section>
     <div id="notice" class="notice" role="status" hidden></div>
     <nav id="screen-navigation" class="screen-navigation" aria-label="Workspace screens">
@@ -48,18 +47,15 @@
         <section class="station-column">
             <div class="section-heading"><div><span class="section-kicker">CONFIGURATION</span><h2>Charger setup <span id="charger-count" class="count-pill">00</span></h2></div><button id="add-charger" class="button button-primary" type="button">＋ Add charger</button></div>
             <div id="setup-charger-list" class="charger-list-slot"><div id="charger-list" class="charger-list"></div></div>
-            <p class="local-note"><span>ⓘ</span> Configuration and credentials stay in this local app.</p>
         </section>
     </section>
     <section id="testing-screen" class="screen-panel">
         <section class="station-column">
-            <div class="section-heading"><div><span class="section-kicker">YOUR HARDWARE</span><h2>Charging stations <span data-role="test-bench-charger-count" class="count-pill">00</span></h2></div></div>
+            <div class="section-heading"><div><h2>Charging stations <span data-role="test-bench-charger-count" class="count-pill">00</span></h2></div></div>
             <div id="test-bench-charger-list" class="charger-list-slot"></div>
-            <p class="local-note"><span>ⓘ</span> Connect, simulate vehicles, present RFID tokens, and inspect OCPP exchanges.</p>
         </section>
     </section>
     <div class="profile-note"><span class="profile-note-icon">⌘</span><p><strong>Developer testing aid</strong><br>This simulator helps you inspect CSMS behavior. It is not a certification tool.</p></div>
-    <footer class="page-footer"><span>CHARGERLAB <b>·</b> OPEN DEVELOPER TOOL</span><span>NO CLOUD ACCOUNT REQUIRED</span></footer>
 </main>
 <template id="charger-template">
     <div class="charger-workspace" data-charger-id="">

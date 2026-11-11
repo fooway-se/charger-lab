@@ -111,7 +111,24 @@ it('accepts a MeterValues trigger for a configured EVSE', function (): void {
     ]);
 
     expect($response)->toBe(['status' => 'Accepted'])
-        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 1250]]);
+        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 1250, 'power_w' => 0]]);
+});
+
+it('includes active import power in a triggered MeterValues request when configured', function (): void {
+    [, , $chargerId, $sessions, , , $handler, $settings] = createTriggerMessageHandler(1, 'independent');
+    $sessions->markOccupied($chargerId, 1, 1, 'meter-values-power-transaction');
+    $sessions->attachToken($chargerId, 1, 1, 'meter-values-power-transaction', 'POWER-TOKEN', 1);
+    $sessions->recordMeterSample($chargerId, 1, 1, 'meter-values-power-transaction', 1250, 2, gmdate(DATE_ATOM));
+    $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register,Power.Active.Import');
+
+    $response = $handler->triggerMessage(['requestedMessage' => 'MeterValues', 'evse' => ['id' => 1]]);
+
+    expect($response)->toBe(['status' => 'Accepted'])
+        ->and($handler->takeMeterValueRequests())->toBe([[
+            'evse_id' => 1,
+            'meter_wh' => 1250,
+            'power_w' => 7200,
+        ]]);
 });
 
 it('sends one current MeterValues request per EVSE when the target is absent', function (): void {
@@ -125,8 +142,8 @@ it('sends one current MeterValues request per EVSE when the target is absent', f
 
     expect($response)->toBe(['status' => 'Accepted'])
         ->and($handler->takeMeterValueRequests())->toBe([
-            ['evse_id' => 1, 'meter_wh' => 1250],
-            ['evse_id' => 2, 'meter_wh' => 2500],
+            ['evse_id' => 1, 'meter_wh' => 1250, 'power_w' => 0],
+            ['evse_id' => 2, 'meter_wh' => 2500, 'power_w' => 0],
         ]);
 });
 
@@ -150,7 +167,7 @@ it('reports the current combined meter register at the EVSE level for shared con
     $response = $handler->triggerMessage(['requestedMessage' => 'MeterValues', 'evse' => ['id' => 1, 'connectorId' => 2]]);
 
     expect($response)->toBe(['status' => 'Accepted'])
-        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 3750]]);
+        ->and($handler->takeMeterValueRequests())->toBe([['evse_id' => 1, 'meter_wh' => 3750, 'power_w' => 0]]);
 });
 
 it('accepts a Heartbeat trigger even when the CSMS includes an irrelevant EVSE', function (): void {

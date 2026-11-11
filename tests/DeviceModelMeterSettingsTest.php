@@ -77,7 +77,7 @@ it('reads and persists supported transaction meter sampling settings', function 
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
                 'variable' => ['name' => 'TxUpdatedMeasurands'],
-                'attributeValue' => 'Energy.Active.Import.Register',
+                'attributeValue' => 'Energy.Active.Import.Register,Power.Active.Import',
             ],
             [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -127,9 +127,9 @@ it('reads and persists supported transaction meter sampling settings', function 
         ],
     ]);
 
-    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register', 'Energy.Active.Import.Register', 'Energy.Active.Import.Register', '0'])
+    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register,Power.Active.Import', 'Energy.Active.Import.Register,Power.Active.Import', 'Energy.Active.Import.Register,Power.Active.Import', '0'])
         ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted', 'Accepted', 'Accepted'])
-        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register', '', '', '5']);
+        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['5', 'Energy.Active.Import.Register,Power.Active.Import', '', '', '5']);
 });
 
 it('reads and persists aligned meter value settings', function (): void {
@@ -176,7 +176,7 @@ it('reads and persists aligned meter value settings', function (): void {
             [
                 'component' => ['name' => 'AlignedDataCtrlr'],
                 'variable' => ['name' => 'Measurands'],
-                'attributeValue' => '',
+                'attributeValue' => 'Energy.Active.Import.Register,Power.Active.Import',
             ],
             [
                 'component' => ['name' => 'AlignedDataCtrlr'],
@@ -213,10 +213,10 @@ it('reads and persists aligned meter value settings', function (): void {
         ],
     ]);
 
-    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['Energy.Active.Import.Register', '0', 'false'])
+    expect(array_column($getInitial['getVariableResult'], 'attributeValue'))->toBe(['Energy.Active.Import.Register,Power.Active.Import', '0', 'false'])
         ->and(array_column($setInvalid['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected'])
         ->and(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Accepted', 'Accepted', 'Accepted'])
-        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['', '300', 'true']);
+        ->and(array_column($getUpdated['getVariableResult'], 'attributeValue'))->toBe(['Energy.Active.Import.Register,Power.Active.Import', '300', 'true']);
 });
 
 it('rejects invalid transaction meter sampling settings without changing saved values', function (): void {
@@ -270,7 +270,7 @@ it('rejects invalid transaction meter sampling settings without changing saved v
     ]);
 
     expect(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected', 'Rejected', 'Rejected'])
-        ->and(array_column($get['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register']);
+        ->and(array_column($get['getVariableResult'], 'attributeValue'))->toBe(['0', 'Energy.Active.Import.Register,Power.Active.Import']);
 });
 
 it('reads and writes transaction retry and reconnect settings on OCPPCommCtrlr', function (): void {

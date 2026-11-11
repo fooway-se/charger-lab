@@ -14,12 +14,12 @@ final class DeviceModelSettingsRepository
 {
     private const DEFAULTS = [
         'Interval' => '0',
-        'Measurands' => 'Energy.Active.Import.Register',
+        'Measurands' => 'Energy.Active.Import.Register,Power.Active.Import',
         'SendDuringIdle' => 'false',
         'TxUpdatedInterval' => '0',
-        'TxUpdatedMeasurands' => 'Energy.Active.Import.Register',
-        'TxStartedMeasurands' => 'Energy.Active.Import.Register',
-        'TxEndedMeasurands' => 'Energy.Active.Import.Register',
+        'TxUpdatedMeasurands' => 'Energy.Active.Import.Register,Power.Active.Import',
+        'TxStartedMeasurands' => 'Energy.Active.Import.Register,Power.Active.Import',
+        'TxEndedMeasurands' => 'Energy.Active.Import.Register,Power.Active.Import',
         'TxEndedInterval' => '0',
         'MessageAttemptsTransactionEvent' => '3',
         'MessageAttemptIntervalTransactionEvent' => '60',
