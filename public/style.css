@@ -39,7 +39,7 @@ body {
 .brand-light { color: #81918d; font-weight: 500; }
 .topbar-right { display: flex; align-items: center; gap: 22px; }
 .profile-pill { display: flex; align-items: center; gap: 8px; padding: 7px 11px; border-radius: 20px; background: #f2f6f5; color: #455552; font-size: 11px; font-weight: 700; }
-.live-dot, .toolbar-dot { width: 6px; height: 6px; border-radius: 50%; background: #2ca37e; box-shadow: 0 0 0 3px #def0e9; }
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: #2ca37e; box-shadow: 0 0 0 3px #def0e9; }
 .section-kicker, .device-type, .form-heading, .log-toolbar, .optional { font: 500 9px var(--mono); letter-spacing: 1px; }
 
 .page-shell { max-width: 1320px; margin: 0 auto; padding: 44px 34px 24px; }
@@ -95,7 +95,7 @@ body[data-active-screen="testing-screen"] .config-form { display: none; }
 .section-heading { min-height: 45px; display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 13px; }
 .section-kicker { display: block; margin: 0 0 4px; color: #94a09d; font-size: 8px; }
 h2 { margin: 0; font: 700 16px var(--display); letter-spacing: -.35px; }
-.count-pill { display: inline-grid; place-items: center; min-width: 22px; height: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: #e9efed; color: #698079; font: 500 9px var(--mono); vertical-align: 2px; }
+.count-pill { display: inline-grid; place-items: center; min-width: 22px; height: 18px; padding: 0 5px; margin-left: 5px; border-radius: 9px; background: #e9efed; color: #3d4c48; font: 500 9px var(--mono); vertical-align: 2px; }
 .more-mark { color: #9eaaa7; letter-spacing: 2px; font-weight: 700; }
 .text-button { padding: 4px 0; border: 0; background: transparent; color: #68837a; cursor: pointer; font: 600 10px var(--sans); }
 .text-button:hover { color: #1b725d; text-decoration: underline; }
@@ -187,8 +187,7 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
 .log-toolbar-info .count-pill { margin-left: 0; }
 .log-toolbar-actions { gap: 14px; }
 .log-toolbar-actions .text-button { padding: 0; }
-.log-footer > span:first-child { display: flex; align-items: center; gap: 8px; }
-.toolbar-dot { width: 5px; height: 5px; box-shadow: 0 0 0 2px #e1f1e9; }
+/*.log-footer > span:first-child { display: flex; align-items: center; gap: 8px; }*/
 .empty-state { min-height: 392px; display: flex; justify-content: center; align-items: center; flex-direction: column; padding: 30px; text-align: center; }
 .empty-icon { display: grid; place-items: center; width: 50px; height: 50px; margin-bottom: 14px; border: 1px solid #e7efeb; border-radius: 15px; background: #f8fbf9; color: #8aaca0; font-size: 24px; }
 .empty-state strong { color: #4c5b56; font: 700 12px var(--display); }
@@ -203,13 +202,13 @@ label small { display: block; margin-top: 5px; color: #98a39f; font-size: 9px; f
 .tag-out { color: #fff; background: #1769aa; }
 .tag-in { color: #fff; background: #087a56; }
 .tag-system { color: #a34e48; background: #fdf0ef; }
-.log-time { color: #9ba7a2; font: 400 9px var(--mono); }
+.log-time { color: #3d4c48; font: 400 9px var(--mono); }
 .message-title { display: flex; align-items: center; gap: 6px; color: #3d4c48; font: 700 11px var(--sans); }
 .message-caret { color: #9ba9a3; font-size: 12px; }
-.message-kind { margin-left: auto; color: #9aa6a1; font: 400 8px var(--mono); letter-spacing: .5px; }
+.message-kind { margin-left: auto; color: #3d4c48; font: 400 8px var(--mono); letter-spacing: .5px; }
 .log-entry pre { margin: 8px 0 0 17px; padding: 10px 12px; border: 1px solid #2e383e; border-radius: 4px; background: #171d21; color: #f3f6f4; font: 400 10px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .log-footer { min-height: 34px; display: flex; justify-content: space-between; align-items: center; padding: 0 16px; border-top: 1px solid #edf1ef; color: #9ba7a2; font: 400 8px var(--mono); letter-spacing: .4px; }
-.log-footer i { width: 5px; height: 5px; border-radius: 50%; background: #55ae84; }
+.log-footer > :last-child { margin-left: auto; }
 .profile-note { display: flex; align-items: center; gap: 11px; margin-top: 12px; padding: 12px 14px; border: 1px solid #e7eeea; border-radius: 5px; background: #f9fbfa; }
 .profile-note-icon { display: grid; place-items: center; width: 27px; height: 27px; flex: 0 0 auto; border-radius: 5px; background: #edf4f0; color: #5e8a78; font-size: 14px; }
 .profile-note p { margin: 0; color: #8b9792; font-size: 9px; line-height: 1.55; }
