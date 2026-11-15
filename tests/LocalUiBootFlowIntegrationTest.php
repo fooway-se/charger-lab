@@ -5,6 +5,7 @@ declare(strict_types=1);
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
+use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\OcppCertificateRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
@@ -3756,6 +3757,129 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
     }
 })->group('integration');
 
+it('reports a rejected TLS version after reconnecting to a secure fallback profile', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-invalid-tls-version-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $certificatePath = $directory . '/secure-csms.pem';
+    $legacyTlsPort = 0;
+    $secureMockPort = findOpenPort();
+    $appPort = findOpenPort();
+
+    $privateKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+    expect(!is_object($privateKey))->toBeFalse('Could not generate the local TLS test key.');
+    $request = openssl_csr_new(['commonName' => 'localhost'], $privateKey);
+    $certificate = openssl_csr_sign($request, null, $privateKey, 1);
+    expect(!is_object($certificate))->toBeFalse('Could not generate the local TLS test certificate.');
+    openssl_x509_export($certificate, $certificatePem);
+    openssl_pkey_export($privateKey, $privateKeyPem);
+    file_put_contents($certificatePath, $privateKeyPem . $certificatePem);
+
+    $legacyTlsPeer = startProcess([PHP_BINARY, __DIR__ . '/fixtures/websocket-peer.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'WEBSOCKET_TEST_MODE' => 'tls-version-too-low',
+    ]);
+    $secureMock = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $secureMockPort,
+        'MOCK_CSMS_TLS_CERTIFICATE' => $certificatePath,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        $legacyReady = waitForProcessOutput($legacyTlsPeer, 'READY:', 4_000);
+        expect(!preg_match('/READY:(\d+):([A-Za-z0-9+\/]+=*)/', $legacyReady, $legacyReadyMatch))->toBeFalse();
+        $legacyTlsPort = (int) $legacyReadyMatch[1];
+        $secureReady = waitForProcessOutput($secureMock, 'Mock CSMS listening', 4_000);
+        expect($secureReady)->toContain('Mock CSMS listening');
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [, $tlsSettingsHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/settings/tls",
+            'POST',
+            json_encode(['tls_server_name' => 'localhost', 'tls_ca_certificate' => $certificatePem], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($tlsSettingsHeaders[0] ?? '', '200'))->toBeFalse('The test CA should be trusted by workspace TLS settings.');
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $legacyUrl = "wss://127.0.0.1:{$legacyTlsPort}/legacy";
+        $secureUrl = "wss://127.0.0.1:{$secureMockPort}/secure";
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'InvalidTlsVersionCharger',
+            'csms_url' => $legacyUrl,
+            'vendor_name' => 'Test Vendor',
+            'model' => 'TLS Version Test Model',
+            'serial_number' => 'TLS-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        $database = new PDO('sqlite:' . $databasePath);
+        $profiles = new NetworkProfileRepository($database);
+        $profileTemplate = [
+            'ocppVersion' => 'OCPP20',
+            'ocppTransport' => 'JSON',
+            'messageTimeout' => 8,
+            'securityProfile' => 2,
+            'ocppInterface' => 'Wired0',
+        ];
+        $profiles->set($chargerId, [...$profileTemplate, 'ocppCsmsUrl' => $legacyUrl], 1);
+        $profiles->set($chargerId, [...$profileTemplate, 'ocppCsmsUrl' => $secureUrl], 2);
+        $deviceSettings = new DeviceModelSettingsRepository($database);
+        $deviceSettings->set($chargerId, 'NetworkConfigurationPriority', '1,2');
+        $deviceSettings->set($chargerId, 'NetworkProfileConnectionAttempts', '1');
+        $deviceSettings->set($chargerId, 'RetryBackOffWaitMinimum', '1');
+        $deviceSettings->set($chargerId, 'RetryBackOffRandomRange', '0');
+        expect($deviceSettings->get($chargerId, 'NetworkConfigurationPriority'))->toBe('1,2')
+            ->and($deviceSettings->get($chargerId, 'NetworkProfileConnectionAttempts'))->toBe('1')
+            ->and($profiles->prioritized($chargerId, (new ChargerRepository($database))->get($chargerId), '1,2'))->toHaveCount(2);
+        unset($database);
+
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(str_contains($bootHeaders[0] ?? '', '502'))->toBeTrue('The minimum TLS version should reject the first connection.');
+
+        $securityEventOutput = waitForProcessOutput($secureMock, '"type":"InvalidTLSVersion"', 8_000);
+        expect($securityEventOutput)->toContain('SecurityEventNotification CALL: ')
+            ->toContain('"type":"InvalidTLSVersion"');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($legacyTlsPeer);
+        stopProcess($secureMock);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $certificatePath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('reconnects to a Security Profile 2 WSS network profile after reset', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
@@ -3794,6 +3918,7 @@ it('reconnects to a Security Profile 2 WSS network profile after reset', functio
         'MOCK_CSMS_BASIC_AUTH_STATION' => 'SecurityProfileTwoCharger',
         'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'security-profile-two-secret',
         'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_SECURITY_PROFILE_DOWNGRADE' => '1',
     ]);
     $worker = null;
     $app = null;
@@ -3847,9 +3972,20 @@ it('reconnects to a Security Profile 2 WSS network profile after reset', functio
         expect($resetResponse)->toContain('"status":"Accepted"');
 
         $secureOutput = waitForProcessOutput($secureMock, '"reason":"RemoteReset"', 5_000);
+        $secureOutput .= drainProcessOutput($secureMock);
         expect($secureOutput)
             ->toContain('Connected GET /secure/SecurityProfileTwoCharger HTTP/1.1')
+            ->toContain('Security profile downgrade station response: ')
+            ->toContain('"status":"Rejected"')
             ->toContain('"reason":"RemoteReset"');
+
+        $database = new PDO('sqlite:' . $databasePath);
+        $profile = json_decode((string) $database->query(
+            "SELECT connection_data FROM network_profile WHERE charger_id = {$chargerId} AND configuration_slot = 1",
+        )->fetchColumn(), true, flags: JSON_THROW_ON_ERROR);
+        expect($profile['securityProfile'] ?? null)->toBe(2)
+            ->and($profile['ocppCsmsUrl'] ?? null)->toBe("wss://127.0.0.1:{$secureMockPort}/secure");
+        unset($database);
         waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
     } finally {
         if (is_resource($app)) {

@@ -61,6 +61,9 @@ final class StationSessionWorker
     /** @var array<int, true> */
     private array $firmwareUnavailableReported = [];
 
+    /** @var array<int, true> */
+    private array $tlsVersionSecurityEventPending = [];
+
     public function __construct(
         private readonly ChargerRepository $chargers,
         private readonly ExchangeRepository $logs,
@@ -120,6 +123,9 @@ final class StationSessionWorker
         try {
             $this->executeQueuedCommand($queuedCommand);
         } catch (Throwable $exception) {
+            if ($exception instanceof TlsVersionException) {
+                $this->tlsVersionSecurityEventPending[$chargerId] = true;
+            }
             $csmsRejectedMessage = $this->isOcppCallError($exception);
             $retryWaiting = $exception instanceof TransactionEventRetryPendingException;
             if (!$csmsRejectedMessage && !$retryWaiting && $queuedCommand['action'] !== 'BootNotification' && $hadSession) {
@@ -294,6 +300,7 @@ final class StationSessionWorker
         $activeProfile = $this->sessions[$chargerId]['network_profiles'][$this->sessions[$chargerId]['network_profile_index']];
         $this->networkProfiles->rememberSuccessful($chargerId, $profile, $username, $password);
         $this->deviceModelSettings->set($chargerId, 'ActiveNetworkProfile', (string) $this->activeNetworkProfileSlot($chargerId, $activeProfile));
+        $this->sendPendingTlsVersionSecurityEvent($chargerId);
     }
 
     private function queueDueBootRetries(): void
@@ -358,6 +365,7 @@ final class StationSessionWorker
                             $session['network_profiles'][$session['network_profile_index']],
                         ),
                     );
+                    $this->sendPendingTlsVersionSecurityEvent($chargerId);
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $session['heartbeat_interval'];
                     $this->chargers->setConnectionStatus($chargerId, 'Connected');
                     $session = $this->sessions[$chargerId];
@@ -439,6 +447,9 @@ final class StationSessionWorker
                 }
 
             } catch (Throwable $exception) {
+                if ($exception instanceof TlsVersionException) {
+                    $this->tlsVersionSecurityEventPending[$chargerId] = true;
+                }
                 $this->logs->record($chargerId, 'system', 'Session', $exception->getMessage());
                 if (!$this->isOcppCallError($exception) && !($exception instanceof TransactionEventRetryPendingException)) {
                     $this->scheduleReconnect($chargerId);
@@ -733,7 +744,13 @@ final class StationSessionWorker
             $this->resets,
             $this->deviceModelSettings,
         );
-        $networkProfile = new SetNetworkProfileRequestHandler($this->networkProfiles, $chargerId);
+        $activeSession = $this->sessions[$chargerId] ?? [];
+        $activeSecurityProfile = $activeSession['network_profiles'][$activeSession['network_profile_index']]['connectionData']['securityProfile'] ?? null;
+        $networkProfile = new SetNetworkProfileRequestHandler(
+            $this->networkProfiles,
+            $chargerId,
+            is_int($activeSecurityProfile) ? $activeSecurityProfile : null,
+        );
         $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
         $dataTransfer = new DataTransferRequestHandler();
         $customerInformation = new CustomerInformationRequestHandler($chargerId, $this->authorizationLists);
@@ -2067,6 +2084,16 @@ final class StationSessionWorker
             'type' => $type,
             'timestamp' => gmdate('Y-m-d\\TH:i:s\\Z'),
         ]);
+    }
+
+    private function sendPendingTlsVersionSecurityEvent(int $chargerId): void
+    {
+        if (!isset($this->tlsVersionSecurityEventPending[$chargerId])) {
+            return;
+        }
+
+        $this->sendSecurityEventNotification($chargerId, 'InvalidTLSVersion');
+        unset($this->tlsVersionSecurityEventPending[$chargerId]);
     }
 
     private function sendTriggeredTransactionEvent(int $chargerId, array $session): void

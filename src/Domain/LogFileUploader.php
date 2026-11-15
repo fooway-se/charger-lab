@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Domain;
 
+use ChargerEmulator\Protocol\TlsPolicy;
+
 /** Uploads station log documents to the HTTP(S) location supplied by the CSMS. */
 final class LogFileUploader implements LogUploader
 {
@@ -29,6 +31,7 @@ final class LogFileUploader implements LogUploader
                 'follow_location' => 0,
             ],
             'ssl' => [
+                'crypto_method' => TlsPolicy::clientCryptoMethod(),
                 'verify_peer' => true,
                 'verify_peer_name' => true,
             ],

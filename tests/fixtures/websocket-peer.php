@@ -15,6 +15,11 @@ if ($isTls) {
     $certificateFile = tempnam(sys_get_temp_dir(), 'websocket-peer-');
     file_put_contents($certificateFile, $privateKeyPem . $certificatePem);
     stream_context_set_option($serverContext, 'ssl', 'local_cert', $certificateFile);
+    if ($mode === 'tls-v1.2-valid') {
+        stream_context_set_option($serverContext, 'ssl', 'crypto_method', STREAM_CRYPTO_METHOD_TLSv1_2_SERVER);
+    } elseif ($mode === 'tls-version-too-low') {
+        stream_context_set_option($serverContext, 'ssl', 'crypto_method', STREAM_CRYPTO_METHOD_TLSv1_0_SERVER);
+    }
 }
 
 $server = stream_socket_server(($isTls ? 'tls' : 'tcp') . '://127.0.0.1:0', $errorNumber, $errorMessage, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $serverContext);
@@ -108,7 +113,7 @@ if ($mode === 'slow-handshake') {
 }
 
 match ($mode) {
-    'tls-valid', 'tls-invalid-certificate' => fwrite($client, "\x81\x02{}"),
+    'tls-valid', 'tls-v1.2-valid', 'tls-invalid-certificate' => fwrite($client, "\x81\x02{}"),
     'fragmented-text' => fwrite($client, "\x01\x01{\x80\x01}"),
     'ping-pong' => respondToPing($client),
     'close-after-handshake' => fwrite($client, "\x88\x02\x03\xE8"),

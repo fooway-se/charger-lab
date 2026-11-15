@@ -80,8 +80,9 @@ final class WebSocketConnection implements Connection
         $port = $parts['port'] ?? ($secure ? 443 : 80);
         $host = $parts['host'];
         $addressHost = str_contains($host, ':') ? '[' . $host . ']' : $host;
-        $address = ($secure ? 'ssl' : 'tcp') . '://' . $addressHost . ':' . $port;
+        $address = 'tcp://' . $addressHost . ':' . $port;
         $sslOptions = [
+            'crypto_method' => TlsPolicy::clientCryptoMethod(),
             'peer_name' => $tlsServerName ?? $host,
             'verify_peer' => true,
             'verify_peer_name' => true,
@@ -112,22 +113,31 @@ final class WebSocketConnection implements Connection
         }
 
         $context = stream_context_create($secure ? ['ssl' => $sslOptions] : []);
-        try {
-            $stream = @stream_socket_client($address, $errorNumber, $errorMessage, $timeoutSeconds, STREAM_CLIENT_CONNECT, $context);
-        } finally {
-            if (is_string($caFile) && is_file($caFile)) {
-                unlink($caFile);
+        $streamWarning = '';
+        set_error_handler(static function (int $severity, string $message) use (&$streamWarning): bool {
+            if (($severity & E_WARNING) !== 0) {
+                $streamWarning = $message;
+
+                return true;
             }
-        }
 
-        if (!is_resource($stream)) {
-            throw new RuntimeException("Could not connect to CSMS ({$errorMessage}).", $errorNumber);
-        }
-
-        $this->stream = $stream;
+            return false;
+        });
+        $errorNumber = 0;
+        $errorMessage = '';
         try {
+            $stream = stream_socket_client($address, $errorNumber, $errorMessage, $timeoutSeconds, STREAM_CLIENT_CONNECT, $context);
+            if (!is_resource($stream)) {
+                throw new RuntimeException("Could not connect to CSMS ({$errorMessage}).", $errorNumber);
+            }
+
+            $this->stream = $stream;
             if (!stream_set_timeout($this->stream, $timeoutSeconds)) {
                 throw new RuntimeException('Could not set the CSMS WebSocket timeout.');
+            }
+
+            if ($secure && stream_socket_enable_crypto($this->stream, true, TlsPolicy::clientCryptoMethod()) !== true) {
+                throw new RuntimeException('Could not connect to CSMS (TLS handshake failed).', $errorNumber);
             }
 
             if (!stream_set_blocking($this->stream, false)) {
@@ -138,8 +148,19 @@ final class WebSocketConnection implements Connection
             $this->readBuffer = $this->handshakeBuffer;
             $this->handshakeBuffer = '';
         } catch (Throwable $exception) {
-            fclose($this->stream);
+            if (isset($this->stream) && is_resource($this->stream)) {
+                fclose($this->stream);
+            }
+            if ($secure && TlsPolicy::isVersionNegotiationFailure($errorMessage . ' ' . $streamWarning . ' ' . $exception->getMessage())) {
+                throw new TlsVersionException('The CSMS rejected the TLS version required by OCPP 2.0.1.', $errorNumber, $exception);
+            }
+
             throw $exception;
+        } finally {
+            restore_error_handler();
+            if (is_string($caFile) && is_file($caFile)) {
+                unlink($caFile);
+            }
         }
     }
 

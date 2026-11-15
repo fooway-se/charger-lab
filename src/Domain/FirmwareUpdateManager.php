@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ChargerEmulator\Domain;
 
+use ChargerEmulator\Protocol\TlsPolicy;
 use ChargerEmulator\Storage\FirmwareUpdateRepository;
 use ChargerEmulator\Storage\OcppCertificateRepository;
 use DateTimeImmutable;
@@ -295,7 +296,11 @@ final class FirmwareUpdateManager
 
     private function downloadPackage(string $location, ?string $downloadCaPem): string
     {
-        $sslOptions = ['verify_peer' => true, 'verify_peer_name' => true];
+        $sslOptions = [
+            'crypto_method' => TlsPolicy::clientCryptoMethod(),
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+        ];
         $caPath = null;
         if (is_string($downloadCaPem) && $downloadCaPem !== '') {
             if (!str_contains($downloadCaPem, '-----BEGIN CERTIFICATE-----')

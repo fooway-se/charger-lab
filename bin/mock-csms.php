@@ -290,6 +290,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
         sendBaseReportAfterBoot($client, $call, $result, $session);
         sendBasicAuthPasswordAfterBoot($client, $call, $result);
         sendBootTriggerMessage($client, $call, $result);
+        sendSecurityProfileDowngradeAfterBoot($client, $call, $result, $session);
         sendDataTransferAfterBoot($client, $call, $result);
         sendResetAfterBoot($client, $call, $result);
         changeAvailabilityAfterBoot($client, $call, $result, $session);
@@ -365,6 +366,33 @@ function sendBasicAuthPasswordAfterBoot($client, array $call, array $result): vo
         writeFrame($client, 0x1, $setVariableCall);
         waitForStationResponse($client, $messageId, $label);
     }
+}
+
+function sendSecurityProfileDowngradeAfterBoot($client, array $call, array $result, MockCsmsSession $session): void
+{
+    if (($result['status'] ?? null) !== 'Accepted'
+        || getenv('MOCK_CSMS_SEND_SECURITY_PROFILE_DOWNGRADE') !== '1'
+        || $session->securityProfileDowngradeSent) {
+        return;
+    }
+    $session->securityProfileDowngradeSent = true;
+
+    $messageId = 'mock-csms-security-profile-downgrade-' . $call[1];
+    $payload = [
+        'configurationSlot' => 1,
+        'connectionData' => [
+            'ocppVersion' => 'OCPP20',
+            'ocppTransport' => 'JSON',
+            'ocppCsmsUrl' => 'ws://127.0.0.1/downgrade',
+            'messageTimeout' => 8,
+            'securityProfile' => 1,
+            'ocppInterface' => 'Wired0',
+        ],
+    ];
+    $downgradeCall = json_encode([2, $messageId, 'SetNetworkProfile', $payload], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    fwrite(STDOUT, 'Security profile downgrade CSMS call: ' . $downgradeCall . "\n");
+    writeFrame($client, 0x1, $downgradeCall);
+    waitForStationResponse($client, $messageId, 'Security profile downgrade station response');
 }
 
 function sendDataTransferAfterBoot($client, array $call, array $result): void
@@ -1412,6 +1440,8 @@ final class MockCsmsSession
     public bool $baseReportSent = false;
 
     public bool $diagnosticsSent = false;
+
+    public bool $securityProfileDowngradeSent = false;
 
     public int $statusNotificationCount = 0;
 

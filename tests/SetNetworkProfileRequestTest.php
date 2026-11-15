@@ -40,6 +40,23 @@ it('persists a supported OCPP 2.0.1 network profile in its configuration slot', 
         ->and($repository->get(1))->toBe($request['connectionData']);
 });
 
+it('rejects a network profile security downgrade from the active profile', function (): void {
+    $database = Database::connect(':memory:');
+    (new ChargerRepository($database))->createDefault();
+    $repository = new NetworkProfileRepository($database);
+    $secureProfile = networkProfileRequest()['connectionData'];
+    $repository->set(1, $secureProfile, 1);
+    $handler = new SetNetworkProfileRequestHandler($repository, 1, 2);
+    $downgrade = networkProfileRequest(['connectionData' => [
+        ...$secureProfile,
+        'ocppCsmsUrl' => 'ws://csms.example/ocpp',
+        'securityProfile' => 1,
+    ]]);
+
+    expect($handler->setNetworkProfile($downgrade))->toBe(['status' => 'Rejected'])
+        ->and($repository->get(1))->toBe($secureProfile);
+});
+
 it('rejects unsupported network profiles without overwriting a stored profile', function (array $connectionData): void {
     [$handler, $repository] = networkProfileHandler();
     $original = networkProfileRequest()['connectionData'];

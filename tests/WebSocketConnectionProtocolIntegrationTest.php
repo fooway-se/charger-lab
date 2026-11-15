@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use ChargerEmulator\Protocol\OcppProtocolException;
+use ChargerEmulator\Protocol\TlsVersionException;
 use ChargerEmulator\Protocol\WebSocketConnection;
 use ChargerEmulator\Domain\CertificateManagementManager;
 use ChargerEmulator\Storage\ChargerRepository;
@@ -125,6 +126,34 @@ it('completes a WSS handshake with a trusted custom CA', function (): void {
         );
 
         expect($connection->receive())->toBe('{}');
+    } finally {
+        stopWebSocketProtocolPeer($peer);
+    }
+})->group('integration');
+
+it('completes a WSS handshake with TLS 1.2', function (): void {
+    $peer = startWebSocketProtocolPeer('tls-v1.2-valid');
+
+    try {
+        $connection = new WebSocketConnection(
+            "wss://127.0.0.1:{$peer[0]}/",
+            timeoutSeconds: 2,
+            tlsServerName: 'localhost',
+            tlsCaCertificatePem: $peer[3],
+        );
+
+        expect($connection->receive())->toBe('{}');
+    } finally {
+        stopWebSocketProtocolPeer($peer);
+    }
+})->group('integration');
+
+it('identifies a CSMS that rejects the minimum TLS version', function (): void {
+    $peer = startWebSocketProtocolPeer('tls-version-too-low');
+
+    try {
+        expect(fn () => new WebSocketConnection("wss://127.0.0.1:{$peer[0]}/", timeoutSeconds: 2))
+            ->toThrow(TlsVersionException::class, 'TLS version');
     } finally {
         stopWebSocketProtocolPeer($peer);
     }

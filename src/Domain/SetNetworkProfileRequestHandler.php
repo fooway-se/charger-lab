@@ -14,6 +14,7 @@ final class SetNetworkProfileRequestHandler
     public function __construct(
         private readonly NetworkProfileRepository $profiles,
         private readonly int $chargerId = 1,
+        private readonly ?int $activeSecurityProfile = null,
     ) {
     }
 
@@ -22,6 +23,10 @@ final class SetNetworkProfileRequestHandler
         $slot = $payload['configurationSlot'] ?? null;
         $profile = $payload['connectionData'] ?? null;
         if (!is_int($slot) || $slot < 0 || $slot > 2 || !is_array($profile) || !$this->supports($profile)) {
+            return ['status' => 'Rejected'];
+        }
+        if ($this->activeSecurityProfile !== null
+            && $profile['securityProfile'] < $this->activeSecurityProfile) {
             return ['status' => 'Rejected'];
         }
 
