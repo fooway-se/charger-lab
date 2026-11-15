@@ -608,10 +608,15 @@ function triggerTransactionEventAfterStart($client, string $payload, array $call
 
 function changeAvailabilityAfterBoot($client, array $call, array $result, MockCsmsSession $session): void
 {
+    $availabilitySentPath = getenv('MOCK_CSMS_CHANGE_AVAILABILITY_SENT_PATH') ?: '';
     if (($result['status'] ?? null) === 'Accepted'
         && !$session->changeAvailabilitySent
+        && ($availabilitySentPath === '' || !is_file($availabilitySentPath))
         && getenv('MOCK_CSMS_SEND_CHANGE_AVAILABILITY') === '1') {
         $session->changeAvailabilitySent = true;
+        if ($availabilitySentPath !== '') {
+            file_put_contents($availabilitySentPath, 'sent', LOCK_EX);
+        }
         $changeAvailabilityCallId = 'mock-csms-change-availability-' . $call[1];
         $changeAvailabilityCall = json_encode([2, $changeAvailabilityCallId, 'ChangeAvailability', [
             'evse' => ['id' => 1],
@@ -639,6 +644,13 @@ function changeAvailabilityAfterBoot($client, array $call, array $result, MockCs
             } elseif (($stationMessage[0] ?? null) === 2) {
                 respondToStationCall($client, $stationMessage);
             }
+        }
+
+        $resetSentPath = getenv('MOCK_CSMS_RESET_AFTER_CHANGE_SENT_PATH') ?: '';
+        if (getenv('MOCK_CSMS_RESET_AFTER_CHANGE_AVAILABILITY') === '1'
+            && ($resetSentPath === '' || !is_file($resetSentPath))) {
+            markResetSent($resetSentPath);
+            sendResetCall($client, 'mock-csms-reset-after-availability-' . $call[1], getenv('MOCK_CSMS_RESET_TYPE') ?: 'Immediate');
         }
     }
 }
@@ -855,10 +867,11 @@ function sendAvailabilityChangeAfterRemoteStart($client, string $bootCallId): vo
     }
 
     $messageId = 'mock-csms-pending-availability-' . $bootCallId;
-    $call = json_encode([2, $messageId, 'ChangeAvailability', [
-        'evse' => ['id' => 1],
-        'operationalStatus' => 'Inoperative',
-    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    $request = ['operationalStatus' => 'Inoperative'];
+    if (getenv('MOCK_CSMS_CHANGE_AVAILABILITY_STATION') !== '1') {
+        $request['evse'] = ['id' => 1];
+    }
+    $call = json_encode([2, $messageId, 'ChangeAvailability', $request], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     writeFrame($client, 0x1, $call);
     waitForStationResponse($client, $messageId, 'ChangeAvailability station response');
 }

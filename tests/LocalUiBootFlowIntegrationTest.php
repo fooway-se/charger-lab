@@ -2123,10 +2123,10 @@ it('ends a remote-start transaction when the CSMS stops it before vehicle connec
     }
 })->group('integration');
 
-it('applies CSMS ChangeAvailability and reports the connector status', function (): void {
+it('reports idle EVSEs unavailable while a station-wide change is scheduled for an active transaction', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];
-    $directory = sys_get_temp_dir() . '/charger-change-availability-' . bin2hex(random_bytes(6));
+    $directory = sys_get_temp_dir() . '/charger-station-availability-active-' . bin2hex(random_bytes(6));
     mkdir($directory, 0775, true);
     $databasePath = $directory . '/emulator.sqlite';
     $mockCsmsPort = findOpenPort();
@@ -2135,7 +2135,123 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
         'PATH' => (string) getenv('PATH'),
         'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
         'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_SEND_REMOTE_START' => '1',
+        'MOCK_CSMS_SEND_CHANGE_AFTER_REMOTE_START' => '1',
+        'MOCK_CSMS_CHANGE_AVAILABILITY_STATION' => '1',
+        'MOCK_CSMS_REMOTE_STOP_BEFORE_PLUG' => '1',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($mockCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'StationAvailabilityActiveCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Test Model',
+            'serial_number' => 'STATION-AVAILABILITY-001',
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ];
+        [, $saveHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should boot.');
+
+        $availabilityOutput = waitForProcessOutput($mockCsms, 'RemoteStop TransactionEvent: ', 10_000);
+        [$finalStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $finalState = is_string($finalStateBody) ? json_decode($finalStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $outlets = $finalState['chargers'][0]['outlets'] ?? [];
+        $database = new PDO('sqlite:' . $databasePath);
+        $messageRows = $database->query(
+            "SELECT id, action, message FROM exchange_log WHERE charger_id = {$chargerId} AND direction = 'outgoing' ORDER BY id",
+        )->fetchAll(PDO::FETCH_ASSOC);
+        $idleEvseStatusId = null;
+        $endedTransactionId = null;
+        foreach ($messageRows as $messageRow) {
+            $call = json_decode($messageRow['message'], true, flags: JSON_THROW_ON_ERROR);
+            if ($messageRow['action'] === 'StatusNotification'
+                && ($call[3]['connectorStatus'] ?? null) === 'Unavailable'
+                && ($call[3]['evseId'] ?? null) === 2
+                && ($call[3]['connectorId'] ?? null) === 1) {
+                $idleEvseStatusId = (int) $messageRow['id'];
+            }
+            if ($messageRow['action'] === 'TransactionEvent'
+                && ($call[3]['eventType'] ?? null) === 'Ended') {
+                $endedTransactionId = (int) $messageRow['id'];
+            }
+        }
+        unset($database);
+
+        expect($availabilityOutput)->toContain('ChangeAvailability station response: ')
+            ->toContain('"status":"Scheduled"')
+            ->and($idleEvseStatusId)->toBeInt()
+            ->and($endedTransactionId)->toBeInt()
+            ->and($idleEvseStatusId)->toBeLessThan($endedTransactionId)
+            ->and($outlets[0]['connector_status'] ?? null)->toBe('Unavailable')
+            ->and($outlets[1]['connector_status'] ?? null)->toBe('Unavailable');
+    } finally {
+        foreach ([$worker, $app, $mockCsms] as $process) {
+            if (is_resource($process)) {
+                stopProcess($process);
+            }
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+})->group('integration');
+
+it('applies CSMS ChangeAvailability and reports the connector status', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-change-availability-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $availabilitySentPath = $directory . '/availability-sent';
+    $resetSentPath = $directory . '/reset-sent';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
         'MOCK_CSMS_SEND_CHANGE_AVAILABILITY' => '1',
+        'MOCK_CSMS_CHANGE_AVAILABILITY_SENT_PATH' => $availabilitySentPath,
+        'MOCK_CSMS_RESET_AFTER_CHANGE_AVAILABILITY' => '1',
+        'MOCK_CSMS_RESET_AFTER_CHANGE_SENT_PATH' => $resetSentPath,
     ]);
     $worker = null;
     $app = null;
@@ -2186,6 +2302,52 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
         $updatedState = is_string($updatedStateBody) ? json_decode($updatedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
         expect($updatedState['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Unavailable');
 
+        $resetOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($resetOutput, 'Reset station response: ')) {
+            $resetOutput .= waitForProcessOutput($mockCsms, 'Reset station response: ', 5_000);
+        }
+        expect($resetOutput)->toContain('"status":"Accepted"');
+        if (!str_contains($resetOutput, '"reason":"RemoteReset"')) {
+            $resetOutput .= waitForProcessOutput($mockCsms, '"reason":"RemoteReset"', 5_000);
+        }
+        $rebootStatusReported = false;
+        $rebootStatuses = [];
+        $secondBoot = [];
+        $bootRows = [];
+        $deadline = microtime(true) + 5;
+        do {
+            $database = new PDO('sqlite:' . $databasePath);
+            $bootRows = $database->query(
+                "SELECT id, message FROM exchange_log WHERE charger_id = {$chargerId} AND action = 'BootNotification' AND direction = 'outgoing' ORDER BY id",
+            )->fetchAll(PDO::FETCH_ASSOC);
+            if (count($bootRows) >= 2) {
+                $secondBoot = json_decode($bootRows[1]['message'] ?? 'null', true, flags: JSON_THROW_ON_ERROR);
+                $postRebootStatuses = $database->prepare(
+                    "SELECT message FROM exchange_log WHERE charger_id = :charger_id AND action = 'StatusNotification' AND direction = 'outgoing' AND id > :boot_id ORDER BY id",
+                );
+                $postRebootStatuses->execute(['charger_id' => $chargerId, 'boot_id' => (int) $bootRows[1]['id']]);
+                $rebootStatuses = array_map(
+                    static fn (string $message): array => json_decode($message, true, flags: JSON_THROW_ON_ERROR),
+                    $postRebootStatuses->fetchAll(PDO::FETCH_COLUMN),
+                );
+                $rebootStatusReported = array_any($rebootStatuses, static fn (array $call): bool =>
+                    ($call[3]['connectorStatus'] ?? null) === 'Unavailable'
+                    && ($call[3]['evseId'] ?? null) === 1
+                    && ($call[3]['connectorId'] ?? null) === 1);
+            }
+            unset($database);
+            if (!$rebootStatusReported) {
+                usleep(20_000);
+            }
+        } while (!$rebootStatusReported && microtime(true) < $deadline);
+        [$rebootedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $rebootedState = is_string($rebootedStateBody) ? json_decode($rebootedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($resetOutput)->toContain('RemoteReset')
+            ->and($rebootStatusReported)->toBeTrue()
+            ->and(count($bootRows))->toBe(2)
+            ->and($secondBoot[3]['reason'] ?? null)->toBe('RemoteReset')
+            ->and($rebootedState['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Unavailable');
+
         [, $plugHeaders] = request(
             "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
             'POST',
@@ -2201,7 +2363,7 @@ it('applies CSMS ChangeAvailability and reports the connector status', function 
             stopProcess($worker);
         }
         stopProcess($mockCsms);
-        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $availabilitySentPath, $resetSentPath] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

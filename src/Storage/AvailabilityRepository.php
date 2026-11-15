@@ -42,7 +42,11 @@ final class AvailabilityRepository
         $existingStatus = $this->operationalStatus($chargerId, $scope, $evseId, $connectorId);
         if ($busy && $existingStatus !== $operationalStatus) {
             $this->saveStatus($chargerId, $scope, $evseId, $connectorId, $existingStatus, $operationalStatus);
-            return ['status' => 'Scheduled', 'changes' => []];
+
+            return [
+                'status' => 'Scheduled',
+                'changes' => $this->statusChanges($chargerId, $outlets, $before),
+            ];
         }
 
         $this->saveStatus($chargerId, $scope, $evseId, $connectorId, $operationalStatus, null);
@@ -61,6 +65,11 @@ final class AvailabilityRepository
             ['connector', $evseId, $connectorId],
         ] as [$scope, $scopeEvseId, $scopeConnectorId]) {
             if ($this->operationalStatus($chargerId, $scope, $scopeEvseId, $scopeConnectorId) === 'Inoperative') {
+                return 'Unavailable';
+            }
+            if ($scope === 'station'
+                && $this->pendingStatus($chargerId, $scope, $scopeEvseId, $scopeConnectorId) === 'Inoperative'
+                && $connectorStatus !== 'Occupied') {
                 return 'Unavailable';
             }
         }
@@ -241,6 +250,23 @@ final class AvailabilityRepository
         $status = $statement->fetchColumn();
 
         return is_string($status) ? $status : 'Operative';
+    }
+
+    private function pendingStatus(int $chargerId, string $scope, int $evseId, int $connectorId): ?string
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            SELECT pending_status FROM availability_state
+            WHERE charger_id = :charger_id AND scope = :scope AND evse_id = :evse_id AND connector_id = :connector_id
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'scope' => $scope,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+        ]);
+        $status = $statement->fetchColumn();
+
+        return is_string($status) ? $status : null;
     }
 
     private function saveStatus(
