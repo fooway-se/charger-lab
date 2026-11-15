@@ -39,6 +39,8 @@ final class Database
             self::migrateResetRequests($pdo);
             self::migrateNetworkProfiles($pdo);
             self::migrateLocalAuthorizationList($pdo);
+            self::migrateFirmwareState($pdo);
+            self::migrateOcppCertificates($pdo);
             $pdo->exec('CREATE INDEX IF NOT EXISTS exchange_log_charger_id ON exchange_log (charger_id, id)');
             $pdo->commit();
         } catch (\Throwable $exception) {
@@ -414,6 +416,46 @@ final class Database
                 charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
                 version_number INTEGER NOT NULL CHECK (version_number > 0),
                 entries TEXT NOT NULL
+            )
+            SQL);
+    }
+
+    private static function migrateFirmwareState(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS firmware_state (
+                charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
+                firmware_version TEXT NOT NULL DEFAULT '1.0.0',
+                request_id INTEGER,
+                firmware_request TEXT,
+                state TEXT,
+                retrieve_at INTEGER,
+                install_at INTEGER,
+                next_action_at INTEGER,
+                retries_left INTEGER NOT NULL DEFAULT 0 CHECK (retries_left >= 0),
+                retry_interval INTEGER NOT NULL DEFAULT 60 CHECK (retry_interval >= 0),
+                download_attempts INTEGER NOT NULL DEFAULT 0 CHECK (download_attempts >= 0),
+                package_path TEXT,
+                package_sha256 TEXT,
+                package_size INTEGER,
+                simulated_version TEXT,
+                last_error TEXT,
+                updated_at TEXT NOT NULL
+            )
+            SQL);
+    }
+
+    private static function migrateOcppCertificates(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS ocpp_certificate (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                certificate_type TEXT NOT NULL,
+                certificate_pem TEXT NOT NULL,
+                fingerprint_sha256 TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (charger_id, certificate_type, fingerprint_sha256)
             )
             SQL);
     }

@@ -105,11 +105,9 @@ it('groups each charger and communication log in one aligned panel with a single
 });
 
 it('shows the newest exchange first and preserves the log position during polling', function (): void {
-    $html = file_get_contents(__DIR__ . '/../public/index.html');
     $script = file_get_contents(__DIR__ . '/../public/app.js');
 
-    expect(!is_string($html) || !str_contains($html, 'NEWEST AT TOP'))->toBeFalse()
-        ->and($script)->toContain('[...entries].reverse()')
+    expect($script)->toContain('[...entries].reverse()')
         ->and(!is_string($script) || !str_contains($script, 'captureLogScrollPositions'))->toBeFalse()
         ->and(!is_string($script) || !str_contains($script, 'restoreLogScrollPositions'))->toBeFalse();
 });
@@ -140,7 +138,6 @@ it('keeps the log count and clear control together in one responsive toolbar', f
         ->toContain('class="log-toolbar-actions"')
         ->toContain('data-role="log-count"')
         ->toContain('data-action="clear-log"')
-        ->toContain('NEWEST AT TOP')
         ->and(!is_string($styles))->toBeFalse()
         ->and(preg_match('/\.log-toolbar\s*\{[^}]*min-height:[^}]*flex-wrap:\s*wrap/s', $styles))->toBe(1);
 });

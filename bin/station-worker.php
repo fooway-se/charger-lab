@@ -18,11 +18,24 @@ use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\LocalAuthorizationListRepository;
+use ChargerEmulator\Storage\FirmwareUpdateRepository;
+use ChargerEmulator\Domain\FirmwareUpdateManager;
+use ChargerEmulator\Domain\CertificateManagementManager;
+use ChargerEmulator\Storage\OcppCertificateRepository;
 
 require __DIR__ . '/../src/autoload.php';
 
-$database = Database::connect(getenv('DATA_PATH') ?: dirname(__DIR__) . '/data/emulator.sqlite');
+$dataPath = getenv('DATA_PATH') ?: dirname(__DIR__) . '/data/emulator.sqlite';
+$database = Database::connect($dataPath);
 $outletSessions = new OutletSessionRepository($database);
+$certificateStore = new OcppCertificateRepository($database);
+$firmwareUpdates = new FirmwareUpdateManager(
+    new FirmwareUpdateRepository($database),
+    dirname($dataPath) . '/firmware',
+    getenv('FIRMWARE_SIGNING_ROOTS_PATH') ?: dirname($dataPath) . '/firmware-signing-roots.pem',
+    $certificateStore,
+);
+$certificateManagement = new CertificateManagementManager($certificateStore);
 $worker = new StationSessionWorker(
     new ChargerRepository($database),
     new ExchangeRepository($database),
@@ -35,5 +48,7 @@ $worker = new StationSessionWorker(
     new WorkspaceSettingsRepository($database),
     new NetworkProfileRepository($database),
     new LocalAuthorizationListRepository($database),
+    $firmwareUpdates,
+    $certificateManagement,
 );
 $worker->run();
