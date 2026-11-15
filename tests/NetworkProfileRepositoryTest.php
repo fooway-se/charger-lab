@@ -82,3 +82,20 @@ it('persists the last successfully used profile and credentials', function (): v
         'password' => 'station-password',
     ]);
 });
+
+it('returns the installed CSMS trust roots as a PEM bundle', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $certificates = new ChargerEmulator\Storage\OcppCertificateRepository($database);
+    $firstRoot = "-----BEGIN CERTIFICATE-----\nfirst-root\n-----END CERTIFICATE-----";
+    $secondRoot = "-----BEGIN CERTIFICATE-----\nsecond-root\n-----END CERTIFICATE-----";
+    $certificates->install($chargerId, 'CSMSRootCertificate', $firstRoot, 'first');
+    $certificates->install($chargerId, 'CSMSRootCertificate', $secondRoot, 'second');
+    $certificates->install($chargerId, 'ManufacturerRootCertificate', 'manufacturer-root', 'manufacturer');
+
+    $manager = new ChargerEmulator\Domain\CertificateManagementManager($certificates);
+
+    expect($certificates->csmsRootBundle($chargerId))->toBe($firstRoot . "\n" . $secondRoot)
+        ->and($manager->csmsTlsTrustBundle($chargerId, 'workspace-root'))->toBe('workspace-root' . "\n" . $firstRoot . "\n" . $secondRoot)
+        ->and($manager->csmsTlsTrustBundle($chargerId, ''))->toBe($firstRoot . "\n" . $secondRoot);
+});

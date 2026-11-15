@@ -6,6 +6,7 @@ namespace ChargerEmulator\Domain;
 
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
+use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use Closure;
 
@@ -100,6 +101,8 @@ final class DeviceModel
         private readonly AvailabilityRepository $availability,
         private readonly ?Closure $basicAuthPasswordWriter = null,
         private readonly ?Closure $runtimeVariableReader = null,
+        private readonly ?NetworkProfileRepository $networkProfiles = null,
+        private readonly ?Closure $networkPriorityValidator = null,
     ) {
     }
 
@@ -265,7 +268,8 @@ final class DeviceModel
                 if (is_string($newAttributeValue)
                     && ($isBasicAuthPassword
                         ? $this->isValidBasicAuthPassword($newAttributeValue) && $this->basicAuthPasswordWriter !== null
-                        : $this->isValidSettingValue($settingName, $newAttributeValue))) {
+                        : $this->isValidSettingValue($settingName, $newAttributeValue)
+                            && ($settingName !== 'NetworkConfigurationPriority' || $this->isValidNetworkPriority($newAttributeValue)))) {
                     if ($isBasicAuthPassword) {
                         ($this->basicAuthPasswordWriter)($newAttributeValue);
                     } else {
@@ -627,5 +631,16 @@ final class DeviceModel
         }
 
         return MeterMeasurands::parse($value) !== null;
+    }
+
+    private function isValidNetworkPriority(string $value): bool
+    {
+        $slots = array_map('intval', explode(',', $value));
+        if ($this->networkProfiles !== null
+            && array_any($slots, fn (int $slot): bool => !$this->networkProfiles->hasConfiguredSlot($this->chargerId, $slot))) {
+            return false;
+        }
+
+        return $this->networkPriorityValidator === null || ($this->networkPriorityValidator)($value) === true;
     }
 }

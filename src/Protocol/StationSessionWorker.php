@@ -240,12 +240,13 @@ final class StationSessionWorker
         $password = $profileEntry['password'];
         $connectionUrl = $session['url'];
         $tlsSettings = $this->workspaceSettings->getTlsSettings();
+        $tlsCaCertificate = $this->tlsTrustBundle($chargerId, $tlsSettings['tls_ca_certificate']);
         if ($session !== null
             && $session['url'] === $connectionUrl
             && $session['username'] === $username
             && $session['password'] === $password
             && $session['tls_server_name'] === $tlsSettings['tls_server_name']
-            && $session['tls_ca_certificate'] === $tlsSettings['tls_ca_certificate']
+            && $session['tls_ca_certificate'] === ($tlsCaCertificate ?? '')
             && $session['connection'] !== null) {
             return;
         }
@@ -262,7 +263,7 @@ final class StationSessionWorker
             'username' => $username,
             'password' => $password,
             'tls_server_name' => $tlsSettings['tls_server_name'],
-            'tls_ca_certificate' => $tlsSettings['tls_ca_certificate'],
+            'tls_ca_certificate' => $tlsCaCertificate ?? '',
             'heartbeat_interval' => 300,
             'next_heartbeat_at' => null,
             'boot_payload' => [],
@@ -279,7 +280,7 @@ final class StationSessionWorker
             username: $username,
             password: $password,
             tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
-            tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
+            tlsCaCertificatePem: $tlsCaCertificate,
         );
         $activeProfile = $this->sessions[$chargerId]['network_profiles'][$this->sessions[$chargerId]['network_profile_index']];
         $this->networkProfiles->rememberSuccessful($chargerId, $profile, $username, $password);
@@ -323,8 +324,9 @@ final class StationSessionWorker
                         return true;
                     }
                     $tlsSettings = $this->workspaceSettings->getTlsSettings();
+                    $tlsCaCertificate = $this->tlsTrustBundle($chargerId, $tlsSettings['tls_ca_certificate']);
                     $this->sessions[$chargerId]['tls_server_name'] = $tlsSettings['tls_server_name'];
-                    $this->sessions[$chargerId]['tls_ca_certificate'] = $tlsSettings['tls_ca_certificate'];
+                    $this->sessions[$chargerId]['tls_ca_certificate'] = $tlsCaCertificate ?? '';
                     $this->meterValueReporter->resetSchedule($chargerId);
                     $this->sessions[$chargerId]['connection'] = new WebSocketConnection(
                         $session['url'],
@@ -332,7 +334,7 @@ final class StationSessionWorker
                         username: $session['username'],
                         password: $session['password'],
                         tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
-                        tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
+                        tlsCaCertificatePem: $tlsCaCertificate,
                     );
                     $this->sessions[$chargerId]['reconnect_attempt'] = 0;
                     $this->sessions[$chargerId]['next_reconnect_at'] = null;
@@ -693,6 +695,8 @@ final class StationSessionWorker
             $this->availability,
             fn (string $password): mixed => $this->chargers->setCsmsPassword($chargerId, $password),
             fn (array $component, array $variable): ?string => $this->runtimeDeviceModelVariableValue($chargerId, $component, $variable),
+            $this->networkProfiles,
+            fn (string $priority): bool => $this->canApplyNetworkConfigurationPriority($chargerId, $priority),
         );
         $baseReport = new BaseReportRequestHandler($deviceModel);
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
@@ -960,6 +964,50 @@ final class StationSessionWorker
         }
 
         return null;
+    }
+
+    private function canApplyNetworkConfigurationPriority(int $chargerId, string $priority): bool
+    {
+        $currentSecurityProfile = (int) ($this->runtimeDeviceModelVariableValue(
+            $chargerId,
+            ['name' => 'SecurityCtrlr'],
+            ['name' => 'SecurityProfile'],
+        ) ?? '1');
+        $charger = $this->chargers->get($chargerId);
+        if ($charger === null) {
+            return false;
+        }
+
+        foreach (explode(',', $priority) as $slotValue) {
+            $slot = (int) $slotValue;
+            $profile = $this->networkProfiles->get($chargerId, $slot);
+            $securityProfile = is_int($profile['securityProfile'] ?? null)
+                ? $profile['securityProfile']
+                : ($slot === 0 && str_starts_with((string) ($charger['csms_url'] ?? ''), 'wss://') ? 2 : 1);
+            if ($securityProfile < $currentSecurityProfile || $securityProfile > 2) {
+                return false;
+            }
+            if ($securityProfile > $currentSecurityProfile
+                && $this->tlsTrustBundle(
+                    $chargerId,
+                    $this->workspaceSettings->getTlsSettings()['tls_ca_certificate'],
+                ) === null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function tlsTrustBundle(int $chargerId, string $workspaceCaCertificate): ?string
+    {
+        if ($this->certificateManagement !== null) {
+            return $this->certificateManagement->csmsTlsTrustBundle($chargerId, $workspaceCaCertificate);
+        }
+
+        $workspaceCaCertificate = trim($workspaceCaCertificate);
+
+        return $workspaceCaCertificate === '' ? null : $workspaceCaCertificate;
     }
 
     private function reportAvailableOutlets(int $chargerId, array $charger): void

@@ -41,6 +41,13 @@ final class NetworkProfileRepository
         return $connectionData === false ? null : json_decode($connectionData, true, flags: JSON_THROW_ON_ERROR);
     }
 
+    public function hasConfiguredSlot(int $chargerId, int $configurationSlot): bool
+    {
+        // Slot zero is backed by the emulator's existing connection settings unless
+        // the CSMS has explicitly provisioned a profile in that slot.
+        return $configurationSlot === 0 || $this->get($chargerId, $configurationSlot) !== null;
+    }
+
     public function prioritized(int $chargerId, array $charger, string $priority): array
     {
         $profiles = [];

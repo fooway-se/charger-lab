@@ -141,6 +141,21 @@ final class CertificateManagementManager
         return $this->certificates->manufacturerRootBundle($chargerId);
     }
 
+    public function csmsRootBundle(int $chargerId): string
+    {
+        return $this->certificates->csmsRootBundle($chargerId);
+    }
+
+    public function csmsTlsTrustBundle(int $chargerId, string $configuredRoots): ?string
+    {
+        $bundles = array_filter([
+            trim($configuredRoots),
+            trim($this->csmsRootBundle($chargerId)),
+        ], static fn (string $bundle): bool => $bundle !== '');
+
+        return $bundles === [] ? null : implode("\n", $bundles);
+    }
+
     /** @return array{pem: string, der: string}|null */
     private function parseRootCertificate(string $certificate): ?array
     {

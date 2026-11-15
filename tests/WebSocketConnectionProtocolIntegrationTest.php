@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 use ChargerEmulator\Protocol\OcppProtocolException;
 use ChargerEmulator\Protocol\WebSocketConnection;
+use ChargerEmulator\Domain\CertificateManagementManager;
+use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\OcppCertificateRepository;
 
 function startWebSocketProtocolPeer(string $mode): array
 {
@@ -118,6 +122,29 @@ it('completes a WSS handshake with a trusted custom CA', function (): void {
             timeoutSeconds: 2,
             tlsServerName: 'localhost',
             tlsCaCertificatePem: $peer[3],
+        );
+
+        expect($connection->receive())->toBe('{}');
+    } finally {
+        stopWebSocketProtocolPeer($peer);
+    }
+})->group('integration');
+
+it('trusts a CSMS root certificate installed in the OCPP certificate store', function (): void {
+    $peer = startWebSocketProtocolPeer('tls-valid');
+
+    try {
+        $database = Database::connect(':memory:');
+        $chargerId = (new ChargerRepository($database))->createDefault();
+        $certificates = new OcppCertificateRepository($database);
+        $certificates->install($chargerId, 'CSMSRootCertificate', $peer[3], hash('sha256', $peer[3]));
+        $certificateManagement = new CertificateManagementManager($certificates);
+        $connection = new WebSocketConnection(
+            "wss://127.0.0.1:{$peer[0]}/",
+            timeoutSeconds: 2,
+            tlsServerName: 'localhost',
+            tlsCaCertificatePem: $certificateManagement->csmsTlsTrustBundle($chargerId, '')
+                ?? throw new RuntimeException('Installed CSMS root was not available to TLS.'),
         );
 
         expect($connection->receive())->toBe('{}');

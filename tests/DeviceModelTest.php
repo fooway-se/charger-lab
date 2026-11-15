@@ -8,6 +8,7 @@ use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
+use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
 
 it('reports supported device model variables and current outlet state', function (): void {
@@ -193,11 +194,21 @@ it('accepts a unique network profile priority using supported slots', function (
     $chargerId = (new ChargerRepository($database))->createDefault();
     $outletSessions = new OutletSessionRepository($database);
     $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $networkProfiles = new NetworkProfileRepository($database);
+    $networkProfiles->set($chargerId, [
+        'ocppVersion' => 'OCPP20',
+        'ocppTransport' => 'JSON',
+        'ocppCsmsUrl' => 'ws://backup.example/ocpp',
+        'messageTimeout' => 30,
+        'securityProfile' => 1,
+        'ocppInterface' => 'Wired0',
+    ], 1);
     $deviceModel = new DeviceModel(
         $outletSessions,
         new DeviceModelSettingsRepository($database),
         $chargerId,
         new AvailabilityRepository($database),
+        networkProfiles: $networkProfiles,
     );
 
     $response = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
@@ -215,6 +226,64 @@ it('accepts a unique network profile priority using supported slots', function (
     expect($response['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
         ->and($response['setVariableResult'][1]['attributeStatus'] ?? null)->toBe('Rejected')
         ->and((new DeviceModelSettingsRepository($database))->get($chargerId, 'NetworkConfigurationPriority'))->toBe('1,0');
+});
+
+it('rejects a network priority that references a profile slot without a valid configuration', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+        networkProfiles: new NetworkProfileRepository($database),
+    );
+
+    $response = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'NetworkConfigurationPriority'],
+        'attributeType' => 'Actual',
+        'attributeValue' => '2,0',
+    ]]]);
+
+    expect($response['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected')
+        ->and((new DeviceModelSettingsRepository($database))->get($chargerId, 'NetworkConfigurationPriority'))->toBe('0');
+});
+
+it('rejects a security profile upgrade when the required CSMS trust root is unavailable', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $networkProfiles = new NetworkProfileRepository($database);
+    $networkProfiles->set($chargerId, [
+        'ocppVersion' => 'OCPP20',
+        'ocppTransport' => 'JSON',
+        'ocppCsmsUrl' => 'wss://secure.example/ocpp',
+        'messageTimeout' => 30,
+        'securityProfile' => 2,
+        'ocppInterface' => 'Wired0',
+    ], 1);
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+        networkProfiles: $networkProfiles,
+        networkPriorityValidator: static fn (string $priority): bool => false,
+    );
+
+    $response = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'NetworkConfigurationPriority'],
+        'attributeType' => 'Actual',
+        'attributeValue' => '1,0',
+    ]]]);
+
+    expect($response['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected')
+        ->and((new DeviceModelSettingsRepository($database))->get($chargerId, 'NetworkConfigurationPriority'))->toBe('0');
 });
 
 it('validates the network profile connection attempt setting', function (): void {

@@ -5,7 +5,9 @@ declare(strict_types=1);
 use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
+use ChargerEmulator\Storage\OcppCertificateRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
+use ChargerEmulator\Domain\CertificateManagementManager;
 
 function findOpenPort(): int
 {
@@ -2901,6 +2903,105 @@ it('falls back to the last successful profile when the prioritized profile canno
         }
         stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('migrates to the configured network profile after an OnIdle reset', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-network-profile-migration-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $sourcePort = findOpenPort();
+    $targetPort = findOpenPort();
+    $appPort = findOpenPort();
+    $resetSentPath = $directory . '/reset-sent';
+    $sourceCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $sourcePort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_RESET' => '1',
+        'MOCK_CSMS_RESET_TYPE' => 'OnIdle',
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_SEND_NETWORK_PROFILE' => '1',
+        'MOCK_CSMS_NETWORK_PROFILE_URL' => "wss://127.0.0.1:{$targetPort}/ocpp",
+        'MOCK_CSMS_NETWORK_PROFILE_SECURITY' => '2',
+        'MOCK_CSMS_NETWORK_PRIORITY' => '1,0',
+    ]);
+    $targetCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $targetPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_TLS_CERTIFICATE' => __DIR__ . '/fixtures/csms-test-identity.pem',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($sourcePort);
+        waitForProcessOutput($targetCsms, 'Mock CSMS listening on ', 3_000);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $csmsRoot = file_get_contents(__DIR__ . '/fixtures/csms-test-root.pem');
+        expect(is_string($csmsRoot))->toBeTrue();
+        $certificateManagement = new CertificateManagementManager(new OcppCertificateRepository(Database::connect($databasePath)));
+        expect($certificateManagement->install($chargerId, [
+            'certificateType' => 'CSMSRootCertificate',
+            'certificate' => $csmsRoot,
+        ]))->toBe(['status' => 'Accepted']);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ProfileMigrationCharger',
+            'csms_url' => "ws://127.0.0.1:{$sourcePort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Network Profile Migration Model',
+            'serial_number' => 'PROFILE-MIGRATION-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The migration charger should save before booting.');
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The source CSMS should accept the initial boot.');
+
+        $sourceOutput = waitForProcessOutput($sourceCsms, 'Reset station response: ', 5_000);
+        $targetOutput = waitForProcessOutput($targetCsms, 'OCPP in: ', 10_000);
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+        $activeProfile = (new DeviceModelSettingsRepository(Database::connect($databasePath)))->get($chargerId, 'ActiveNetworkProfile');
+
+        expect($sourceOutput)->toContain('Network priority station response: ')
+            ->and($sourceOutput)->toContain('"attributeStatus":"Accepted"')
+            ->and($activeProfile)->toBe('1')
+            ->and($targetOutput)->toContain('"BootNotification"')
+            ->and($targetOutput)->toContain('"reason":"RemoteReset"');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($sourceCsms);
+        stopProcess($targetCsms);
+        foreach (glob($directory . '/*') ?: [] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

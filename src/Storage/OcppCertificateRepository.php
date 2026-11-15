@@ -63,7 +63,17 @@ final class OcppCertificateRepository
 
     public function manufacturerRootBundle(int $chargerId): string
     {
-        $roots = $this->all($chargerId, ['ManufacturerRootCertificate']);
+        return $this->rootBundle($chargerId, 'ManufacturerRootCertificate');
+    }
+
+    public function csmsRootBundle(int $chargerId): string
+    {
+        return $this->rootBundle($chargerId, 'CSMSRootCertificate');
+    }
+
+    private function rootBundle(int $chargerId, string $certificateType): string
+    {
+        $roots = $this->all($chargerId, [$certificateType]);
 
         return implode("\n", array_map(
             static fn (array $certificate): string => trim((string) $certificate['certificate_pem']),
