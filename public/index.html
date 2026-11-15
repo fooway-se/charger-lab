@@ -5,13 +5,33 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#c7d4cd">
     <title>Charger Lab · OCPP 2.0.1</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-17 0 108 108'%3E%3Cdefs%3E%3ClinearGradient id='fav-body' x1='0' y1='0' x2='1' y2='0.18'%3E%3Cstop offset='0' stop-color='%23fff'/%3E%3Cstop offset='1' stop-color='%23e9eeeb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='17' y='99' width='40' height='8' rx='2' fill='%23c4ceca'/%3E%3Cpath d='M13.5 38.5h47a4 4 0 0 1 4 4V88a7 7 0 0 1-7 7h-41a7 7 0 0 1-7-7V42.5a4 4 0 0 1 4-4z' fill='url(%23fav-body)' stroke='%23cfd8d2'/%3E%3Ccircle cx='37' cy='50' r='4.5' fill='%236ee4a2' opacity='.3'/%3E%3Ccircle cx='37' cy='50' r='2' fill='%2351bd88'/%3E%3Crect x='23' y='61' width='11' height='15' rx='3' fill='%23293c3a' stroke='%23788884' stroke-width='2'/%3E%3Crect x='40' y='61' width='11' height='15' rx='3' fill='%23293c3a' stroke='%23788884' stroke-width='2'/%3E%3Cpath d='M22 7h30a7 7 0 0 1 7 7v24a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V14a7 7 0 0 1 7-7z' fill='%23263b3b'/%3E%3Crect x='19' y='11' width='36' height='28' rx='3' fill='%23173a36'/%3E%3Cpath d='M39.5 13 31 24h5.5l-2 8 9-11.5H38z' fill='%239bebbd'/%3E%3Crect x='26' y='34' width='22' height='2' rx='1' fill='%235d937a'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/style.css?v=2">
     <script src="/app.js" defer></script>
 </head>
 <body>
 <header class="topbar">
-    <a class="brand" href="/" aria-label="Charger Lab home"><span class="brand-mark">ϟ</span><span>charger<span class="brand-light">lab</span></span></a>
-    <div class="topbar-right"><span class="profile-pill"><span class="live-dot"></span> OCPP 2.0.1 · Core</span></div>
+    <a class="brand" href="/" aria-label="Charger Lab home">
+        <span class="brand-mark">
+            <svg viewBox="0 0 74 108" aria-hidden="true">
+                <defs>
+                    <linearGradient id="cl-body" x1="0" y1="0" x2="1" y2="0.18">
+                        <stop offset="0" stop-color="#fff"/>
+                        <stop offset="1" stop-color="#e9eeeb"/>
+                    </linearGradient></defs><rect x="17" y="99" width="40" height="8" rx="2" fill="#c4ceca"/>
+                    <path d="M13.5 38.5h47a4 4 0 0 1 4 4V88a7 7 0 0 1-7 7h-41a7 7 0 0 1-7-7V42.5a4 4 0 0 1 4-4z" fill="url(#cl-body)" stroke="#cfd8d2"/>
+                    <circle cx="37" cy="50" r="4.5" fill="#6ee4a2" opacity=".3"/>
+                    <circle cx="37" cy="50" r="2" fill="#51bd88"/><rect x="23" y="61" width="11" height="15" rx="3" fill="#293c3a" stroke="#788884" stroke-width="2"/>
+                    <rect x="40" y="61" width="11" height="15" rx="3" fill="#293c3a" stroke="#788884" stroke-width="2"/>
+                    <path d="M22 7h30a7 7 0 0 1 7 7v24a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V14a7 7 0 0 1 7-7z" fill="#263b3b"/>
+                    <rect x="19" y="11" width="36" height="28" rx="3" fill="#173a36"/>
+                    <path d="M39.5 13 31 24h5.5l-2 8 9-11.5H38z" fill="#9bebbd"/>
+                    <rect x="26" y="34" width="22" height="2" rx="1" fill="#5d937a"/>
+                </svg>
+            </span>
+            <span>charger<span class="brand-light">lab</span>
+        </span>
+    </a>
 </header>
 <main class="page-shell">
     <section class="page-heading">
@@ -81,7 +101,7 @@
             <div class="token-panel"><div class="token-heading"><div class="token-icon">▣</div><div><strong>Present RFID token</strong><span>Plug in a vehicle first to attach the token to its transaction.</span></div></div><form data-action="authorize" class="token-form"><input name="rfid_token" placeholder="e.g. 04A1B2C3D4" autocomplete="off" spellcheck="false" required><select name="outlet_number" aria-label="Occupied outlet"><option value="">Authorization only</option></select><button class="button button-dark" type="submit">Present token <span>→</span></button></form></div>
         </article>
         <section class="log-column">
-            <div class="log-card"><div class="log-toolbar"><div class="log-toolbar-info"><span data-role="log-count" class="count-pill">00</span></div><div class="log-toolbar-actions"><button data-action="clear-log" class="text-button" type="button" hidden>Clear log</button></div></div><div class="log-content" data-role="log-content"><div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect this station to start its OCPP exchange.</p><div class="empty-line"></div></div></div><div class="log-footer"><span>OCPP-J · JSON</span></div></div>
+            <div class="log-card"><div class="log-toolbar"><div class="log-toolbar-info"><span data-role="log-count" class="count-pill">00</span></div><div class="log-toolbar-actions"><button data-action="clear-log" class="button button-quiet button-small" type="button" title="Clear log" aria-label="Clear log" hidden>Clear</button></div></div><div class="log-content" data-role="log-content"><div class="empty-state"><div class="empty-icon">⌁</div><strong>Waiting for a message</strong><p>Connect this station to start its OCPP exchange.</p><div class="empty-line"></div></div></div><div class="log-footer"><span>OCPP-J · JSON</span></div></div>
         </section>
     </div>
 </template>
