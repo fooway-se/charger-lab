@@ -235,7 +235,9 @@ final class Database
         $needsMigration = is_string($schema)
             && (!str_contains($schema, "'RemoteStart'")
                 || !str_contains($schema, "'RemoteStop'")
-                || !str_contains($schema, "'LocalStop'"));
+                || !str_contains($schema, "'LocalStop'")
+                || !str_contains($schema, "'SetChargingState'")
+                || !str_contains($schema, "'ColdBoot'"));
         if ($needsMigration) {
             $pdo->exec('DROP INDEX IF EXISTS ocpp_command_pending');
             $pdo->exec('ALTER TABLE ocpp_command RENAME TO ocpp_command_legacy');
@@ -245,7 +247,7 @@ final class Database
             CREATE TABLE IF NOT EXISTS ocpp_command (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart', 'RemoteStop', 'LocalStop')),
+                action TEXT NOT NULL CHECK (action IN ('BootNotification', 'Authorize', 'Disconnect', 'PlugIn', 'Unplug', 'RemoteStart', 'RemoteStop', 'LocalStop', 'SetChargingState', 'ColdBoot')),
                 payload TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
                 result TEXT,
@@ -291,6 +293,7 @@ final class Database
                 meter_end_samples TEXT NOT NULL DEFAULT '[]',
                 remote_start_deadline TEXT,
                 authorization_deadline TEXT,
+                suspended_by TEXT CHECK (suspended_by IS NULL OR suspended_by IN ('EV', 'EVSE')),
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
                 CHECK (
@@ -332,6 +335,10 @@ final class Database
             $pdo->exec('ALTER TABLE outlet_session ADD COLUMN authorization_deadline TEXT');
         }
 
+        if (!in_array('suspended_by', $columns, true)) {
+            $pdo->exec("ALTER TABLE outlet_session ADD COLUMN suspended_by TEXT CHECK (suspended_by IS NULL OR suspended_by IN ('EV', 'EVSE'))");
+        }
+
         if ($needsLocalStopMigration || $needsAuthorizationFirstMigration) {
             $pdo->exec('ALTER TABLE outlet_session RENAME TO outlet_session_legacy');
             $pdo->exec(<<<'SQL'
@@ -350,6 +357,7 @@ final class Database
                     meter_end_samples TEXT NOT NULL DEFAULT '[]',
                     remote_start_deadline TEXT,
                     authorization_deadline TEXT,
+                    suspended_by TEXT CHECK (suspended_by IS NULL OR suspended_by IN ('EV', 'EVSE')),
                     PRIMARY KEY (charger_id, evse_id, connector_id),
                     UNIQUE (charger_id, transaction_id),
                     CHECK (
@@ -365,11 +373,11 @@ final class Database
                 INSERT INTO outlet_session (
                     charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
                     seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
-                    meter_end_samples, remote_start_deadline, authorization_deadline
+                    meter_end_samples, remote_start_deadline, authorization_deadline, suspended_by
                 )
                 SELECT charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
                     seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
-                    meter_end_samples, remote_start_deadline, authorization_deadline
+                    meter_end_samples, remote_start_deadline, authorization_deadline, suspended_by
                 FROM outlet_session_legacy
                 SQL);
             $pdo->exec('DROP TABLE outlet_session_legacy');

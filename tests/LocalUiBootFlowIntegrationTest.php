@@ -333,6 +333,184 @@ function stopProcess($process): void
     }
 }
 
+it('exposes EV-side and EVSE-side suspension and cold-boot controls for CSMS testing', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-manual-test-controls-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = null;
+    $worker = null;
+    $app = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'ManualTestControlsCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Manual Test Controls Model',
+            'serial_number' => 'MANUAL-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the initial boot.');
+
+        [, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($plugHeaders[0] ?? '', '200'))->toBeFalse('The virtual EV should connect before charging is suspended.');
+
+        [, $authorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1, 'rfid_token' => 'SUSPEND-EV-TAG'], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The test CSMS should authorize the virtual EV.');
+
+        [$secondTagBody, $secondTagHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1, 'rfid_token' => 'SUSPEND-EV-TAG-2'], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        $secondTag = is_string($secondTagBody) ? json_decode($secondTagBody, true) : [];
+        expect(!str_contains($secondTagHeaders[0] ?? '', '200'))->toBeFalse('The test bench should accept a second distinct IdToken.')
+            ->and($secondTag['result']['idTokenInfo']['status'] ?? null)->toBe('Accepted');
+
+        foreach (['SuspendedEV', 'Charging', 'SuspendedEVSE', 'Charging'] as $chargingState) {
+            [$body, $headers] = request(
+                "http://127.0.0.1:{$appPort}/api/outlet/charging-state",
+                'POST',
+                json_encode([
+                    'charger_id' => $chargerId,
+                    'outlet_number' => 1,
+                    'charging_state' => $chargingState,
+                ], JSON_THROW_ON_ERROR),
+                'application/json',
+            );
+            $response = is_string($body) ? json_decode($body, true) : [];
+            expect(!str_contains($headers[0] ?? '', '200'))->toBeFalse("The test bench should apply {$chargingState}.")
+                ->and($response['result']['chargingState'] ?? null)->toBe($chargingState);
+            if ($chargingState !== 'Charging') {
+                [$suspendedBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+                $suspendedState = is_string($suspendedBody) ? json_decode($suspendedBody, true, flags: JSON_THROW_ON_ERROR) : [];
+                $suspendedOutlet = $suspendedState['chargers'][0]['outlets'][0] ?? [];
+                expect($suspendedOutlet['is_charging'] ?? true)->toBeFalse()
+                    ->and($suspendedOutlet['suspended_by'] ?? null)->toBe($chargingState === 'SuspendedEV' ? 'EV' : 'EVSE');
+            }
+        }
+
+        [$chargingBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $chargingState = is_string($chargingBody) ? json_decode($chargingBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $transactionEvents = array_values(array_filter(
+            $chargingState['chargers'][0]['entries'] ?? [],
+            static fn (array $entry): bool => ($entry['action'] ?? null) === 'TransactionEvent'
+                && ($entry['direction'] ?? null) === 'outgoing'
+                && (($call = json_decode($entry['message'], true)) !== null)
+                && (($call[3]['triggerReason'] ?? null) === 'ChargingStateChanged'),
+        ));
+        $reportedChargingStates = array_map(
+            static fn (array $entry): ?string => json_decode($entry['message'], true)[3]['transactionInfo']['chargingState'] ?? null,
+            $transactionEvents,
+        );
+        expect($chargingState['chargers'][0]['outlets'][0]['is_charging'] ?? false)->toBeTrue()
+            ->and($chargingState['chargers'][0]['outlets'][0]['suspended_by'] ?? null)->toBeNull()
+            ->and(array_slice($reportedChargingStates, -4))->toBe(['SuspendedEV', 'Charging', 'SuspendedEVSE', 'Charging']);
+
+        [, $coldBootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/cold-boot",
+            'POST',
+            json_encode(['charger_id' => $chargerId], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($coldBootHeaders[0] ?? '', '200'))->toBeFalse('The test bench should allow a cold boot.');
+
+        $deadline = microtime(true) + 6;
+        $powerUpBoots = 0;
+        do {
+            [$rebootedBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $rebootedState = is_string($rebootedBody) ? json_decode($rebootedBody, true, flags: JSON_THROW_ON_ERROR) : [];
+            $powerUpBoots = count(array_filter(
+                $rebootedState['chargers'][0]['entries'] ?? [],
+                static function (array $entry): bool {
+                    if (($entry['action'] ?? null) !== 'BootNotification' || ($entry['direction'] ?? null) !== 'outgoing') {
+                        return false;
+                    }
+                    $call = json_decode($entry['message'], true);
+
+                    return ($call[3]['reason'] ?? null) === 'PowerUp';
+                },
+            ));
+            if ($powerUpBoots >= 2 && ($rebootedState['chargers'][0]['boot_status'] ?? null) === 'Accepted') {
+                break;
+            }
+
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+
+        expect($powerUpBoots)->toBeGreaterThanOrEqual(2, 'A cold boot should reconnect and send another PowerUp BootNotification.')
+            ->and($rebootedState['chargers'][0]['outlets'][0]['connector_status'] ?? null)->toBe('Occupied')
+            ->and($rebootedState['chargers'][0]['outlets'][0]['transaction_id'] ?? null)->toBe($chargingState['chargers'][0]['outlets'][0]['transaction_id'] ?? null)
+            ->and($rebootedState['chargers'][0]['outlets'][0]['is_charging'] ?? false)->toBeTrue();
+
+        $ui = file_get_contents(__DIR__ . '/../public/index.html');
+        $script = file_get_contents(__DIR__ . '/../public/app.js');
+        expect(!is_string($ui) || !is_string($script)
+            || !str_contains($ui, 'Cold boot')
+            || !str_contains($script, 'suspend-ev')
+            || !str_contains($script, 'suspend-evse')
+            || !str_contains($script, 'resume-charging'))->toBeFalse('The UI should expose cold boot and both suspension controls.');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        if (is_resource($mockCsms)) {
+            stopProcess($mockCsms);
+        }
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('starts an authorization-first transaction and only charges after the vehicle plugs in', function (): void {
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-auth-first-' . bin2hex(random_bytes(6));

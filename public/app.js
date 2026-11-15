@@ -181,7 +181,21 @@ function createOutletTile(outlet, isConnected) {
     const action = document.createElement('button');
     action.className = 'button button-quiet outlet-action';
     action.type = 'button';
-    tile.append(marker, details, badge, action);
+    const chargeControls = document.createElement('div');
+    chargeControls.className = 'outlet-charge-controls';
+    for (const [actionName, label] of [
+        ['suspend-ev', 'Suspend EV'],
+        ['suspend-evse', 'Suspend EVSE'],
+        ['resume-charging', 'Resume'],
+    ]) {
+        const control = document.createElement('button');
+        control.className = 'button button-quiet button-small';
+        control.type = 'button';
+        control.dataset.action = actionName;
+        control.textContent = label;
+        chargeControls.append(control);
+    }
+    tile.append(marker, details, badge, action, chargeControls);
     updateOutletTile(tile, outlet, isConnected);
 
     return tile;
@@ -193,6 +207,7 @@ function updateOutletTile(tile, outlet, isConnected) {
     const authorizationPending = outlet.authorization_pending === true;
     const availabilityScheduled = connectorStatus === 'Available' && outlet.can_start_transaction === false;
     const isCharging = outlet.is_charging === true;
+    const isSuspended = outlet.suspended_by === 'EV' || outlet.suspended_by === 'EVSE';
     tile.dataset.outletNumber = String(outlet.number);
     setTextContent(tile.querySelector('.outlet-marker'), String(outlet.number).padStart(2, '0'));
     setTextContent(tile.querySelector('.outlet-details strong'), `Outlet ${outlet.number}`);
@@ -205,7 +220,9 @@ function updateOutletTile(tile, outlet, isConnected) {
     }
     setTextContent(badge, remoteStartPending || authorizationPending
         ? 'WAITING FOR VEHICLE'
-        : (availabilityScheduled ? 'CHANGE SCHEDULED' : connectorStatus.toUpperCase()));
+        : (availabilityScheduled
+            ? 'CHANGE SCHEDULED'
+            : (isSuspended ? `SUSPENDED BY ${outlet.suspended_by}` : connectorStatus.toUpperCase())));
     const action = tile.querySelector('.outlet-action');
     const actionName = connectorStatus === 'Occupied' && !remoteStartPending ? 'unplug' : 'plug-in';
     const actionText = remoteStartPending || authorizationPending
@@ -222,6 +239,14 @@ function updateOutletTile(tile, outlet, isConnected) {
         action.disabled = shouldDisableAction;
     }
     setTextContent(action, actionText);
+    const chargeControls = tile.querySelector('.outlet-charge-controls');
+    chargeControls.hidden = outlet.can_suspend_charging !== true;
+    for (const control of chargeControls.querySelectorAll('button')) {
+        const isResume = control.dataset.action === 'resume-charging';
+        control.hidden = isResume ? !isSuspended : isSuspended;
+        control.disabled = !isConnected;
+        control.dataset.outletNumber = String(outlet.number);
+    }
 }
 
 function renderOutlets(workspace, outlets, topology, isConnected) {
@@ -317,6 +342,7 @@ function renderCharger(charger, workspace = null, preserveFormInput = false) {
     status.classList.toggle('status-online', connectionStatus === 'Connected');
     status.classList.toggle('status-error', connectionStatus === 'Connection failed');
     status.classList.toggle('status-idle', connectionStatus === 'Not connected');
+    workspace.querySelector('[data-action="cold-boot"]').disabled = charger.boot_status !== 'Accepted';
     renderOutlets(workspace, charger.outlets, charger.outlet_topology, connectionStatus === 'Connected');
     updateOutletAuthorizationSelect(workspace, charger.outlets);
     renderLog(workspace, charger.entries);
@@ -638,9 +664,20 @@ chargerList.addEventListener('click', async (event) => {
             });
         } else if (button.dataset.action === 'clear-log') {
             await postAction('/api/log/clear', { charger_id: chargerId });
+        } else if (button.dataset.action === 'cold-boot') {
+            await postAction('/api/cold-boot', { charger_id: chargerId });
         } else if (button.dataset.action === 'plug-in' || button.dataset.action === 'unplug') {
             const path = button.dataset.action === 'plug-in' ? '/api/outlet/plug-in' : '/api/outlet/unplug';
             await postAction(path, { charger_id: chargerId, outlet_number: Number(button.dataset.outletNumber) });
+        } else if (['suspend-ev', 'suspend-evse', 'resume-charging'].includes(button.dataset.action)) {
+            const chargingState = button.dataset.action === 'suspend-ev'
+                ? 'SuspendedEV'
+                : (button.dataset.action === 'suspend-evse' ? 'SuspendedEVSE' : 'Charging');
+            await postAction('/api/outlet/charging-state', {
+                charger_id: chargerId,
+                outlet_number: Number(button.dataset.outletNumber),
+                charging_state: chargingState,
+            });
         } else if (button.dataset.action === 'delete') {
             const stationIdentity = workspace.querySelector('[data-role="station-identity"]').textContent.trim();
             if (!window.confirm(`Delete charger “${stationIdentity}” and its saved configuration and logs?`)) {

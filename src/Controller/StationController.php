@@ -72,6 +72,14 @@ final class StationController
                 $outlet['transaction_id'] = $state['transaction_id'] ?? null;
                 $outlet['remote_start_pending'] = $state['remote_start_pending'] ?? false;
                 $outlet['authorization_pending'] = $state['authorization_pending'] ?? false;
+                $outlet['suspended_by'] = $state['suspended_by'] ?? null;
+                $outlet['can_suspend_charging'] = $state !== null
+                    && $state['connector_status'] === 'Occupied'
+                    && $state['transaction_id'] !== null
+                    && $state['id_token'] !== null
+                    && $state['stop_reason'] === null
+                    && !$state['remote_start_pending']
+                    && !$state['authorization_pending'];
                 $outlet['can_start_transaction'] = $state !== null
                     && $state['connector_status'] === 'Available'
                     && $state['transaction_id'] === null
@@ -87,6 +95,7 @@ final class StationController
                     && !$state['authorization_pending']
                     && $state['id_token'] !== null
                     && $state['stop_reason'] === null
+                    && $state['suspended_by'] === null
                     && !$state['remote_start_pending'];
 
                 return $outlet;
@@ -257,6 +266,39 @@ final class StationController
         return $this->executeOutletAction($request, 'Unplug');
     }
 
+    public function setChargingState(Request $request): Response
+    {
+        return $this->executeOutletAction($request, 'SetChargingState');
+    }
+
+    public function coldBoot(Request $request): Response
+    {
+        try {
+            $input = $request->body();
+            $id = $this->chargerInput->chargerId($input);
+            $charger = $this->chargers->get($id);
+            if ($charger === null) {
+                throw new InvalidArgumentException('Select a valid charger.');
+            }
+            if ($charger['boot_status'] !== 'Accepted') {
+                return Response::json(409, ['error' => 'Accept BootNotification before cold booting the charger.']);
+            }
+        } catch (InvalidArgumentException $exception) {
+            return $this->invalidInputResponse($exception);
+        }
+
+        $commandId = $this->commands->enqueue($id, 'ColdBoot', []);
+        $command = $this->commands->waitForCompletion($commandId);
+        if ($command === null || in_array($command['status'], ['pending', 'processing'], true)) {
+            return Response::json(504, ['error' => 'The station session worker did not respond in time.']);
+        }
+        if ($command['status'] === 'failed') {
+            return Response::json(502, ['error' => $command['error'] ?? 'The charger could not cold boot.']);
+        }
+
+        return Response::json(200, ['notice' => 'Cold boot started.', 'result' => $command['result'] ?? []]);
+    }
+
     public function clearLog(Request $request): Response
     {
         try {
@@ -317,6 +359,9 @@ final class StationController
             }
             if ($action === 'Authorize' && ($current['boot_status'] ?? null) !== 'Accepted') {
                 return Response::json(409, ['error' => 'Accept BootNotification before authorizing a vehicle.']);
+            }
+            if ($action === 'SetChargingState' && ($current['boot_status'] ?? null) !== 'Accepted') {
+                return Response::json(409, ['error' => 'Accept BootNotification before changing charging state.']);
             }
             $token = $action === 'Authorize' ? $this->chargerInput->requiredString($request->body(), 'rfid_token') : null;
             if ($action === 'Authorize' && array_key_exists('outlet_number', $input)) {
@@ -423,6 +468,13 @@ final class StationController
             if ($outlet === null) {
                 throw new InvalidArgumentException('Select a valid outlet.');
             }
+            $chargingState = null;
+            if ($action === 'SetChargingState') {
+                $chargingState = $input['charging_state'] ?? null;
+                if (!is_string($chargingState) || !in_array($chargingState, ['Charging', 'SuspendedEV', 'SuspendedEVSE'], true)) {
+                    throw new InvalidArgumentException('Select Charging, SuspendedEV, or SuspendedEVSE.');
+                }
+            }
             if ($charger['boot_status'] !== 'Accepted') {
                 return Response::json(409, ['error' => 'Accept BootNotification before simulating a vehicle.']);
             }
@@ -444,6 +496,17 @@ final class StationController
                 || $outletState['authorization_pending'])) {
                 return Response::json(409, ['error' => 'The selected outlet has no vehicle to unplug.']);
             }
+            if ($action === 'SetChargingState') {
+                $canSuspend = $outletState !== null && $outletState['suspended_by'] === null
+                    && in_array($chargingState, ['SuspendedEV', 'SuspendedEVSE'], true);
+                $canResume = $outletState !== null && $outletState['suspended_by'] !== null && $chargingState === 'Charging';
+                if ($outletState === null || $outletState['connector_status'] !== 'Occupied'
+                    || $outletState['transaction_id'] === null || $outletState['id_token'] === null
+                    || $outletState['stop_reason'] !== null || $outletState['remote_start_pending']
+                    || $outletState['authorization_pending'] || (!$canSuspend && !$canResume)) {
+                    return Response::json(409, ['error' => 'The selected outlet has no active authorized transaction that can change charging state.']);
+                }
+            }
         } catch (InvalidArgumentException $exception) {
             return $this->invalidInputResponse($exception);
         }
@@ -451,6 +514,7 @@ final class StationController
         $commandId = $this->commands->enqueue($id, $action, [
             'evseId' => $outlet['evse_id'],
             'connectorId' => $outlet['connector_id'],
+            ...($action === 'SetChargingState' ? ['chargingState' => $chargingState] : []),
         ]);
         $command = $this->commands->waitForCompletion($commandId);
         if ($command === null || in_array($command['status'], ['pending', 'processing'], true)) {
@@ -462,7 +526,13 @@ final class StationController
 
         $result = is_array($command['result']) ? $command['result'] : [];
 
-        return Response::json(200, ['notice' => $action === 'PlugIn' ? 'Vehicle plugged in.' : 'Vehicle unplugged.', 'result' => $result]);
+        $notice = match ($action) {
+            'PlugIn' => 'Vehicle plugged in.',
+            'Unplug' => 'Vehicle unplugged.',
+            default => 'Charging state changed to ' . (string) ($result['chargingState'] ?? 'unknown') . '.',
+        };
+
+        return Response::json(200, ['notice' => $notice, 'result' => $result]);
     }
 
     private function publicCharger(array $charger): array

@@ -50,6 +50,8 @@ try {
     $router->add('POST', '/api/authorize', [$controller, 'authorize']);
     $router->add('POST', '/api/outlet/plug-in', [$controller, 'plugIn']);
     $router->add('POST', '/api/outlet/unplug', [$controller, 'unplug']);
+    $router->add('POST', '/api/outlet/charging-state', [$controller, 'setChargingState']);
+    $router->add('POST', '/api/cold-boot', [$controller, 'coldBoot']);
     $router->add('POST', '/api/log/clear', [$controller, 'clearLog']);
 
     $router->dispatch($request)->send();

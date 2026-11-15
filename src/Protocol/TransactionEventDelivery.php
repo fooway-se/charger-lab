@@ -47,6 +47,8 @@ final class TransactionEventDelivery
         int $connectorId,
         string $transactionId,
         int $previousSequence,
+        ?string $suspendedBy = null,
+        bool $updateSuspension = false,
     ): array {
         return $this->outbox->enqueueForActiveTransaction(
             $chargerId,
@@ -56,6 +58,8 @@ final class TransactionEventDelivery
             $connectorId,
             $transactionId,
             $previousSequence,
+            $suspendedBy,
+            $updateSuspension,
         );
     }
 

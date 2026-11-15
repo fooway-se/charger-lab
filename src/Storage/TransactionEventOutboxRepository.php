@@ -62,6 +62,8 @@ final class TransactionEventOutboxRepository
         int $connectorId,
         string $transactionId,
         int $previousSequence,
+        ?string $suspendedBy = null,
+        bool $updateSuspension = false,
     ): array {
         $transactionInfo = is_array($payload['transactionInfo'] ?? null) ? $payload['transactionInfo'] : [];
         $eventTransactionId = $transactionInfo['transactionId'] ?? null;
@@ -76,13 +78,25 @@ final class TransactionEventOutboxRepository
         $this->database->beginTransaction();
         try {
             $entry = $this->enqueue($chargerId, $payload);
-            $sessions->advanceSequenceForTrigger(
-                $chargerId,
-                $evseId,
-                $connectorId,
-                $transactionId,
-                $previousSequence,
-            );
+            if ($updateSuspension) {
+                $sessions->setChargingSuspension(
+                    $chargerId,
+                    $evseId,
+                    $connectorId,
+                    $transactionId,
+                    $suspendedBy,
+                    $previousSequence + 1,
+                    $previousSequence,
+                );
+            } else {
+                $sessions->advanceSequenceForTrigger(
+                    $chargerId,
+                    $evseId,
+                    $connectorId,
+                    $transactionId,
+                    $previousSequence,
+                );
+            }
             $this->database->commit();
 
             return $entry;

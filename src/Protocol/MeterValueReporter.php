@@ -114,7 +114,8 @@ final class MeterValueReporter
             }
 
             $sequence = $session['seq_no'] + 1;
-            $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
+            $powerW = SimulatedMeter::powerForOutlet($session);
+            $meterWh = $session['meter_wh'] + ($powerW > 0 ? self::PERIODIC_ENERGY_WH : 0);
             $sampledAt = gmdate(DATE_ATOM);
             $event = [
                 'eventType' => 'Updated',
@@ -125,11 +126,13 @@ final class MeterValueReporter
                     $meterWh,
                     'Sample.Periodic',
                     measurands: $measurands,
-                    powerW: SimulatedMeter::powerForOutlet($session),
+                    powerW: $powerW,
                 ),
                 'transactionInfo' => [
                     'transactionId' => $session['transaction_id'],
-                    'chargingState' => 'Charging',
+                    'chargingState' => $session['suspended_by'] === 'EV'
+                        ? 'SuspendedEV'
+                        : ($session['suspended_by'] === 'EVSE' ? 'SuspendedEVSE' : 'Charging'),
                 ],
                 'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
             ];
@@ -200,7 +203,8 @@ final class MeterValueReporter
 
             foreach ($transactions as $session) {
                 $sequence = $session['seq_no'] + 1;
-                $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
+                $powerW = SimulatedMeter::powerForOutlet($session);
+                $meterWh = $session['meter_wh'] + ($powerW > 0 ? self::PERIODIC_ENERGY_WH : 0);
                 $event = [
                     'eventType' => 'Updated',
                     'timestamp' => $sampledAt,
@@ -211,11 +215,15 @@ final class MeterValueReporter
                         'Sample.Clock',
                         $sampledAt,
                         $measurands,
-                        SimulatedMeter::powerForOutlet($session),
+                        $powerW,
                     ),
                     'transactionInfo' => [
                         'transactionId' => $session['transaction_id'],
-                        'chargingState' => $session['remote_start_pending'] ? 'Idle' : 'Charging',
+                        'chargingState' => $session['remote_start_pending']
+                            ? 'Idle'
+                            : ($session['suspended_by'] === 'EV'
+                                ? 'SuspendedEV'
+                                : ($session['suspended_by'] === 'EVSE' ? 'SuspendedEVSE' : 'Charging')),
                     ],
                     'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
                 ];
@@ -304,13 +312,14 @@ final class MeterValueReporter
                 $sampledAt = $source['context'] === 'Sample.Clock'
                     ? gmdate('Y-m-d\\TH:i:s\\Z', $sampleTimestamp)
                     : gmdate(DATE_ATOM, $sampleTimestamp);
-                $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
+                $powerW = SimulatedMeter::powerForOutlet($session);
+                $meterWh = $session['meter_wh'] + ($powerW > 0 ? self::PERIODIC_ENERGY_WH : 0);
                 $meterValue = $this->value(
                     $meterWh,
                     $source['context'],
                     $sampledAt,
                     $sampling['measurands'],
-                    SimulatedMeter::powerForOutlet($session),
+                    $powerW,
                 )[0];
                 $this->outletSessions->recordTransactionEndSample(
                     $chargerId,

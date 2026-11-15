@@ -55,16 +55,28 @@ it('migrates queued OCPP commands safely', function (): void {
         'idToken' => ['idToken' => 'OLD', 'type' => 'ISO14443'],
     ]);
     $localStopCommand = $commands->get($localStopCommandId);
+    $chargingStateCommandId = $commands->enqueue((int) $charger['id'], 'SetChargingState', [
+        'evseId' => 1,
+        'connectorId' => 1,
+        'chargingState' => 'SuspendedEV',
+    ]);
+    $chargingStateCommand = $commands->get($chargingStateCommandId);
+    $coldBootCommandId = $commands->enqueue((int) $charger['id'], 'ColdBoot', []);
+    $coldBootCommand = $commands->get($coldBootCommandId);
 
     $schema = (string) $database->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'ocpp_command'")->fetchColumn();
 
     expect(!str_contains($schema, "'PlugIn'")
         || !str_contains($schema, "'LocalStop'")
+        || !str_contains($schema, "'SetChargingState'")
+        || !str_contains($schema, "'ColdBoot'")
         || ($legacyCommand['action'] ?? null) !== 'Authorize'
         || ($legacyCommand['result']['idTokenInfo']['status'] ?? null) !== 'Accepted'
         || ($plugCommand['action'] ?? null) !== 'PlugIn'
         || ($plugCommand['payload']['evseId'] ?? null) !== 1
-        || ($localStopCommand['action'] ?? null) !== 'LocalStop')->toBeFalse('The command migration should preserve existing results and admit outlet simulation actions.');
+        || ($localStopCommand['action'] ?? null) !== 'LocalStop'
+        || ($chargingStateCommand['payload']['chargingState'] ?? null) !== 'SuspendedEV'
+        || ($coldBootCommand['action'] ?? null) !== 'ColdBoot')->toBeFalse('The command migration should preserve existing results and admit outlet simulation actions.');
 
     unset($commands, $database);
 

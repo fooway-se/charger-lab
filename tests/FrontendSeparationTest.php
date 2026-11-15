@@ -11,7 +11,7 @@ it('serves a standalone frontend with strict JavaScript', function (): void {
 
     $scriptPath = __DIR__ . '/../public/app.js';
 
-    expect(!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js?v=4" defer></script>'))->toBeFalse('The GUI should be static HTML with a separate browser script.');
+    expect(!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js?v=5" defer></script>'))->toBeFalse('The GUI should be static HTML with a separate browser script.');
 
     foreach (['name="csms_password"', 'name="clear_csms_password"', 'name="outlet_count"', 'name="outlet_topology"', 'name="uses_default_csms"', 'name="outlet_number"', 'id="workspace-csms-form"', 'id="workspace-tls-form"', 'name="tls_server_name"', 'name="tls_ca_certificate"', 'id="network-test-form"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
         expect(!str_contains($html, $requiredElement))->toBeFalse("The GUI should expose setup and charger controls: {$requiredElement}");
@@ -136,8 +136,8 @@ it('loads versioned frontend assets and gives active charging a visible badge', 
         : '';
 
     expect(!is_string($html))->toBeFalse()
-        ->and($html)->toContain('<script src="/app.js?v=4" defer></script>')
-        ->toContain('<link rel="stylesheet" href="/style.css?v=3">')
+        ->and($html)->toContain('<script src="/app.js?v=5" defer></script>')
+        ->toContain('<link rel="stylesheet" href="/style.css?v=4">')
         ->and($chargingIndicatorStyles)->toContain('min-height: 18px')
         ->toContain('padding: 3px 7px')
         ->toContain('background: #e5f5eb')
@@ -241,6 +241,8 @@ it('disables vehicle plug-in actions for inoperative outlets', function (): void
     expect(!is_string($script) || !is_string($styles))->toBeFalse()
         ->and($script)->toContain("connectorStatus === 'Unavailable'")
         ->toContain("outlet.can_start_transaction === false")
-        ->toContain("availabilityScheduled ? 'CHANGE SCHEDULED'")
+        ->toContain("availabilityScheduled\n            ? 'CHANGE SCHEDULED'")
+        ->toContain('SUSPENDED BY ${outlet.suspended_by}')
+        ->toContain("button.dataset.action === 'cold-boot'")
         ->and(preg_match('/\.outlet-status-unavailable\s*\{[^}]*background:\s*#fde8e8[^}]*color:\s*#9a3434/s', $styles))->toBe(1);
 });

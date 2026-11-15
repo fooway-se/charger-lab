@@ -18,6 +18,7 @@ final class SimulatedMeter
             || $outlet['transaction_id'] === ''
             || ($outlet['id_token'] ?? null) === null
             || ($outlet['stop_reason'] ?? null) !== null
+            || ($outlet['suspended_by'] ?? null) !== null
             || ($outlet['remote_start_pending'] ?? false)
             || ($outlet['authorization_pending'] ?? false)) {
             return 0;

@@ -171,6 +171,13 @@ final class StationSessionWorker
             return;
         }
 
+        if ($command['action'] === 'ColdBoot') {
+            $result = $this->coldBoot($chargerId, $charger);
+            $this->commands->complete($command['id'], $result);
+
+            return;
+        }
+
         if ($command['action'] === 'Disconnect') {
             unset($this->sessions[$chargerId]);
             $this->chargers->setConnectionStatus($chargerId, 'Not connected');
@@ -188,6 +195,7 @@ final class StationSessionWorker
         $outletResult = match ($command['action']) {
             'PlugIn' => $this->plugIn($chargerId, $command['payload']),
             'Unplug' => $this->unplug($chargerId, $command['payload']),
+            'SetChargingState' => $this->setChargingState($chargerId, $command['payload']),
             'RemoteStart' => $this->remoteStart($chargerId, $command['payload']),
             'RemoteStop' => $this->remoteStop($chargerId, $command['payload']),
             default => null,
@@ -1470,7 +1478,8 @@ final class StationSessionWorker
             throw new RuntimeException('The active outlet transaction changed before remote stop completed.');
         }
 
-        $meterWh = $session['meter_wh'] + self::SIMULATED_SESSION_ENERGY_WH;
+        $meterWh = $session['meter_wh']
+            + ($session['suspended_by'] === null ? self::SIMULATED_SESSION_ENERGY_WH : 0);
         $stoppedReason = $session['stop_reason'] === 'Remote' ? 'Remote' : 'EVDisconnected';
         $this->endOutletTransaction(
             $chargerId,
@@ -1529,6 +1538,75 @@ final class StationSessionWorker
         }
 
         return ['status' => 'LocalStopRequested'];
+    }
+
+    private function setChargingState(int $chargerId, array $payload): array
+    {
+        $evseId = $this->requiredOutletId($payload, 'evseId');
+        $connectorId = $this->requiredOutletId($payload, 'connectorId');
+        $chargingState = $payload['chargingState'] ?? null;
+        if (!is_string($chargingState) || !in_array($chargingState, ['Charging', 'SuspendedEV', 'SuspendedEVSE'], true)) {
+            throw new RuntimeException('The charging state must be Charging, SuspendedEV, or SuspendedEVSE.');
+        }
+
+        $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
+        $suspendedBy = match ($chargingState) {
+            'SuspendedEV' => 'EV',
+            'SuspendedEVSE' => 'EVSE',
+            default => null,
+        };
+        $canSuspend = $session !== null && $session['suspended_by'] === null
+            && in_array($chargingState, ['SuspendedEV', 'SuspendedEVSE'], true);
+        $canResume = $session !== null && $session['suspended_by'] !== null && $chargingState === 'Charging';
+        if ($session === null || $session['connector_status'] !== 'Occupied'
+            || $session['transaction_id'] === null || $session['id_token'] === null
+            || $session['stop_reason'] !== null || $session['remote_start_pending']
+            || $session['authorization_pending'] || (!$canSuspend && !$canResume)) {
+            throw new RuntimeException('The selected outlet has no active authorized transaction that can change charging state.');
+        }
+
+        $event = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'ChargingStateChanged',
+            'seqNo' => $session['seq_no'] + 1,
+            'transactionInfo' => [
+                'transactionId' => $session['transaction_id'],
+                'chargingState' => $chargingState,
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ];
+        $queuedEvent = $this->transactionEventDelivery->enqueueForActiveTransaction(
+            $chargerId,
+            $event,
+            $evseId,
+            $connectorId,
+            $session['transaction_id'],
+            $session['seq_no'],
+            $suspendedBy,
+            updateSuspension: true,
+        );
+        $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+
+        return ['chargingState' => $chargingState];
+    }
+
+    private function coldBoot(int $chargerId, array $charger): array
+    {
+        if (($charger['boot_status'] ?? null) !== 'Accepted' || !isset($this->sessions[$chargerId])) {
+            throw new RuntimeException('Accept BootNotification before cold booting the charger.');
+        }
+
+        $this->scheduleReconnect($chargerId);
+        $reconnectAt = microtime(true) + 0.2;
+        $this->sessions[$chargerId]['boot_payload'] = $this->resetBootPayload($charger, 'PowerUp');
+        $this->sessions[$chargerId]['next_boot_at'] = $reconnectAt;
+        $this->sessions[$chargerId]['next_reconnect_at'] = $reconnectAt;
+        $this->sessions[$chargerId]['next_heartbeat_at'] = null;
+        $this->chargers->setBootStatus($chargerId, 'Not connected');
+        $this->chargers->setConnectionStatus($chargerId, 'Not connected');
+
+        return ['status' => 'Restarting'];
     }
 
     private function attachAuthorizedToken(int $chargerId, array $outlet, array $idToken): void
@@ -2106,9 +2184,13 @@ final class StationSessionWorker
         $timestamp = gmdate(DATE_ATOM);
         $transactionInfo = ['transactionId' => $transactionId];
         if (!$session['remote_start_pending'] && !$session['authorization_pending']) {
-            $transactionInfo['chargingState'] = $session['id_token'] !== null && $session['stop_reason'] === null
-                ? 'Charging'
-                : 'EVConnected';
+            $transactionInfo['chargingState'] = match ($session['suspended_by']) {
+                'EV' => 'SuspendedEV',
+                'EVSE' => 'SuspendedEVSE',
+                default => $session['id_token'] !== null && $session['stop_reason'] === null
+                    ? 'Charging'
+                    : 'EVConnected',
+            };
         }
 
         $event = [

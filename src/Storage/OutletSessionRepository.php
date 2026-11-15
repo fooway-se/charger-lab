@@ -35,7 +35,7 @@ final class OutletSessionRepository
     public function allForCharger(int $chargerId): array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline, suspended_by
             FROM outlet_session WHERE charger_id = :charger_id ORDER BY evse_id, connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId]);
@@ -54,6 +54,7 @@ final class OutletSessionRepository
                 'remote_start_pending' => $row['remote_start_deadline'] !== null,
                 'authorization_deadline' => $row['authorization_deadline'],
                 'authorization_pending' => $row['authorization_deadline'] !== null,
+                'suspended_by' => $row['suspended_by'],
                 ...self::meterSampleFields($row),
             ];
         }, $statement->fetchAll());
@@ -62,7 +63,7 @@ final class OutletSessionRepository
     public function find(int $chargerId, int $evseId, int $connectorId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline, suspended_by
             FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId, 'evse_id' => $evseId, 'connector_id' => $connectorId]);
@@ -84,6 +85,7 @@ final class OutletSessionRepository
             'remote_start_pending' => $row['remote_start_deadline'] !== null,
             'authorization_deadline' => $row['authorization_deadline'],
             'authorization_pending' => $row['authorization_deadline'] !== null,
+            'suspended_by' => $row['suspended_by'],
             ...self::meterSampleFields($row),
         ];
     }
@@ -91,7 +93,7 @@ final class OutletSessionRepository
     public function findByTransactionId(int $chargerId, string $transactionId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline, suspended_by
             FROM outlet_session
             WHERE charger_id = :charger_id AND transaction_id = :transaction_id
             LIMIT 1
@@ -115,6 +117,7 @@ final class OutletSessionRepository
             'remote_start_pending' => $row['remote_start_deadline'] !== null,
             'authorization_deadline' => $row['authorization_deadline'],
             'authorization_pending' => $row['authorization_deadline'] !== null,
+            'suspended_by' => $row['suspended_by'],
             ...self::meterSampleFields($row),
         ];
     }
@@ -125,7 +128,7 @@ final class OutletSessionRepository
             UPDATE outlet_session
             SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = NULL, seq_no = 0,
                 remote_start_deadline = NULL, authorization_deadline = NULL,
-                stop_reason = NULL, meter_updated_at = :meter_updated_at, meter_ended_at = :meter_ended_at, meter_end_samples = '[]'
+                stop_reason = NULL, suspended_by = NULL, meter_updated_at = :meter_updated_at, meter_ended_at = :meter_ended_at, meter_end_samples = '[]'
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Available' AND transaction_id IS NULL
             SQL);
@@ -147,7 +150,7 @@ final class OutletSessionRepository
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
             SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = :id_token, seq_no = 0,
-                stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]',
+                stop_reason = NULL, suspended_by = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]',
                 remote_start_deadline = :deadline, authorization_deadline = NULL
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Available' AND transaction_id IS NULL
@@ -171,7 +174,7 @@ final class OutletSessionRepository
             UPDATE outlet_session
             SET transaction_id = :transaction_id, id_token = :id_token, seq_no = 0,
                 remote_start_deadline = NULL, authorization_deadline = :deadline,
-                stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
+                stop_reason = NULL, suspended_by = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Available' AND transaction_id IS NULL
             SQL);
@@ -368,7 +371,8 @@ final class OutletSessionRepository
             UPDATE outlet_session
             SET connector_status = 'Available', transaction_id = NULL, id_token = NULL, seq_no = 0,
                 remote_start_deadline = NULL, authorization_deadline = NULL,
-                meter_wh = :meter_wh, stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
+                meter_wh = :meter_wh, stop_reason = NULL, suspended_by = NULL,
+                meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND transaction_id = :transaction_id
             SQL);
@@ -381,6 +385,46 @@ final class OutletSessionRepository
         ]);
         if ($statement->rowCount() !== 1) {
             throw new RuntimeException('The active outlet transaction changed before unplug completed.');
+        }
+    }
+
+    public function setChargingSuspension(
+        int $chargerId,
+        int $evseId,
+        int $connectorId,
+        string $transactionId,
+        ?string $suspendedBy,
+        int $sequence,
+        ?int $previousSequence = null,
+    ): void {
+        if ($suspendedBy !== null && !in_array($suspendedBy, ['EV', 'EVSE'], true)) {
+            throw new RuntimeException('Charging suspension must be controlled by the EV or EVSE.');
+        }
+
+        $sequenceCondition = $previousSequence === null ? '' : 'AND seq_no = :previous_sequence';
+        $statement = $this->database->prepare(<<<SQL
+            UPDATE outlet_session
+            SET suspended_by = :suspended_by, seq_no = :seq_no
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Occupied' AND transaction_id = :transaction_id
+                AND id_token IS NOT NULL AND authorization_deadline IS NULL
+                AND remote_start_deadline IS NULL AND stop_reason IS NULL
+                {$sequenceCondition}
+            SQL);
+        $parameters = [
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'suspended_by' => $suspendedBy,
+            'seq_no' => $sequence,
+        ];
+        if ($previousSequence !== null) {
+            $parameters['previous_sequence'] = $previousSequence;
+        }
+        $statement->execute($parameters);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('Charging suspension requires the matching active authorized transaction.');
         }
     }
 
