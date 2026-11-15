@@ -32,6 +32,9 @@ final class DeviceModel
     ];
 
     private const REPORT_VARIABLES = [
+        'ChargingStation' => [
+            'AllowNewSessionsPendingFirmwareUpdate' => ['boolean', 'ReadWrite', true],
+        ],
         'AuthCtrlr' => [
             'AuthorizeRemoteStart' => ['boolean', 'ReadOnly', true],
             'LocalAuthorizeOffline' => ['boolean', 'ReadWrite', true],
@@ -103,6 +106,7 @@ final class DeviceModel
         private readonly ?Closure $runtimeVariableReader = null,
         private readonly ?NetworkProfileRepository $networkProfiles = null,
         private readonly ?Closure $networkPriorityValidator = null,
+        private readonly ?Closure $firmwareUnavailable = null,
     ) {
     }
 
@@ -350,6 +354,10 @@ final class DeviceModel
             };
         }
 
+        if ($componentName === 'ChargingStation' && $variableName === 'AllowNewSessionsPendingFirmwareUpdate') {
+            return $this->settings->get($this->chargerId, $variableName);
+        }
+
         if ($componentName === 'TxCtrlr'
             && in_array($variableName, ['EVConnectionTimeOut', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId'], true)) {
             return $this->settings->get($this->chargerId, $variableName);
@@ -446,6 +454,10 @@ final class DeviceModel
                 $outlet['connector_id'],
                 $outlet['connector_status'],
             );
+            if ($state === 'Available' && $this->firmwareUnavailable !== null
+                && ($this->firmwareUnavailable)($outlet) === true) {
+                $state = 'Unavailable';
+            }
             if ($state === 'Occupied') {
                 return 'Occupied';
             }
@@ -532,6 +544,10 @@ final class DeviceModel
             return ($variable['name'] ?? null) === 'OrganizationName';
         }
 
+        if (($component['name'] ?? null) === 'ChargingStation') {
+            return ($variable['name'] ?? null) === 'AllowNewSessionsPendingFirmwareUpdate';
+        }
+
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
             && in_array($this->settingName($component, $variable), self::OCPP_COMMUNICATION_VARIABLES, true);
     }
@@ -605,7 +621,7 @@ final class DeviceModel
         }
 
         if ($variable === 'SendDuringIdle' || in_array($variable, [
-            'LocalAuthorizeOffline', 'LocalPreAuthorize', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId',
+            'AllowNewSessionsPendingFirmwareUpdate', 'LocalAuthorizeOffline', 'LocalPreAuthorize', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId',
         ], true)) {
             return in_array($value, ['true', 'false'], true);
         }

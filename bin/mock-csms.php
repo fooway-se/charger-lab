@@ -209,7 +209,7 @@ function serveOcppSession($client, string $requestLine, string $stationKey): voi
         $except = [];
         $ready = @stream_select($read, $write, $except, 0, 100_000);
         if ($ready === false) {
-            return;
+            throw new RuntimeException('Failed while waiting for firmware status notification.');
         }
         if ($ready === 0) {
             continue;
@@ -299,6 +299,12 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
 
     if ($action === 'TransactionEvent') {
         triggerTransactionEventAfterStart($client, $payload, $call, $session);
+        $sentPath = getenv('MOCK_CSMS_UPDATE_FIRMWARE_SENT_PATH') ?: '';
+        if (($call[3]['eventType'] ?? null) === 'Started'
+            && getenv('MOCK_CSMS_UPDATE_FIRMWARE_AFTER_TRANSACTION') === '1'
+            && ($sentPath === '' || !is_file($sentPath))) {
+            sendConfiguredFirmwareUpdate($client, 'after-transaction-' . $call[1]);
+        }
     }
 }
 
@@ -397,7 +403,7 @@ function sendBaseReportAfterBoot($client, array $call, array $result, MockCsmsSe
     while (!$requestAccepted || !$reportReceived) {
         $response = readOcppMessage($client);
         if ($response === null) {
-            return;
+            throw new RuntimeException("Connection closed while waiting for firmware request {$requestId} to reach {$status}.");
         }
 
         [$payload, $message] = $response;
@@ -669,7 +675,181 @@ function runConfiguredServerCalls($client, array $call, array $result, MockCsmsS
     sendLocalAuthorizationList($client, $bootCallId);
     configureRemoteStartAuthorization($client, $bootCallId);
     configureMeterTestSettings($client, $bootCallId);
+    sendConfiguredFirmwareUpdate($client, $bootCallId);
+    sendConfiguredCertificateFlow($client, $bootCallId);
     runRemoteStartScenario($client, $call, $session);
+}
+
+function sendConfiguredFirmwareUpdate($client, string $bootCallId): void
+{
+    $firmwareJson = getenv('MOCK_CSMS_UPDATE_FIRMWARE_JSON');
+    if (!is_string($firmwareJson) || $firmwareJson === '') {
+        return;
+    }
+
+    $sentPath = getenv('MOCK_CSMS_UPDATE_FIRMWARE_SENT_PATH') ?: '';
+    if ($sentPath !== '' && is_file($sentPath)) {
+        return;
+    }
+    if ($sentPath !== '') {
+        $sentDirectory = dirname($sentPath);
+        if (!is_dir($sentDirectory)) {
+            mkdir($sentDirectory, 0700, true);
+        }
+        file_put_contents($sentPath, 'sent', LOCK_EX);
+    }
+
+    $configuredFirmware = json_decode($firmwareJson, true);
+    if (!is_array($configuredFirmware)) {
+        return;
+    }
+
+    if (array_is_list($configuredFirmware)) {
+        $requests = $configuredFirmware;
+    } elseif (isset($configuredFirmware['requestId'], $configuredFirmware['firmware'])) {
+        $requests = [$configuredFirmware];
+    } else {
+        $requests = [[
+            'requestId' => 91,
+            'firmware' => $configuredFirmware,
+        ]];
+    }
+    foreach ($requests as $index => $request) {
+        if (!is_array($request) || !is_int($request['requestId'] ?? null) || !is_array($request['firmware'] ?? null)) {
+            continue;
+        }
+        $messageId = 'mock-csms-update-firmware-' . $bootCallId . '-' . $index;
+        $call = json_encode([2, $messageId, 'UpdateFirmware', [
+            'requestId' => $request['requestId'],
+            'firmware' => $request['firmware'],
+            'retries' => 0,
+            'retryInterval' => 0,
+        ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        fwrite(STDOUT, 'UpdateFirmware CSMS call: ' . $call . "\n");
+        writeFrame($client, 0x1, $call);
+        waitForStationResponse($client, $messageId, 'UpdateFirmware station response');
+        $waitForStatus = $request['waitForStatus'] ?? null;
+        if (is_string($waitForStatus) && $waitForStatus !== '') {
+            waitForFirmwareStatus($client, $request['requestId'], $waitForStatus);
+        }
+    }
+}
+
+function waitForFirmwareStatus($client, int $requestId, string $status): void
+{
+    $deadline = microtime(true) + 20;
+    while (microtime(true) < $deadline) {
+        $read = [$client];
+        $write = [];
+        $except = [];
+        $ready = @stream_select($read, $write, $except, 0, 100_000);
+        if ($ready === false) {
+            return;
+        }
+        if ($ready === 0) {
+            continue;
+        }
+
+        $response = readOcppMessage($client);
+        if ($response === null) {
+            return;
+        }
+
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) === 2) {
+            fwrite(STDOUT, "OCPP in: {$payload}\n");
+            respondToStationCall($client, $message);
+            $firmwareStatus = $message[3] ?? [];
+            if (($message[2] ?? null) === 'FirmwareStatusNotification'
+                && ($firmwareStatus['requestId'] ?? null) === $requestId
+                && ($firmwareStatus['status'] ?? null) === $status) {
+                return;
+            }
+        }
+    }
+
+    throw new RuntimeException("Timed out waiting for firmware request {$requestId} to reach {$status}.");
+}
+
+function sendConfiguredCertificateFlow($client, string $bootCallId): void
+{
+    $certificatePath = getenv('MOCK_CSMS_CERTIFICATE_PATH') ?: '';
+    if ($certificatePath === '' || !is_file($certificatePath)) {
+        return;
+    }
+
+    $sentPath = getenv('MOCK_CSMS_CERTIFICATE_SENT_PATH') ?: '';
+    if ($sentPath !== '' && is_file($sentPath)) {
+        return;
+    }
+    if ($sentPath !== '') {
+        $sentDirectory = dirname($sentPath);
+        if (!is_dir($sentDirectory)) {
+            mkdir($sentDirectory, 0700, true);
+        }
+        file_put_contents($sentPath, 'sent', LOCK_EX);
+    }
+
+    $certificate = file_get_contents($certificatePath);
+    if (!is_string($certificate)) {
+        return;
+    }
+
+    $prefix = 'mock-csms-certificate-' . $bootCallId;
+    sendServerCallAndWait($client, $prefix . '-invalid-install', 'InstallCertificate', [
+        'certificateType' => 'CSMSRootCertificate',
+        'certificate' => 'not-a-certificate',
+    ], 'Invalid InstallCertificate station response');
+    sendServerCallAndWait($client, $prefix . '-get-after-invalid', 'GetInstalledCertificateIds', [
+        'certificateType' => ['CSMSRootCertificate'],
+    ], 'Get after invalid certificate station response');
+    sendServerCallAndWait($client, $prefix . '-install-csms', 'InstallCertificate', [
+        'certificateType' => 'CSMSRootCertificate',
+        'certificate' => $certificate,
+    ], 'Install CSMSRootCertificate station response');
+    sendServerCallAndWait($client, $prefix . '-install-manufacturer', 'InstallCertificate', [
+        'certificateType' => 'ManufacturerRootCertificate',
+        'certificate' => $certificate,
+    ], 'Install ManufacturerRootCertificate station response');
+
+    $csmsCertificates = sendServerCallAndWait($client, $prefix . '-get-csms', 'GetInstalledCertificateIds', [
+        'certificateType' => ['CSMSRootCertificate'],
+    ], 'Get CSMSRootCertificate station response');
+    sendServerCallAndWait($client, $prefix . '-get-manufacturer', 'GetInstalledCertificateIds', [
+        'certificateType' => ['ManufacturerRootCertificate'],
+    ], 'Get ManufacturerRootCertificate station response');
+    sendServerCallAndWait($client, $prefix . '-get-both', 'GetInstalledCertificateIds', [
+        'certificateType' => ['CSMSRootCertificate', 'ManufacturerRootCertificate'],
+    ], 'Get both root certificates station response');
+    sendServerCallAndWait($client, $prefix . '-get-all', 'GetInstalledCertificateIds', new stdClass(), 'Get all certificates station response');
+    sendServerCallAndWait($client, $prefix . '-get-missing', 'GetInstalledCertificateIds', [
+        'certificateType' => ['MORootCertificate'],
+    ], 'Get missing certificate station response');
+
+    $hashData = $csmsCertificates[2]['certificateHashDataChain'][0]['certificateHashData'] ?? null;
+    if (!is_array($hashData)) {
+        return;
+    }
+    sendServerCallAndWait($client, $prefix . '-delete', 'DeleteCertificate', [
+        'certificateHashData' => $hashData,
+    ], 'Delete CSMSRootCertificate station response');
+    sendServerCallAndWait($client, $prefix . '-get-after-delete', 'GetInstalledCertificateIds', [
+        'certificateType' => ['CSMSRootCertificate'],
+    ], 'Get deleted certificate station response');
+    $unknownHashData = $hashData;
+    $unknownHashData['serialNumber'] = 'FF';
+    sendServerCallAndWait($client, $prefix . '-delete-missing', 'DeleteCertificate', [
+        'certificateHashData' => $unknownHashData,
+    ], 'Delete missing certificate station response');
+}
+
+function sendServerCallAndWait($client, string $messageId, string $action, mixed $payload, string $label): ?array
+{
+    $call = json_encode([2, $messageId, $action, $payload], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    fwrite(STDOUT, $label . ' CSMS call: ' . $call . "\n");
+    writeFrame($client, 0x1, $call);
+
+    return waitForStationResponse($client, $messageId, $label);
 }
 
 function requestLocalListVersion($client, string $bootCallId): void
@@ -1136,20 +1316,23 @@ function stationCallResult(string $action, mixed $payload = null): array|stdClas
     };
 }
 
-function waitForStationResponse($client, string $messageId, string $label, array $responseTypes = [3, 4]): void
+function waitForStationResponse($client, string $messageId, string $label, array $responseTypes = [3, 4]): ?array
 {
     while (($response = readOcppMessage($client)) !== null) {
         [$payload, $message] = $response;
         if (in_array($message[0] ?? null, $responseTypes, true) && ($message[1] ?? null) === $messageId) {
             fwrite(STDOUT, $label . ': ' . $payload . "\n");
 
-            return;
+            return $message;
         }
 
         if (($message[0] ?? null) === 2) {
+            fwrite(STDOUT, "OCPP in: {$payload}\n");
             respondToStationCall($client, $message);
         }
     }
+
+    return null;
 }
 
 function sendStationCallResult($client, string $messageId, array|stdClass $payload): void

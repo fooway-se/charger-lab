@@ -49,7 +49,7 @@ it('reports controller variables for ConfigurationInventory', function (): void 
     $entries = $handler->takeReport()['reportData'] ?? [];
     expect($entries)->not->toBeEmpty();
     foreach ($entries as $entry) {
-        expect($entry['component']['name'] ?? null)->toBeIn(['AlignedDataCtrlr', 'AuthCtrlr', 'ClockCtrlr', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'SecurityCtrlr', 'TxCtrlr'])
+        expect($entry['component']['name'] ?? null)->toBeIn(['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'ClockCtrlr', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'SecurityCtrlr', 'TxCtrlr'])
             ->and($entry['variableAttribute'])->toHaveCount(1);
     }
     expect(array_column(array_column($entries, 'variable'), 'name'))->not->toContain('AuthorizeRemoteStart');

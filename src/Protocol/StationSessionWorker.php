@@ -11,6 +11,7 @@ use ChargerEmulator\Domain\CertificateManagementManager;
 use ChargerEmulator\Domain\DataTransferRequestHandler;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\FirmwareSignatureException;
+use ChargerEmulator\Domain\FirmwareInstallationVerificationException;
 use ChargerEmulator\Domain\FirmwareUpdateManager;
 use ChargerEmulator\Domain\GetLocalListVersionRequestHandler;
 use ChargerEmulator\Domain\MeterMeasurands;
@@ -52,6 +53,9 @@ final class StationSessionWorker
     private readonly TransactionEventDelivery $transactionEventDelivery;
 
     private readonly MeterValueReporter $meterValueReporter;
+
+    /** @var array<int, true> */
+    private array $firmwareUnavailableReported = [];
 
     public function __construct(
         private readonly ChargerRepository $chargers,
@@ -667,14 +671,15 @@ final class StationSessionWorker
             $this->deviceModelSettings->set($chargerId, 'HeartbeatInterval', (string) $retryIntervalSeconds);
             $this->chargers->setBootStatus($chargerId, $bootStatus);
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
-            $this->reportAvailableOutlets($chargerId, $charger);
-            $this->offlineStatuses->clear($chargerId);
             $firmwareUpdate = $this->firmwareUpdates?->current($chargerId);
             if (($firmwareUpdate['state'] ?? null) === 'InstallRebooting') {
                 $this->sendFirmwareStatusNotification($chargerId, (int) $firmwareUpdate['request_id'], 'Installed');
                 $this->sendSecurityEventNotification($chargerId, 'FirmwareUpdated');
                 $this->firmwareUpdates?->complete($chargerId);
             }
+            $this->reportAvailableOutlets($chargerId, $charger);
+            unset($this->firmwareUnavailableReported[$chargerId]);
+            $this->offlineStatuses->clear($chargerId);
             $this->sendSecurityEventNotification($chargerId, 'StartupOfTheDevice');
 
             return;
@@ -698,6 +703,7 @@ final class StationSessionWorker
             fn (array $component, array $variable): ?string => $this->runtimeDeviceModelVariableValue($chargerId, $component, $variable),
             $this->networkProfiles,
             fn (string $priority): bool => $this->canApplyNetworkConfigurationPriority($chargerId, $priority),
+            fn (array $_outlet): bool => $this->firmwareBlocksNewSessions($chargerId),
         );
         $baseReport = new BaseReportRequestHandler($deviceModel);
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
@@ -779,6 +785,10 @@ final class StationSessionWorker
                 }
 
                 if ($action === 'RequestStartTransaction') {
+                    if ($this->firmwareBlocksNewSessions($chargerId)) {
+                        return ['status' => 'Rejected'];
+                    }
+
                     return $remoteStart->requestStart($payload);
                 }
 
@@ -838,10 +848,18 @@ final class StationSessionWorker
                 }
 
                 if ($action === 'UpdateFirmware') {
+                    $securityEvent = $this->firmwareUpdates?->takePendingSecurityEvent();
+                    if (is_string($securityEvent)) {
+                        $this->sendSecurityEventNotification($chargerId, $securityEvent);
+                    }
+
                     if (($response['status'] ?? null) === 'Accepted' && $this->firmwareUpdates !== null) {
                         $update = $this->firmwareUpdates->current($chargerId);
                         if ((int) ($update['request_id'] ?? -1) === (int) ($_payload['requestId'] ?? -2)) {
                             $this->sendFirmwareStatusNotification($chargerId, (int) $update['request_id'], 'DownloadScheduled');
+                            if ($this->firmwareBlocksNewSessions($chargerId)) {
+                                $this->reportFirmwareUnavailable($chargerId);
+                            }
                         }
                     }
 
@@ -1129,11 +1147,16 @@ final class StationSessionWorker
             return $this->connectAuthorizationFirstVehicle($chargerId, $session);
         }
 
+        if ($this->firmwareBlocksNewSessions($chargerId)) {
+            throw new RuntimeException('The charger is waiting to install firmware and cannot start a new transaction.');
+        }
+
         if ($this->resets->blocksNewTransactions($chargerId)) {
             throw new RuntimeException('The charger is waiting to reset and cannot start a new transaction.');
         }
 
-        if ($session === null || $session['connector_status'] !== 'Available'
+        if ($this->firmwareBlocksNewSessions($chargerId)
+            || $session === null || $session['connector_status'] !== 'Available'
             || !$this->availability->canStartTransaction($chargerId, $evseId, $connectorId)) {
             throw new RuntimeException('The selected outlet is not available.');
         }
@@ -1543,7 +1566,8 @@ final class StationSessionWorker
 
     private function startAuthorizationFirstTransaction(int $chargerId, array $outlet, array $session, array $idToken): void
     {
-        if (!$this->availability->canStartTransaction($chargerId, $outlet['evse_id'], $outlet['connector_id'])
+        if ($this->firmwareBlocksNewSessions($chargerId)
+            || !$this->availability->canStartTransaction($chargerId, $outlet['evse_id'], $outlet['connector_id'])
             || $this->resets->blocksNewTransactions($chargerId)) {
             throw new RuntimeException('The selected outlet is no longer available for an authorization-first transaction.');
         }
@@ -1678,6 +1702,11 @@ final class StationSessionWorker
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void
     {
+        if ($status === 'Available' && $this->firmwareBlocksNewSessions($chargerId)) {
+            $status = 'Unavailable';
+            $this->firmwareUnavailableReported[$chargerId] = true;
+        }
+
         $connection = $this->sessions[$chargerId]['connection'] ?? null;
         if (!$connection instanceof WebSocketConnection) {
             $this->offlineStatuses->markConnectorChanged($chargerId, $evseId, $connectorId);
@@ -1756,7 +1785,28 @@ final class StationSessionWorker
         }
         $requestId = (int) $requestId;
 
+        if (isset($this->firmwareUnavailableReported[$chargerId])
+            && !$this->firmwareBlocksNewSessions($chargerId)) {
+            unset($this->firmwareUnavailableReported[$chargerId]);
+            $charger = $this->chargers->get($chargerId);
+            if ($charger !== null) {
+                $this->reportAvailableOutlets($chargerId, $charger);
+            }
+
+            return true;
+        }
+
         if ($state === 'DownloadScheduled' && $this->firmwareUpdates->isDue($update)) {
+            if ($this->activeFirmwareBlockingTransactions($chargerId) !== []) {
+                if ($this->firmwareBlocksNewSessions($chargerId)) {
+                    $this->reportFirmwareUnavailable($chargerId);
+                }
+
+                return false;
+            }
+            if ($this->firmwareBlocksNewSessions($chargerId)) {
+                $this->reportFirmwareUnavailable($chargerId);
+            }
             if ((int) $update['download_attempts'] > 0) {
                 $this->sendFirmwareStatusNotification($chargerId, $requestId, 'DownloadScheduled');
             }
@@ -1764,17 +1814,10 @@ final class StationSessionWorker
             $this->sendFirmwareStatusNotification($chargerId, $requestId, 'Downloading');
             try {
                 $tlsSettings = $this->workspaceSettings->getTlsSettings();
-                $package = $this->firmwareUpdates->downloadAndVerify(
+                $package = $this->firmwareUpdates->downloadAndStore(
                     $chargerId,
                     $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
                 );
-            } catch (FirmwareSignatureException $exception) {
-                $this->firmwareUpdates->fail($chargerId, 'InvalidSignature', $exception->getMessage());
-                $this->sendSecurityEventNotification($chargerId, $exception->securityEventType);
-                $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InvalidSignature');
-                $this->logs->record($chargerId, 'system', 'UpdateFirmware', $exception->getMessage());
-
-                return true;
             } catch (Throwable $exception) {
                 $this->firmwareUpdates->fail($chargerId, 'DownloadFailed', $exception->getMessage());
                 $this->sendFirmwareStatusNotification($chargerId, $requestId, 'DownloadFailed');
@@ -1784,8 +1827,25 @@ final class StationSessionWorker
             }
 
             $this->firmwareUpdates->recordDownloadedPackage($chargerId, $package);
-            $this->sendFirmwareStatusNotification($chargerId, $requestId, 'SignatureVerified');
             $this->sendFirmwareStatusNotification($chargerId, $requestId, 'Downloaded');
+            try {
+                $this->firmwareUpdates->verifyDownloadedPackage($chargerId);
+            } catch (FirmwareSignatureException $exception) {
+                $this->firmwareUpdates->fail($chargerId, 'InvalidSignature', $exception->getMessage());
+                $this->sendSecurityEventNotification($chargerId, $exception->securityEventType);
+                $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InvalidSignature');
+                $this->logs->record($chargerId, 'system', 'UpdateFirmware', $exception->getMessage());
+
+                return true;
+            } catch (Throwable $exception) {
+                $this->firmwareUpdates->fail($chargerId, 'InvalidSignature', $exception->getMessage());
+                $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InvalidSignature');
+                $this->logs->record($chargerId, 'system', 'UpdateFirmware', $exception->getMessage());
+
+                return true;
+            }
+
+            $this->sendFirmwareStatusNotification($chargerId, $requestId, 'SignatureVerified');
             $installAt = $update['install_at'] === null ? null : (int) $update['install_at'];
             if ($installAt !== null && $installAt > time()) {
                 $this->firmwareUpdates->scheduleInstall($chargerId, $installAt);
@@ -1802,6 +1862,9 @@ final class StationSessionWorker
                 static fn (array $session): bool => $session['transaction_id'] !== null,
             );
             if ($activeSessions !== []) {
+                if ($this->firmwareBlocksNewSessions($chargerId)) {
+                    $this->reportFirmwareUnavailable($chargerId);
+                }
                 if ($state === 'Downloaded') {
                     $this->firmwareUpdates->scheduleInstall($chargerId, time() + 30);
                     $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InstallScheduled');
@@ -1821,6 +1884,12 @@ final class StationSessionWorker
         if ($state === 'Installing' && $this->firmwareUpdates->isDue($update)) {
             try {
                 $this->firmwareUpdates->prepareReboot($chargerId);
+            } catch (FirmwareInstallationVerificationException $exception) {
+                $this->firmwareUpdates->fail($chargerId, 'InstallVerificationFailed', $exception->getMessage());
+                $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InstallVerificationFailed');
+                $this->logs->record($chargerId, 'system', 'UpdateFirmware', $exception->getMessage());
+
+                return true;
             } catch (Throwable $exception) {
                 $this->firmwareUpdates->fail($chargerId, 'InstallationFailed', $exception->getMessage());
                 $this->sendFirmwareStatusNotification($chargerId, $requestId, 'InstallationFailed');
@@ -1836,6 +1905,60 @@ final class StationSessionWorker
         }
 
         return false;
+    }
+
+    private function firmwareBlocksNewSessions(int $chargerId): bool
+    {
+        if (($this->deviceModelSettings->get($chargerId, 'AllowNewSessionsPendingFirmwareUpdate') ?? 'false') === 'true'
+            || $this->firmwareUpdates === null) {
+            return false;
+        }
+
+        $update = $this->firmwareUpdates->current($chargerId);
+        $state = $update['state'] ?? null;
+        if (in_array($state, ['Downloading', 'Downloaded', 'Installing', 'InstallRebooting'], true)) {
+            return true;
+        }
+
+        if ($state === 'InstallScheduled' && is_string($update['package_sha256'] ?? null)) {
+            return true;
+        }
+
+        return $state === 'DownloadScheduled' && $this->firmwareUpdates->isDue($update);
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function activeFirmwareBlockingTransactions(int $chargerId): array
+    {
+        return array_values(array_filter(
+            $this->outletSessions->allForCharger($chargerId),
+            static fn (array $session): bool => $session['transaction_id'] !== null,
+        ));
+    }
+
+    private function reportFirmwareUnavailable(int $chargerId): void
+    {
+        if (isset($this->firmwareUnavailableReported[$chargerId])) {
+            return;
+        }
+
+        foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
+            if ($session['transaction_id'] !== null || $session['connector_status'] !== 'Available') {
+                continue;
+            }
+
+            $status = $this->availability->connectorStatus(
+                $chargerId,
+                $session['evse_id'],
+                $session['connector_id'],
+                $session['connector_status'],
+            );
+            if ($status === 'Available') {
+                $this->sendStatusNotification($chargerId, $session['evse_id'], $session['connector_id'], 'Unavailable');
+            }
+        }
+
+        $this->firmwareUnavailableReported[$chargerId] = true;
     }
 
     private function simulateFirmwareReboot(int $chargerId): void

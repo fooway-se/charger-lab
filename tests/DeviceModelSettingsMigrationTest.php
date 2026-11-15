@@ -33,12 +33,14 @@ it('preserves existing sampled data settings when adding a writable variable', f
     $settings->set($chargerId, 'TxStartedMeasurands', '');
     $settings->set($chargerId, 'Interval', '300');
     $settings->set($chargerId, 'SendDuringIdle', 'true');
+    $settings->set($chargerId, 'AllowNewSessionsPendingFirmwareUpdate', 'true');
 
     expect($settings->get($chargerId, 'TxUpdatedInterval'))->toBe('7')
         ->and($settings->get($chargerId, 'TxStartedMeasurands'))->toBe('')
         ->and($settings->get($chargerId, 'Measurands'))->toBe('')
         ->and($settings->get($chargerId, 'Interval'))->toBe('300')
-        ->and($settings->get($chargerId, 'SendDuringIdle'))->toBe('true');
+        ->and($settings->get($chargerId, 'SendDuringIdle'))->toBe('true')
+        ->and($settings->get($chargerId, 'AllowNewSessionsPendingFirmwareUpdate'))->toBe('true');
 
     unset($settings, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {

@@ -15,6 +15,8 @@ final class FirmwareUpdateManager
 {
     private const MAX_PACKAGE_BYTES = 67_108_864;
 
+    private ?string $pendingSecurityEvent = null;
+
     public function __construct(
         private readonly FirmwareUpdateRepository $updates,
         private readonly string $firmwareDirectory,
@@ -46,6 +48,12 @@ final class FirmwareUpdateManager
         if ($retrieveAt === null || ($hasInstallDate && $installAt === null)
             || ($installAt !== null && $installAt < $retrieveAt)) {
             return ['status' => 'Rejected'];
+        }
+
+        if (!$this->validSigningCertificate($chargerId, $firmware['signingCertificate'])) {
+            $this->pendingSecurityEvent = 'InvalidFirmwareSigningCertificate';
+
+            return ['status' => 'InvalidCertificate'];
         }
 
         $accepted = $this->updates->schedule(
@@ -88,8 +96,16 @@ final class FirmwareUpdateManager
         $this->updates->beginDownload($chargerId);
     }
 
-    /** Downloads the package, validates the manufacturer chain, then verifies the signature. */
-    public function downloadAndVerify(int $chargerId, ?string $downloadCaPem = null): array
+    public function takePendingSecurityEvent(): ?string
+    {
+        $event = $this->pendingSecurityEvent;
+        $this->pendingSecurityEvent = null;
+
+        return $event;
+    }
+
+    /** Downloads and securely stores the package before signature verification. */
+    public function downloadAndStore(int $chargerId, ?string $downloadCaPem = null): array
     {
         $update = $this->updates->current($chargerId);
         $firmware = $update['firmware_request'];
@@ -97,62 +113,67 @@ final class FirmwareUpdateManager
             throw new RuntimeException('The scheduled firmware request is missing.');
         }
 
+        $package = $this->downloadPackage($firmware['location'], $downloadCaPem);
+        if (!is_dir($this->firmwareDirectory)
+            && !mkdir($this->firmwareDirectory, 0700, true)
+            && !is_dir($this->firmwareDirectory)) {
+            throw new RuntimeException('Could not create the firmware package directory.');
+        }
+
+        $path = sprintf('%s/charger-%d-request-%d.bin', $this->firmwareDirectory, $chargerId, $update['request_id']);
+        $temporaryPath = tempnam($this->firmwareDirectory, '.firmware-');
+        if (!is_string($temporaryPath)) {
+            throw new RuntimeException('Could not prepare a temporary firmware package file.');
+        }
+
+        try {
+            if (file_put_contents($temporaryPath, $package, LOCK_EX) !== strlen($package) || !chmod($temporaryPath, 0600)) {
+                throw new RuntimeException('Could not securely save the downloaded firmware package.');
+            }
+            if (!rename($temporaryPath, $path)) {
+                throw new RuntimeException('Could not finalize the downloaded firmware package.');
+            }
+        } finally {
+            if (is_file($temporaryPath)) {
+                unlink($temporaryPath);
+            }
+        }
+
+        return [
+            'path' => $path,
+            'sha256' => hash('sha256', $package),
+            'size' => strlen($package),
+        ];
+    }
+
+    /** Verifies the downloaded image signature against the trusted manufacturer chain. */
+    public function verifyDownloadedPackage(int $chargerId): void
+    {
+        $update = $this->updates->current($chargerId);
+        $firmware = $update['firmware_request'];
+        $path = $update['package_path'];
+        if (!is_array($firmware) || !is_string($path) || !is_file($path)) {
+            throw new FirmwareSignatureException('The downloaded firmware package is unavailable.');
+        }
+
         [$trustedRootsPath, $temporaryRootsPath] = $this->trustedRootsPath($chargerId);
         try {
             $signer = openssl_x509_read($firmware['signingCertificate']);
-            if ($signer === false || !is_file($trustedRootsPath)) {
-                throw new FirmwareSignatureException(
-                    'No valid firmware signer or manufacturer trust root is available.',
-                    'InvalidFirmwareSigningCertificate',
-                );
-            }
-
-            $chainValid = @openssl_x509_checkpurpose($signer, X509_PURPOSE_ANY, [$trustedRootsPath]);
-            if ($chainValid !== true) {
+            if ($signer === false || !is_file($trustedRootsPath)
+                || @openssl_x509_checkpurpose($signer, X509_PURPOSE_ANY, [$trustedRootsPath]) !== true) {
                 throw new FirmwareSignatureException(
                     'The firmware signing certificate is not trusted.',
                     'InvalidFirmwareSigningCertificate',
                 );
             }
 
-            $package = $this->downloadPackage($firmware['location'], $downloadCaPem);
+            $package = file_get_contents($path);
             $signature = base64_decode($firmware['signature'], true);
-            $publicKey = openssl_pkey_get_public($signer);
-            if (!is_string($signature) || $publicKey === false
-                || openssl_verify($package, $signature, $publicKey, OPENSSL_ALGO_SHA256) !== 1) {
+            if (!is_string($package) || hash('sha256', $package) !== $update['package_sha256']
+                || !is_string($signature)
+                || !(new FirmwareSignatureVerifier())->verifyRsaPss($path, $signature, $firmware['signingCertificate'])) {
                 throw new FirmwareSignatureException('The downloaded firmware signature is invalid.');
             }
-
-            if (!is_dir($this->firmwareDirectory)
-                && !mkdir($this->firmwareDirectory, 0700, true)
-                && !is_dir($this->firmwareDirectory)) {
-                throw new RuntimeException('Could not create the firmware package directory.');
-            }
-
-            $path = sprintf('%s/charger-%d-request-%d.bin', $this->firmwareDirectory, $chargerId, $update['request_id']);
-            $temporaryPath = tempnam($this->firmwareDirectory, '.firmware-');
-            if (!is_string($temporaryPath)) {
-                throw new RuntimeException('Could not prepare a temporary firmware package file.');
-            }
-
-            try {
-                if (file_put_contents($temporaryPath, $package, LOCK_EX) !== strlen($package) || !chmod($temporaryPath, 0600)) {
-                    throw new RuntimeException('Could not securely save the verified firmware package.');
-                }
-                if (!rename($temporaryPath, $path)) {
-                    throw new RuntimeException('Could not finalize the verified firmware package.');
-                }
-            } finally {
-                if (is_file($temporaryPath)) {
-                    unlink($temporaryPath);
-                }
-            }
-
-            return [
-                'path' => $path,
-                'sha256' => hash('sha256', $package),
-                'size' => strlen($package),
-            ];
         } finally {
             if (is_string($temporaryRootsPath) && is_file($temporaryRootsPath)) {
                 unlink($temporaryRootsPath);
@@ -181,6 +202,13 @@ final class FirmwareUpdateManager
         $sha256 = $update['package_sha256'];
         if (!is_string($sha256) || $sha256 === '') {
             throw new RuntimeException('The verified firmware package is unavailable for installation.');
+        }
+
+        $failedVerificationSha256 = getenv('FIRMWARE_INSTALL_VERIFICATION_FAILURE_SHA256');
+        if (is_string($failedVerificationSha256)
+            && preg_match('/^[a-f0-9]{64}$/iD', $failedVerificationSha256) === 1
+            && hash_equals(strtolower($failedVerificationSha256), strtolower($sha256))) {
+            throw new FirmwareInstallationVerificationException('The simulator rejected the firmware during install verification.');
         }
 
         // The emulator records the image digest as its simulated version; it never executes
@@ -245,6 +273,21 @@ final class FirmwareUpdateManager
                 && strlen($customData['vendorId']) <= 255);
     }
 
+    private function validSigningCertificate(int $chargerId, string $certificate): bool
+    {
+        [$trustedRootsPath, $temporaryRootsPath] = $this->trustedRootsPath($chargerId);
+        try {
+            $signer = openssl_x509_read($certificate);
+
+            return $signer !== false && is_file($trustedRootsPath)
+                && @openssl_x509_checkpurpose($signer, X509_PURPOSE_ANY, [$trustedRootsPath]) === true;
+        } finally {
+            if (is_string($temporaryRootsPath) && is_file($temporaryRootsPath)) {
+                unlink($temporaryRootsPath);
+            }
+        }
+    }
+
     private function timestamp(string $dateTime): ?int
     {
         if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/D', $dateTime) !== 1) {
@@ -293,7 +336,12 @@ final class FirmwareUpdateManager
             if (is_string($caPath) && is_file($caPath)) {
                 unlink($caPath);
             }
-            throw new RuntimeException('Could not open the firmware download URL.');
+            $warning = error_get_last()['message'] ?? '';
+            $reason = is_string($warning)
+                ? preg_replace('/^fopen\([^)]*\)(?:\s*\[[^]]+\])?:\s*/', '', $warning)
+                : '';
+            $reason = is_string($reason) ? substr($reason, 0, 200) : '';
+            throw new RuntimeException('Could not open the firmware download URL.' . ($reason === '' ? '' : ' ' . $reason));
         }
 
         try {

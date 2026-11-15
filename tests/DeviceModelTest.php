@@ -95,6 +95,43 @@ it('exposes and persists OCPPCommCtrlr OfflineThreshold', function (): void {
         ->and($inventory[0]['variableAttribute'][0]['mutability'] ?? null)->toBe('ReadWrite');
 });
 
+it('exposes and persists AllowNewSessionsPendingFirmwareUpdate on ChargingStation', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(2, 'independent'))->outlets());
+    $settings = new DeviceModelSettingsRepository($database);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
+    $component = ['name' => 'ChargingStation'];
+    $variable = ['name' => 'AllowNewSessionsPendingFirmwareUpdate'];
+
+    $initial = $deviceModel->processVariableAction('GetVariables', ['getVariableData' => [[
+        'component' => $component,
+        'variable' => $variable,
+    ]]]);
+    $set = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => $component,
+        'variable' => $variable,
+        'attributeValue' => 'true',
+    ]]]);
+    $updated = $deviceModel->processVariableAction('GetVariables', ['getVariableData' => [[
+        'component' => $component,
+        'variable' => $variable,
+    ]]]);
+    $inventory = array_values(array_filter(
+        $deviceModel->inventory('ConfigurationInventory'),
+        static fn (array $entry): bool => ($entry['component']['name'] ?? null) === 'ChargingStation'
+            && ($entry['variable']['name'] ?? null) === 'AllowNewSessionsPendingFirmwareUpdate',
+    ));
+
+    expect($initial['getVariableResult'][0]['attributeValue'] ?? null)->toBe('false')
+        ->and($set['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
+        ->and($updated['getVariableResult'][0]['attributeValue'] ?? null)->toBe('true')
+        ->and($settings->get($chargerId, 'AllowNewSessionsPendingFirmwareUpdate'))->toBe('true')
+        ->and($inventory[0]['variableCharacteristics']['dataType'] ?? null)->toBe('boolean')
+        ->and($inventory[0]['variableAttribute'][0]['mutability'] ?? null)->toBe('ReadWrite');
+});
+
 it('rejects invalid OCPPCommCtrlr OfflineThreshold values', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();

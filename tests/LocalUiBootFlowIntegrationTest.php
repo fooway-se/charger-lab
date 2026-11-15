@@ -6,6 +6,7 @@ use ChargerEmulator\Storage\ChargerRepository;
 use ChargerEmulator\Storage\Database;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OcppCertificateRepository;
+use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Domain\CertificateManagementManager;
 
@@ -18,6 +19,54 @@ function findOpenPort(): int
     expect(!is_string($address) || !str_contains($address, ':'))->toBeFalse('Could not determine the integration-test port.');
 
     return (int) substr(strrchr($address, ':'), 1);
+}
+
+function signFirmwareRsaPss(string $message, OpenSSLAsymmetricKey $privateKey): string
+{
+    $directory = sys_get_temp_dir() . '/firmware-pss-sign-' . bin2hex(random_bytes(8));
+    mkdir($directory, 0700, true);
+    $messagePath = $directory . '/message.bin';
+    $keyPath = $directory . '/private-key.pem';
+    $signaturePath = $directory . '/signature.bin';
+    openssl_pkey_export($privateKey, $privateKeyPem);
+    file_put_contents($messagePath, $message);
+    file_put_contents($keyPath, $privateKeyPem);
+    chmod($keyPath, 0600);
+
+    try {
+        $pipes = [];
+        $process = proc_open([
+            'openssl', 'dgst', '-sha256', '-sign', $keyPath,
+            '-sigopt', 'rsa_padding_mode:pss',
+            '-sigopt', 'rsa_pss_saltlen:digest',
+            '-out', $signaturePath, $messagePath,
+        ], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Could not start OpenSSL to create a firmware test signature.');
+        }
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        if ($exitCode !== 0) {
+            throw new RuntimeException('Could not create a firmware test signature: ' . $stdout . $stderr);
+        }
+        $signature = file_get_contents($signaturePath);
+        if (!is_string($signature)) {
+            throw new RuntimeException('Could not read the firmware test signature.');
+        }
+
+        return $signature;
+    } finally {
+        foreach ([$messagePath, $keyPath, $signaturePath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
 }
 
 function startProcess(array $command, array $environment)
@@ -2882,6 +2931,504 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         rmdir($directory);
     }
 })->group('integration');
+
+it('downloads verifies and installs signed firmware from a CSMS request', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-secure-firmware-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $packagePath = $directory . '/firmware.bin';
+    $package = 'signed simulator firmware package';
+    file_put_contents($packagePath, $package);
+    $verificationFailurePath = $directory . '/firmware-install-verification-failed.bin';
+    $verificationFailurePackage = 'signed simulator package that the test bootloader rejects';
+    file_put_contents($verificationFailurePath, $verificationFailurePackage);
+
+    $identityPath = __DIR__ . '/fixtures/csms-test-identity.pem';
+    $rootPath = __DIR__ . '/fixtures/csms-test-root.pem';
+    $identityPem = file_get_contents($identityPath);
+    $rootPem = file_get_contents($rootPath);
+    $identity = is_string($identityPem) ? openssl_x509_read($identityPem) : false;
+    $signerKey = is_string($identityPem) ? openssl_pkey_get_private($identityPem) : false;
+    expect($identity)->not->toBeFalse()
+        ->and($signerKey)->not->toBeFalse()
+        ->and(is_string($rootPem))->toBeTrue();
+    openssl_x509_export($identity, $signingCertificate);
+    $signature = signFirmwareRsaPss($package, $signerKey);
+    $invalidSignature = signFirmwareRsaPss('a different firmware image', $signerKey);
+    $verificationFailureSignature = signFirmwareRsaPss($verificationFailurePackage, $signerKey);
+    $untrustedKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+    $untrustedRequest = is_resource($untrustedKey) || $untrustedKey instanceof OpenSSLAsymmetricKey
+        ? openssl_csr_new(['commonName' => 'Untrusted firmware signer'], $untrustedKey, ['digest_alg' => 'sha256'])
+        : false;
+    $untrustedIdentity = $untrustedRequest !== false && $untrustedKey !== false
+        ? openssl_csr_sign($untrustedRequest, null, $untrustedKey, 1, ['digest_alg' => 'sha256'])
+        : false;
+    expect($untrustedIdentity)->not->toBeFalse();
+    openssl_x509_export($untrustedIdentity, $untrustedSigningCertificate);
+
+    $firmwarePort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $firmwareServer = startProcess([
+        PHP_BINARY,
+        __DIR__ . '/fixtures/firmware-server.php',
+        (string) $firmwarePort,
+        $identityPath,
+        $packagePath,
+        $verificationFailurePath,
+    ], ['PATH' => (string) getenv('PATH')]);
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_CALL' => '1',
+        'MOCK_CSMS_UPDATE_FIRMWARE_SENT_PATH' => $directory . '/firmware-request-sent',
+        'MOCK_CSMS_UPDATE_FIRMWARE_JSON' => json_encode([
+            [
+                'requestId' => 91,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/firmware.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'signingCertificate' => $untrustedSigningCertificate,
+                    'signature' => base64_encode($signature),
+                ],
+            ],
+            [
+                'requestId' => 92,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/firmware.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                ],
+            ],
+            [
+                'requestId' => 93,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/missing.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'signingCertificate' => $signingCertificate,
+                    'signature' => base64_encode($signature),
+                ],
+                'waitForStatus' => 'DownloadFailed',
+            ],
+            [
+                'requestId' => 94,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/firmware.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'signingCertificate' => $signingCertificate,
+                    'signature' => base64_encode($invalidSignature),
+                ],
+                'waitForStatus' => 'InvalidSignature',
+            ],
+            [
+                'requestId' => 95,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/firmware-install-verification-failed.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'signingCertificate' => $signingCertificate,
+                    'signature' => base64_encode($verificationFailureSignature),
+                ],
+                'waitForStatus' => 'InstallVerificationFailed',
+            ],
+            [
+                'requestId' => 96,
+                'firmware' => [
+                    'location' => "https://127.0.0.1:{$firmwarePort}/firmware.bin",
+                    'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                    'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() + 3_600),
+                    'signingCertificate' => $signingCertificate,
+                    'signature' => base64_encode($signature),
+                ],
+            ],
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        'MOCK_CSMS_CERTIFICATE_PATH' => $rootPath,
+        'MOCK_CSMS_CERTIFICATE_SENT_PATH' => $directory . '/certificate-flow-sent',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitForProcessOutput($firmwareServer, 'Firmware test server listening', 3_000);
+        waitUntilAvailable($mockCsmsPort);
+        $database = Database::connect($databasePath);
+        (new ChargerRepository($database))->all();
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        (new WorkspaceSettingsRepository($database))->saveTlsSettings('127.0.0.1', $rootPem);
+        unset($database);
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+            'FIRMWARE_SIGNING_ROOTS_PATH' => $rootPath,
+            'FIRMWARE_INSTALL_VERIFICATION_FAILURE_SHA256' => hash('sha256', $verificationFailurePackage),
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'SecureFirmwareTestCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Secure Firmware Test Model',
+            'serial_number' => 'FW-SECURE-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the test charger boot.');
+
+        waitForProcessOutput($mockCsms, 'Delete missing certificate station response: ', 12_000);
+        waitForProcessOutput($mockCsms, '"status":"InstallScheduled"', 8_000);
+        $database = new PDO('sqlite:' . $databasePath);
+        $scheduledFirmware = $database->query('SELECT state, install_at, next_action_at FROM firmware_state WHERE charger_id = ' . $chargerId)->fetch(PDO::FETCH_ASSOC);
+        expect($scheduledFirmware['state'] ?? null)->toBe('InstallScheduled')
+            ->and((int) ($scheduledFirmware['install_at'] ?? 0))->toBeGreaterThan(time());
+        $database->exec('UPDATE firmware_state SET next_action_at = ' . time() . ' WHERE charger_id = ' . $chargerId);
+        unset($database);
+
+        $firmwareOutput = '';
+        $firmwareDeadline = microtime(true) + 20;
+        do {
+            $firmwareOutput .= drainProcessOutput($mockCsms);
+            if (str_contains($firmwareOutput, '"status":"Installed"')) {
+                break;
+            }
+            usleep(20_000);
+        } while (microtime(true) < $firmwareDeadline);
+        $output = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $firmwareOutput;
+        preg_match_all('/UpdateFirmware station response: (\[[^\r\n]+\])/', $output, $firmwareResponses);
+        $firmwareResponseStatuses = array_map(
+            static fn (string $response): mixed => json_decode($response, true)[2]['status'] ?? null,
+            $firmwareResponses[1] ?? [],
+        );
+        $certificateResponseStatuses = [];
+        foreach ([
+            'Invalid InstallCertificate',
+            'Get after invalid certificate',
+            'Install CSMSRootCertificate',
+            'Install ManufacturerRootCertificate',
+            'Get CSMSRootCertificate',
+            'Get ManufacturerRootCertificate',
+            'Get both root certificates',
+            'Get all certificates',
+            'Get missing certificate',
+            'Delete CSMSRootCertificate',
+            'Get deleted certificate',
+            'Delete missing certificate',
+        ] as $label) {
+            preg_match('/' . preg_quote($label, '/') . ' station response: (\[[^\r\n]+\])/', $output, $certificateResponse);
+            $certificateResponseStatuses[$label] = json_decode($certificateResponse[1] ?? '[]', true)[2]['status'] ?? null;
+        }
+        preg_match('/Get after invalid certificate station response: (\[[^\r\n]+\])/', $output, $invalidCertificatesResponse);
+        $invalidCertificatesResult = json_decode($invalidCertificatesResponse[1] ?? '[]', true)[2] ?? [];
+        preg_match('/Get both root certificates station response: (\[[^\r\n]+\])/', $output, $bothCertificatesResponse);
+        $bothCertificatesResult = json_decode($bothCertificatesResponse[1] ?? '[]', true)[2] ?? [];
+        preg_match('/Get all certificates station response: (\[[^\r\n]+\])/', $output, $allCertificatesResponse);
+        $allCertificatesResult = json_decode($allCertificatesResponse[1] ?? '[]', true)[2] ?? [];
+        preg_match('/Get missing certificate station response: (\[[^\r\n]+\])/', $output, $missingCertificatesResponse);
+        $missingCertificatesResult = json_decode($missingCertificatesResponse[1] ?? '[]', true)[2] ?? [];
+        preg_match('/Get deleted certificate station response: (\[[^\r\n]+\])/', $output, $deletedCertificatesResponse);
+        $deletedCertificatesResult = json_decode($deletedCertificatesResponse[1] ?? '[]', true)[2] ?? [];
+        preg_match_all('/OCPP in: (\\[[^\\r\\n]+\\])/', $output, $messages);
+        $firmwareStatuses = [];
+        $firmwareStatusesByRequest = [];
+        $securityEvents = [];
+        $firmwareUpdatedEvent = false;
+        foreach ($messages[1] ?? [] as $messageJson) {
+            $message = json_decode($messageJson, true);
+            if (($message[2] ?? null) === 'FirmwareStatusNotification') {
+                $status = $message[3]['status'] ?? null;
+                $firmwareStatuses[] = $status;
+                $requestId = $message[3]['requestId'] ?? null;
+                if (is_int($requestId)) {
+                    $firmwareStatusesByRequest[$requestId][] = $status;
+                }
+            }
+            if (($message[2] ?? null) === 'SecurityEventNotification') {
+                $securityEvents[] = $message[3]['type'] ?? null;
+                if (($message[3]['type'] ?? null) === 'FirmwareUpdated') {
+                    $firmwareUpdatedEvent = true;
+                }
+            }
+        }
+        $database = new PDO('sqlite:' . $databasePath);
+        $firmwareState = $database->query('SELECT state, firmware_version, last_error FROM firmware_state WHERE charger_id = ' . $chargerId)->fetch(PDO::FETCH_ASSOC);
+
+        expect($output)->toContain('"status":"InvalidCertificate"')
+            ->and($firmwareResponseStatuses)->toBe(['InvalidCertificate', 'Rejected', 'Accepted', 'Accepted', 'Accepted', 'Accepted'])
+            ->and($firmwareStatusesByRequest[93] ?? [])->toContain('DownloadFailed')
+            ->and($firmwareStatusesByRequest[94] ?? [])->toBe(['DownloadScheduled', 'Downloading', 'Downloaded', 'InvalidSignature'])
+            ->and($firmwareStatusesByRequest[95] ?? [])->toBe(['DownloadScheduled', 'Downloading', 'Downloaded', 'SignatureVerified', 'Installing', 'InstallVerificationFailed'])
+            ->and($firmwareStatusesByRequest[96] ?? [])->toContain('DownloadScheduled', 'Downloading', 'Downloaded', 'SignatureVerified', 'Installing', 'InstallRebooting', 'Installed')
+            ->and($securityEvents)->toContain('InvalidFirmwareSigningCertificate', 'InvalidFirmwareSignature', 'FirmwareUpdated')
+            ->and($certificateResponseStatuses)->toBe([
+                'Invalid InstallCertificate' => 'Rejected',
+                'Get after invalid certificate' => 'NotFound',
+                'Install CSMSRootCertificate' => 'Accepted',
+                'Install ManufacturerRootCertificate' => 'Accepted',
+                'Get CSMSRootCertificate' => 'Accepted',
+                'Get ManufacturerRootCertificate' => 'Accepted',
+                'Get both root certificates' => 'Accepted',
+                'Get all certificates' => 'Accepted',
+                'Get missing certificate' => 'NotFound',
+                'Delete CSMSRootCertificate' => 'Accepted',
+                'Get deleted certificate' => 'NotFound',
+                'Delete missing certificate' => 'NotFound',
+            ])
+            ->and(array_key_exists('certificateHashDataChain', $invalidCertificatesResult))->toBeFalse()
+            ->and(array_column($bothCertificatesResult['certificateHashDataChain'] ?? [], 'certificateType'))
+            ->toBe(['CSMSRootCertificate', 'ManufacturerRootCertificate'])
+            ->and(array_column($allCertificatesResult['certificateHashDataChain'] ?? [], 'certificateType'))
+            ->toBe(['CSMSRootCertificate', 'ManufacturerRootCertificate'])
+            ->and(array_key_exists('certificateHashDataChain', $missingCertificatesResult))->toBeFalse()
+            ->and(array_key_exists('certificateHashDataChain', $deletedCertificatesResult))->toBeFalse()
+            ->and(in_array('Downloaded', $firmwareStatuses, true))->toBeTrue('Observed firmware statuses: ' . json_encode($firmwareStatuses) . '; update: ' . json_encode($firmwareState) . "\n" . $output)
+            ->and(in_array('Installed', $firmwareStatuses, true))->toBeTrue('Observed firmware statuses: ' . json_encode($firmwareStatuses) . '; update: ' . json_encode($firmwareState) . "\n" . $output)
+            ->and($firmwareStatuses)->toContain('DownloadFailed', 'InvalidSignature', 'InstallVerificationFailed')
+            ->and($firmwareStatuses)->toContain('Downloading', 'Downloaded', 'SignatureVerified', 'Installing', 'Installed')
+            ->and(array_search('Downloading', $firmwareStatuses, true))->toBeLessThan(array_search('Downloaded', $firmwareStatuses, true))
+            ->and(array_search('Downloaded', $firmwareStatuses, true))->toBeLessThan(array_search('SignatureVerified', $firmwareStatuses, true))
+            ->and(array_search('SignatureVerified', $firmwareStatuses, true))->toBeLessThan(array_search('Installing', $firmwareStatuses, true))
+            ->and(array_search('Installing', $firmwareStatuses, true))->toBeLessThan(array_search('Installed', $firmwareStatuses, true))
+            ->and($firmwareUpdatedEvent)->toBeTrue()
+            ->and($firmwareState['state'] ?? null)->toBe('Installed')
+            ->and($firmwareState['firmware_version'] ?? null)->toStartWith('sim-');
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($mockCsms);
+        stopProcess($firmwareServer);
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        foreach (glob($directory . '/firmware/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory . '/firmware')) {
+            rmdir($directory . '/firmware');
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('defers firmware work behind active sessions and applies the allow-new-sessions setting', function (bool $allowNewSessions): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-firmware-sessions-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $packagePath = $directory . '/firmware.bin';
+    $package = 'signed firmware waiting for transactions';
+    file_put_contents($packagePath, $package);
+    $identityPath = __DIR__ . '/fixtures/csms-test-identity.pem';
+    $rootPath = __DIR__ . '/fixtures/csms-test-root.pem';
+    $identityPem = file_get_contents($identityPath);
+    $rootPem = file_get_contents($rootPath);
+    $identity = is_string($identityPem) ? openssl_x509_read($identityPem) : false;
+    $signerKey = is_string($identityPem) ? openssl_pkey_get_private($identityPem) : false;
+    expect($identity)->not->toBeFalse()
+        ->and($signerKey)->not->toBeFalse()
+        ->and(is_string($rootPem))->toBeTrue();
+    openssl_x509_export($identity, $signingCertificate);
+    $signature = signFirmwareRsaPss($package, $signerKey);
+
+    $firmwarePort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $firmwareServer = startProcess([
+        PHP_BINARY,
+        __DIR__ . '/fixtures/firmware-server.php',
+        (string) $firmwarePort,
+        $identityPath,
+        $packagePath,
+    ], ['PATH' => (string) getenv('PATH')]);
+    $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_UPDATE_FIRMWARE_AFTER_TRANSACTION' => '1',
+        'MOCK_CSMS_UPDATE_FIRMWARE_SENT_PATH' => $directory . '/firmware-request-sent',
+        'MOCK_CSMS_UPDATE_FIRMWARE_JSON' => json_encode([
+            'requestId' => 109,
+            'firmware' => [
+                'location' => "https://127.0.0.1:{$firmwarePort}/firmware.bin",
+                'retrieveDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                'installDateTime' => gmdate('Y-m-d\\TH:i:s\\Z', time() - 7_200),
+                'signingCertificate' => $signingCertificate,
+                'signature' => base64_encode($signature),
+            ],
+            'waitForStatus' => 'DownloadScheduled',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitForProcessOutput($firmwareServer, 'Firmware test server listening', 3_000);
+        waitUntilAvailable($mockCsmsPort);
+        $database = Database::connect($databasePath);
+        (new ChargerRepository($database))->all();
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        (new WorkspaceSettingsRepository($database))->saveTlsSettings('127.0.0.1', $rootPem);
+        (new DeviceModelSettingsRepository($database))->set($chargerId, 'AllowNewSessionsPendingFirmwareUpdate', $allowNewSessions ? 'true' : 'false');
+        unset($database);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'FirmwareSessionPolicyTest',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Firmware Session Test Model',
+            'serial_number' => 'FW-SESSIONS-001',
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+            'FIRMWARE_SIGNING_ROOTS_PATH' => $rootPath,
+        ]);
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The CSMS should accept the test charger boot.');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 8_000);
+
+        [$firstPlugBody, $firstPlugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($firstPlugHeaders[0] ?? '', '200'))->toBeFalse('The first vehicle should start its transaction.');
+        waitForProcessOutput($mockCsms, '"status":"DownloadScheduled"', 5_000);
+
+        [$secondPlugBody, $secondPlugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        $secondPlugResult = is_string($secondPlugBody) ? json_decode($secondPlugBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        if ($allowNewSessions) {
+            expect(!str_contains($secondPlugHeaders[0] ?? '', '200'))->toBeFalse('A second session should remain allowed when configured.');
+        } else {
+            expect(str_contains($secondPlugHeaders[0] ?? '', '200'))
+                ->toBeFalse(
+                    'A second session should be blocked while firmware waits. Response: '
+                        . json_encode([$secondPlugHeaders, $secondPlugBody])
+                        . "\nCSMS output: " . (string) ($GLOBALS['capturedMockCsmsOutput'] ?? ''),
+                );
+            expect($secondPlugBody)->toContain('cannot start a new transaction');
+            waitForProcessOutput($mockCsms, '"connectorStatus":"Unavailable"', 3_000);
+        }
+
+        [, $firstUnplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($firstUnplugHeaders[0] ?? '', '200'))->toBeFalse('The first vehicle should be able to end its transaction.');
+        if ($allowNewSessions) {
+            [, $secondUnplugHeaders] = request(
+                "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+                'POST',
+                json_encode(['charger_id' => $chargerId, 'outlet_number' => 2], JSON_THROW_ON_ERROR),
+                'application/json',
+            );
+            expect(!str_contains($secondUnplugHeaders[0] ?? '', '200'))->toBeFalse('The second vehicle should be able to end its transaction.');
+        }
+
+        $installedOutput = waitForProcessOutput($mockCsms, '"status":"Installed"', 15_000);
+        $output = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $installedOutput;
+        $database = new PDO('sqlite:' . $databasePath);
+        $firmwareState = $database->query('SELECT state FROM firmware_state WHERE charger_id = ' . $chargerId)->fetchColumn();
+        unset($database);
+        $statusEvents = [];
+        preg_match_all('/OCPP in: (\[[^\r\n]+\])/', $output, $messages);
+        foreach ($messages[1] ?? [] as $messageJson) {
+            $message = json_decode($messageJson, true);
+            if (($message[2] ?? null) === 'StatusNotification') {
+                $statusEvents[] = [$message[3]['connectorStatus'] ?? null, $message[3]['evseId'] ?? null];
+            }
+        }
+
+        $unavailableStatusEvents = array_values(array_filter(
+            $statusEvents,
+            static fn (array $event): bool => $event[0] === 'Unavailable',
+        ));
+        expect($secondPlugResult['result']['status'] ?? null)->toBe($allowNewSessions ? 'PluggedIn' : null)
+            ->and($firmwareState)->toBe('Installed', 'Firmware should install after every active transaction ends. CSMS output: ' . $output);
+        if ($allowNewSessions) {
+            expect($unavailableStatusEvents)->toBe([]);
+        } else {
+            expect(array_column($unavailableStatusEvents, 1))->toContain(2);
+        }
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($mockCsms);
+        stopProcess($firmwareServer);
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        foreach (glob($directory . '/firmware/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory . '/firmware')) {
+            rmdir($directory . '/firmware');
+        }
+        rmdir($directory);
+    }
+})->with([
+    'blocks new sessions while waiting for firmware' => [false],
+    'keeps allowing new sessions when configured' => [true],
+])->group('integration');
 
 it('sends a current sequenced TransactionEvent after accepting its trigger', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';

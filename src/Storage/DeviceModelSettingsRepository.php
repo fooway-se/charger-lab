@@ -14,6 +14,7 @@ final class DeviceModelSettingsRepository
 {
     private const DEFAULTS = [
         'ActiveNetworkProfile' => '0',
+        'AllowNewSessionsPendingFirmwareUpdate' => 'false',
         'AlignedTxEndedInterval' => '0',
         'AlignedTxEndedMeasurands' => 'Energy.Active.Import.Register,Power.Active.Import',
         'Interval' => '0',
