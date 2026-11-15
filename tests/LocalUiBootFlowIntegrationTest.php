@@ -2,6 +2,9 @@
 
 declare(strict_types=1);
 
+use ChargerEmulator\Storage\ChargerRepository;
+use ChargerEmulator\Storage\Database;
+use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 
 function findOpenPort(): int
@@ -151,6 +154,71 @@ function waitForMeterValuePeriodic(int $appPort, int $chargerId, int $evseId, in
                 if (($call[3]['triggerReason'] ?? null) === 'MeterValuePeriodic'
                     && ($call[3]['evse']['id'] ?? null) === $evseId) {
                     return $call[3];
+                }
+            }
+        }
+
+        usleep(20_000);
+    }
+
+    return null;
+}
+
+function waitForTransactionEventTriggerReason(
+    int $appPort,
+    int $chargerId,
+    string $triggerReason,
+    int $timeoutMilliseconds,
+): ?array {
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    while (microtime(true) < $deadline) {
+        [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+        foreach ($state['chargers'] ?? [] as $charger) {
+            if ((int) ($charger['id'] ?? 0) !== $chargerId) {
+                continue;
+            }
+
+            foreach ($charger['entries'] ?? [] as $entry) {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    continue;
+                }
+
+                $call = json_decode($entry['message'], true);
+                if (($call[3]['triggerReason'] ?? null) === $triggerReason) {
+                    return $call;
+                }
+            }
+        }
+
+        usleep(20_000);
+    }
+
+    return null;
+}
+
+function waitForClockAlignedMeterValues(int $appPort, int $chargerId, int $evseId, int $timeoutMilliseconds): ?array
+{
+    $deadline = microtime(true) + ($timeoutMilliseconds / 1000);
+    while (microtime(true) < $deadline) {
+        [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+        foreach ($state['chargers'] ?? [] as $charger) {
+            if ((int) ($charger['id'] ?? 0) !== $chargerId) {
+                continue;
+            }
+
+            foreach ($charger['entries'] ?? [] as $entry) {
+                if (($entry['action'] ?? null) !== 'MeterValues' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    continue;
+                }
+
+                $call = json_decode($entry['message'], true);
+                $payload = $call[3] ?? [];
+                $sampledValues = $payload['meterValue'][0]['sampledValue'] ?? [];
+                if (($payload['evseId'] ?? null) === $evseId
+                    && array_any($sampledValues, static fn (array $sample): bool => ($sample['context'] ?? null) === 'Sample.Clock')) {
+                    return $call;
                 }
             }
         }
@@ -1970,17 +2038,21 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
 
     try {
         waitUntilAvailable($mockCsmsPort);
+        $database = Database::connect($databasePath);
+        (new ChargerRepository($database))->all();
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        $settings = new DeviceModelSettingsRepository($database);
+        $settings->set($chargerId, 'Interval', '1');
+        $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register');
+        expect($settings->getInteger($chargerId, 'Interval', 0, 1))->toBe(1)
+            ->and($settings->get($chargerId, 'Measurands'))->toBe('Energy.Active.Import.Register');
+        unset($database, $settings);
+
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
         ]);
         waitUntilDatabaseReady($databasePath);
-        $database = new PDO('sqlite:' . $databasePath);
-        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
-        $setting = $database->prepare('INSERT INTO device_model_setting (charger_id, variable, value) VALUES (?, ?, ?)');
-        $setting->execute([$chargerId, 'Interval', '1']);
-        $setting->execute([$chargerId, 'Measurands', 'Energy.Active.Import.Register']);
-        unset($database, $setting);
 
         $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
             'PATH' => (string) getenv('PATH'),
@@ -2007,18 +2079,13 @@ it('sends clock-aligned MeterValues at the configured UTC interval boundaries', 
 
         [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
         expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The test charger should complete BootNotification: ' . (string) $bootBody);
-        waitForProcessOutput($mockCsms, 'MeterValues response: ', 4_000);
-        usleep(50_000);
-        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
-        preg_match('/OCPP in: (\[2,"[^"]+","MeterValues",[^\n]+\])/', $csmsOutput, $meterValueMatch);
-        $meterValueCall = isset($meterValueMatch[1]) ? json_decode($meterValueMatch[1], true, flags: JSON_THROW_ON_ERROR) : null;
+        $meterValueCall = waitForClockAlignedMeterValues($appPort, $chargerId, 1, 4_000);
         $meterValuePayload = is_array($meterValueCall) && is_array($meterValueCall[3] ?? null) ? $meterValueCall[3] : [];
         $meterValue = $meterValuePayload['meterValue'][0] ?? [];
         $sampledValue = $meterValue['sampledValue'][0] ?? [];
         $sampleTimestamp = is_string($meterValue['timestamp'] ?? null) ? strtotime($meterValue['timestamp']) : false;
 
-        expect($csmsOutput)->toContain('MeterValues response: [3,')
-            ->and($meterValueCall[2] ?? null)->toBe('MeterValues')
+        expect($meterValueCall[2] ?? null)->toBe('MeterValues')
             ->and($meterValuePayload['evseId'] ?? null)->toBe(1)
             ->and($sampleTimestamp)->toBeInt()
             ->and($sampledValue['context'] ?? null)->toBe('Sample.Clock')
@@ -2060,16 +2127,21 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
 
     try {
         waitUntilAvailable($mockCsmsPort);
+        $database = Database::connect($databasePath);
+        (new ChargerRepository($database))->all();
+        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
+        $settings = new DeviceModelSettingsRepository($database);
+        $settings->set($chargerId, 'Interval', '1');
+        $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register');
+        expect($settings->getInteger($chargerId, 'Interval', 0, 1))->toBe(1)
+            ->and($settings->get($chargerId, 'Measurands'))->toBe('Energy.Active.Import.Register');
+        unset($database, $settings);
+
         $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
             'PATH' => (string) getenv('PATH'),
             'DATA_PATH' => $databasePath,
         ]);
         waitUntilDatabaseReady($databasePath);
-        $database = new PDO('sqlite:' . $databasePath);
-        $chargerId = (int) $database->query('SELECT id FROM charger ORDER BY id LIMIT 1')->fetchColumn();
-        $setting = $database->prepare('INSERT INTO device_model_setting (charger_id, variable, value) VALUES (?, ?, ?)');
-        $setting->execute([$chargerId, 'Interval', '1']);
-        unset($database, $setting);
 
         $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
             'PATH' => (string) getenv('PATH'),
@@ -2111,13 +2183,7 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         );
         expect(!str_contains($authorizeHeaders[0] ?? '', '200'))->toBeFalse('The vehicle token should be authorized.');
 
-        waitForProcessOutput($mockCsms, 'MeterValueClock TransactionEvent: ', 5_000);
-        usleep(50_000);
-        $csmsOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '') . drainProcessOutput($mockCsms);
-        preg_match('/MeterValueClock TransactionEvent: (\[2,"[^"]+","TransactionEvent",[^\n]+\])/', $csmsOutput, $transactionEventMatch);
-        $transactionEvent = isset($transactionEventMatch[1])
-            ? json_decode($transactionEventMatch[1], true, flags: JSON_THROW_ON_ERROR)
-            : null;
+        $transactionEvent = waitForTransactionEventTriggerReason($appPort, $chargerId, 'MeterValueClock', 5_000);
         $payload = is_array($transactionEvent) && is_array($transactionEvent[3] ?? null) ? $transactionEvent[3] : [];
         $meterValue = $payload['meterValue'][0] ?? [];
         $sampledValue = $meterValue['sampledValue'][0] ?? [];
@@ -2334,6 +2400,119 @@ it('reconnects with a RemoteReset BootNotification after an idle Immediate reset
         }
         stopProcess($mockCsms);
         foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
+it('reconnects to a Security Profile 2 WSS network profile after reset', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-security-profile-2-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $certificatePath = $directory . '/secure-csms.pem';
+    $resetSentPath = $directory . '/reset-sent';
+    $plainMockPort = findOpenPort();
+    $secureMockPort = findOpenPort();
+    $appPort = findOpenPort();
+
+    $privateKey = openssl_pkey_new(['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048]);
+    expect(!is_object($privateKey))->toBeFalse('Could not generate the local TLS test key.');
+    $request = openssl_csr_new(['commonName' => 'localhost'], $privateKey);
+    $certificate = openssl_csr_sign($request, null, $privateKey, 1);
+    expect(!is_object($certificate))->toBeFalse('Could not generate the local TLS test certificate.');
+    openssl_x509_export($certificate, $certificatePem);
+    openssl_pkey_export($privateKey, $privateKeyPem);
+    file_put_contents($certificatePath, $privateKeyPem . $certificatePem);
+
+    $plainMock = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $plainMockPort,
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        'MOCK_CSMS_SEND_RESET' => '1',
+        'MOCK_CSMS_RESET_SENT_PATH' => $resetSentPath,
+        'MOCK_CSMS_SEND_NETWORK_PROFILE' => '1',
+        'MOCK_CSMS_NETWORK_PROFILE_URL' => "wss://127.0.0.1:{$secureMockPort}/secure",
+        'MOCK_CSMS_NETWORK_PROFILE_SECURITY' => '2',
+    ]);
+    $secureMock = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'MOCK_CSMS_PORT' => (string) $secureMockPort,
+        'MOCK_CSMS_TLS_CERTIFICATE' => $certificatePath,
+        'MOCK_CSMS_BASIC_AUTH_STATION' => 'SecurityProfileTwoCharger',
+        'MOCK_CSMS_BASIC_AUTH_PASSWORD' => 'security-profile-two-secret',
+        'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+    ]);
+    $worker = null;
+    $app = null;
+
+    try {
+        waitUntilAvailable($plainMockPort);
+        $secureReady = waitForProcessOutput($secureMock, 'Mock CSMS listening', 4_000);
+        expect($secureReady)->toContain('Mock CSMS listening');
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$tlsSettingsBody, $tlsSettingsHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/settings/tls",
+            'POST',
+            json_encode(['tls_server_name' => 'localhost', 'tls_ca_certificate' => $certificatePem], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect(!str_contains($tlsSettingsHeaders[0] ?? '', '200') || !is_string($tlsSettingsBody))
+            ->toBeFalse('The test CA should be trusted by workspace TLS settings.');
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'SecurityProfileTwoCharger',
+            'csms_password' => 'security-profile-two-secret',
+            'csms_url' => "ws://127.0.0.1:{$plainMockPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Security Profile Test Model',
+            'serial_number' => 'SEC-002',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+
+        [, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The plaintext CSMS should accept the initial boot.');
+
+        $resetResponse = waitForProcessOutput($plainMock, 'Reset station response: ', 3_000);
+        expect($resetResponse)->toContain('"status":"Accepted"');
+
+        $secureOutput = waitForProcessOutput($secureMock, '"reason":"RemoteReset"', 5_000);
+        expect($secureOutput)
+            ->toContain('Connected GET /secure/SecurityProfileTwoCharger HTTP/1.1')
+            ->toContain('"reason":"RemoteReset"');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 3_000);
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($plainMock);
+        stopProcess($secureMock);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $resetSentPath, $certificatePath] as $path) {
             if (is_file($path)) {
                 unlink($path);
             }

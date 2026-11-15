@@ -6,7 +6,13 @@ declare(strict_types=1);
  * Serves a local OCPP 2.0.1 WebSocket endpoint for emulator development.
  */
 $port = (int) (getenv('MOCK_CSMS_PORT') ?: 9000);
-$server = stream_socket_server("tcp://0.0.0.0:{$port}", $errorNumber, $errorMessage);
+$certificatePath = getenv('MOCK_CSMS_TLS_CERTIFICATE') ?: '';
+$serverContext = stream_context_create();
+if ($certificatePath !== '') {
+    stream_context_set_option($serverContext, 'ssl', 'local_cert', $certificatePath);
+}
+$transport = $certificatePath === '' ? 'tcp' : 'tls';
+$server = stream_socket_server("{$transport}://0.0.0.0:{$port}", $errorNumber, $errorMessage, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $serverContext);
 if (!is_resource($server)) {
     fwrite(STDERR, "Could not start mock CSMS: {$errorMessage}\n");
     exit(1);
@@ -15,7 +21,8 @@ if (!is_resource($server)) {
 fwrite(STDOUT, "Mock CSMS listening on 0.0.0.0:{$port} (ocpp2.0.1)\n");
 
 while ($client = @stream_socket_accept($server, -1)) {
-    if (function_exists('pcntl_fork')) {
+    $forkClient = function_exists('pcntl_fork') && $certificatePath === '';
+    if ($forkClient) {
         $processId = pcntl_fork();
         if ($processId > 0) {
             fclose($client);
@@ -39,7 +46,7 @@ while ($client = @stream_socket_accept($server, -1)) {
         fclose($client);
     }
 
-    if (function_exists('pcntl_fork') && $processId === 0) {
+    if ($forkClient && $processId === 0) {
         exit(0);
     }
 }
@@ -333,7 +340,7 @@ function configureNetworkProfile($client, string $bootMessageId): void
             'ocppTransport' => 'JSON',
             'ocppCsmsUrl' => $profileUrl,
             'messageTimeout' => 8,
-            'securityProfile' => 1,
+            'securityProfile' => (int) (getenv('MOCK_CSMS_NETWORK_PROFILE_SECURITY') ?: 1),
             'ocppInterface' => 'Wired0',
         ],
     ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
