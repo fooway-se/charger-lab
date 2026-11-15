@@ -82,11 +82,17 @@ function acceptWebSocketUpgrade($client, string $requestLine): ?string
     $stationIdentity = rawurldecode((string) end($pathSegments));
     $expectedAuthStation = getenv('MOCK_CSMS_BASIC_AUTH_STATION') ?: '';
     if ($stationIdentity === $expectedAuthStation && $expectedAuthStation !== '') {
-        $expectedPassword = getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD') ?: '';
+        $connectionNumber = nextBasicAuthConnectionNumber();
+        $expectedPassword = $connectionNumber > 1 && getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD_NEXT') !== false
+            ? (string) getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD_NEXT')
+            : (getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD') ?: '');
         $expectedAuthorization = 'Basic ' . base64_encode($expectedAuthStation . ':' . $expectedPassword);
         if (($headers['authorization'] ?? null) !== $expectedAuthorization) {
             fwrite($client, "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"OCPP\"\r\nConnection: close\r\n\r\n");
             return null;
+        }
+        if (getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD_NEXT') !== false) {
+            fwrite(STDOUT, 'BasicAuth accepted connection #' . $connectionNumber . "\n");
         }
     }
 
@@ -171,6 +177,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
 
     if ($action === 'BootNotification') {
         sendBaseReportAfterBoot($client, $call, $result, $session);
+        sendBasicAuthPasswordAfterBoot($client, $call, $result);
         sendBootTriggerMessage($client, $call, $result);
         sendDataTransferAfterBoot($client, $call, $result);
         sendResetAfterBoot($client, $call, $result);
@@ -181,6 +188,64 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
 
     if ($action === 'TransactionEvent') {
         triggerTransactionEventAfterStart($client, $payload, $call, $session);
+    }
+}
+
+function nextBasicAuthConnectionNumber(): int
+{
+    $countPath = getenv('MOCK_CSMS_BASIC_AUTH_CONNECTION_COUNT_PATH') ?: '';
+    if ($countPath === '' || getenv('MOCK_CSMS_BASIC_AUTH_PASSWORD_NEXT') === false) {
+        return 1;
+    }
+
+    $handle = fopen($countPath, 'c+');
+    if (!is_resource($handle)) {
+        return 1;
+    }
+
+    try {
+        flock($handle, LOCK_EX);
+        rewind($handle);
+        $connectionNumber = ((int) stream_get_contents($handle)) + 1;
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, (string) $connectionNumber);
+        fflush($handle);
+
+        return $connectionNumber;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+function sendBasicAuthPasswordAfterBoot($client, array $call, array $result): void
+{
+    if (($result['status'] ?? null) !== 'Accepted') {
+        return;
+    }
+
+    $attempts = [
+        ['MOCK_CSMS_SET_INVALID_BASIC_AUTH_PASSWORD', 'mock-csms-invalid-basic-auth-password-', 'Invalid BasicAuthPassword station response: '],
+        ['MOCK_CSMS_SET_BASIC_AUTH_PASSWORD', 'mock-csms-basic-auth-password-', 'BasicAuthPassword station response: '],
+    ];
+    foreach ($attempts as [$environmentVariable, $messageIdPrefix, $label]) {
+        $password = getenv($environmentVariable);
+        if (!is_string($password) || $password === '') {
+            continue;
+        }
+
+        $messageId = $messageIdPrefix . $call[1];
+        $setVariableCall = json_encode([2, $messageId, 'SetVariables', [
+            'setVariableData' => [[
+                'component' => ['name' => 'SecurityCtrlr'],
+                'variable' => ['name' => 'BasicAuthPassword'],
+                'attributeType' => 'Actual',
+                'attributeValue' => $password,
+            ]],
+        ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        writeFrame($client, 0x1, $setVariableCall);
+        waitForStationResponse($client, $messageId, $label);
     }
 }
 

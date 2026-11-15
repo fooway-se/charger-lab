@@ -18,7 +18,7 @@ The current CS PICS lists the following 102 tests as mandatory for Core. Conditi
 
 | Area | Mandatory Core test cases | Current audit |
 | --- | --- | --- |
-| Security and authentication | `TC_A_01`, `TC_A_04`, `TC_A_05`, `TC_A_06`, `TC_A_09`, `TC_A_10`, `TC_A_22` | Basic connection and TLS paths exist. `SecurityCtrlr.BasicAuthPassword` update/reconnect is missing; TLS minimum-version and downgrade behavior need PICS verification. |
+| Security and authentication | `TC_A_01`, `TC_A_04`, `TC_A_05`, `TC_A_06`, `TC_A_09`, `TC_A_10`, `TC_A_22` | `TC_A_09`/`TC_A_10` now have unit and end-to-end coverage, including password validation, rotation, reconnect, and log redaction. TLS minimum-version and downgrade behavior still need PICS verification. |
 | Boot and offline status | `TC_B_01`, `TC_B_02`, `TC_B_03`, `TC_B_30`, `TC_B_51`, `TC_B_52` | Boot accepted/pending/rejected is implemented. Reconnection is implemented. Offline status retention and `OfflineThreshold` behavior are missing. |
 | Device Model read/write and inventory | `TC_B_06`, `TC_B_07`, `TC_B_09`, `TC_B_10`, `TC_B_11`, `TC_B_12`, `TC_B_13`, `TC_B_32`, `TC_B_33`, `TC_B_34`, `TC_B_35`, `TC_B_36`, `TC_B_37`, `TC_B_39`, `TC_B_53` | Basic Get/SetVariables and GetBaseReport exist. The required standardized Core Device Model inventory is incomplete and needs to be driven from the Edition 4 mandatory-variable list. |
 | Reset and connection profiles | `TC_B_20`, `TC_B_21`, `TC_B_22`, `TC_B_23`, `TC_B_43`, `TC_B_45`, `TC_B_46`, `TC_B_50`, `TC_B_57` | Reset, profile rejection, fallback, and reconnect code exist. New-CSMS-root migration needs implementation; remaining cases need PICS-level verification. |
@@ -33,7 +33,7 @@ The current CS PICS lists the following 102 tests as mandatory for Core. Conditi
 
 Each item is a separate TDD step and gets its own commit after its focused tests pass.
 
-1. Implement `SecurityCtrlr.BasicAuthPassword` set, validation, persistence, and authenticated reconnect (`TC_A_09`, `TC_A_10`).
+1. [x] Implement `SecurityCtrlr.BasicAuthPassword` set, validation, persistence, and authenticated reconnect (`TC_A_09`, `TC_A_10`).
 2. Preserve changed connector state across disconnects and implement `OCPPCommCtrlr.OfflineThreshold` (`TC_B_51`, `TC_B_52`, `TC_E_40`).
 3. Complete mandatory Core Device Model components/variables and inventory/report behavior (`TC_B_06`–`TC_B_53`).
 4. Complete Core network profile rejection and migration including certificate-root changes (`TC_B_43`, `TC_B_45`, `TC_B_46`, `TC_B_50`, `TC_B_57`).

@@ -2521,6 +2521,126 @@ it('reconnects to a Security Profile 2 WSS network profile after reset', functio
     }
 })->group('integration');
 
+it('updates BasicAuthPassword, reconnects with it, and keeps password values out of exchange logs', function (): void {
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-basic-auth-rotation-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $connectionCountPath = $directory . '/auth-connection-count';
+    $stationIdentity = 'BasicAuthRotationCharger';
+    $initialPassword = 'initial-basic-auth-password-123';
+    $invalidPassword = 'too-short';
+    $newPassword = 'rotated-basic-auth-password-456';
+    $mockCsms = null;
+    $worker = null;
+    $app = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_BASIC_AUTH_STATION' => $stationIdentity,
+            'MOCK_CSMS_BASIC_AUTH_PASSWORD' => $initialPassword,
+            'MOCK_CSMS_BASIC_AUTH_PASSWORD_NEXT' => $newPassword,
+            'MOCK_CSMS_BASIC_AUTH_CONNECTION_COUNT_PATH' => $connectionCountPath,
+            'MOCK_CSMS_SET_INVALID_BASIC_AUTH_PASSWORD' => $invalidPassword,
+            'MOCK_CSMS_SET_BASIC_AUTH_PASSWORD' => $newPassword,
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $charger = $state['chargers'][0] ?? [];
+        $chargerId = (int) ($charger['id'] ?? 0);
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => $stationIdentity,
+            'csms_password' => $initialPassword,
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Basic Auth Rotation Test Model',
+            'serial_number' => 'BASIC-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ];
+        [, $saveHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect($chargerId)->toBeGreaterThan(0)
+            ->and($saveHeaders[0] ?? '')->toContain('200');
+
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect($bootHeaders[0] ?? '')->toContain('200');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 5_000);
+
+        waitForProcessOutput($mockCsms, 'Invalid BasicAuthPassword station response: ', 3_000);
+        $capturedOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($capturedOutput, 'BasicAuthPassword station response: ')) {
+            waitForProcessOutput($mockCsms, 'BasicAuthPassword station response: ', 3_000);
+        }
+        $capturedOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        if (!str_contains($capturedOutput, 'BasicAuth accepted connection #2')) {
+            waitForProcessOutput($mockCsms, 'BasicAuth accepted connection #2', 3_000);
+        }
+        $capturedOutput = (string) ($GLOBALS['capturedMockCsmsOutput'] ?? '');
+        $invalidResponse = current(array_values(array_filter(
+            explode("\n", $capturedOutput),
+            static fn (string $line): bool => str_starts_with($line, 'Invalid BasicAuthPassword station response: '),
+        ))) ?: '';
+        $validResponse = current(array_values(array_filter(
+            explode("\n", $capturedOutput),
+            static fn (string $line): bool => str_starts_with($line, 'BasicAuthPassword station response: '),
+        ))) ?: '';
+        [$finalStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $finalState = is_string($finalStateBody) ? json_decode($finalStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+
+        expect($invalidResponse)->toContain('"attributeStatus":"Rejected"')
+            ->and($validResponse)->toContain('"attributeStatus":"Accepted"')
+            ->and($capturedOutput)->toContain('BasicAuth accepted connection #2')
+            ->and(json_encode($finalState['chargers'][0]['entries'] ?? [], JSON_THROW_ON_ERROR))->not->toContain($newPassword);
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        if (is_resource($mockCsms)) {
+            stopProcess($mockCsms);
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+})->group('integration');
+
 it('falls back to the last successful profile when the prioritized profile cannot connect', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];

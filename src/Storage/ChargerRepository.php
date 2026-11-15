@@ -153,6 +153,15 @@ final class ChargerRepository
         $statement->execute(['status' => $status, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id]);
     }
 
+    public function setCsmsPassword(int $id, string $password): void
+    {
+        $statement = $this->database->prepare('UPDATE charger SET csms_password = :password, updated_at = :updated_at WHERE id = :id');
+        $statement->execute(['password' => $password, 'updated_at' => gmdate(DATE_ATOM), 'id' => $id]);
+        if ($statement->rowCount() === 0 && $this->get($id) === null) {
+            throw new RuntimeException('The requested charger no longer exists.');
+        }
+    }
+
     public function resetConnectionStatuses(): void
     {
         $this->database->exec("UPDATE charger SET connection_status = 'Not connected'");

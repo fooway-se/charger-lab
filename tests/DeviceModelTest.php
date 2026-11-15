@@ -188,3 +188,55 @@ it('validates the network profile connection attempt setting', function (): void
         ->and($response['setVariableResult'][1]['attributeStatus'] ?? null)->toBe('Rejected')
         ->and((new DeviceModelSettingsRepository($database))->get($chargerId, 'NetworkProfileConnectionAttempts'))->toBe('4');
 });
+
+it('accepts valid BasicAuthPassword updates and rejects invalid values without exposing the password', function (): void {
+    $database = Database::connect(':memory:');
+    $chargers = new ChargerRepository($database);
+    $chargerId = $chargers->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $deviceModel = new DeviceModel(
+        $outletSessions,
+        new DeviceModelSettingsRepository($database),
+        $chargerId,
+        new AvailabilityRepository($database),
+        static fn (string $password): null => $chargers->setCsmsPassword($chargerId, $password),
+    );
+
+    $component = ['name' => 'SecurityCtrlr'];
+    $variable = ['name' => 'BasicAuthPassword'];
+    $setResponse = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => $component,
+        'variable' => $variable,
+        'attributeType' => 'Actual',
+        'attributeValue' => 'too-short',
+    ], [
+        'component' => $component,
+        'variable' => $variable,
+        'attributeType' => 'Actual',
+        'attributeValue' => 'password has spaces',
+    ], [
+        'component' => $component,
+        'variable' => $variable,
+        'attributeType' => 'Actual',
+        'attributeValue' => 'new-basic-auth-password-123456',
+    ]]]);
+    $getResponse = $deviceModel->processVariableAction('GetVariables', ['getVariableData' => [[
+        'component' => $component,
+        'variable' => $variable,
+    ]]]);
+    $passwordReport = array_values(array_filter(
+        $deviceModel->inventory('FullInventory'),
+        static fn (array $entry): bool => ($entry['component']['name'] ?? null) === 'SecurityCtrlr'
+            && ($entry['variable']['name'] ?? null) === 'BasicAuthPassword',
+    ));
+
+    expect(array_column($setResponse['setVariableResult'] ?? [], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Accepted'])
+        ->and($chargers->get($chargerId)['csms_password'])->toBe('new-basic-auth-password-123456')
+        ->and($getResponse['getVariableResult'][0]['attributeStatus'] ?? null)->toBe('Rejected')
+        ->and(array_key_exists('attributeValue', $getResponse['getVariableResult'][0] ?? []))->toBeFalse()
+        ->and(count($passwordReport))->toBe(1)
+        ->and($passwordReport[0]['variableAttribute'][0]['mutability'] ?? null)->toBe('WriteOnly')
+        ->and(array_key_exists('value', $passwordReport[0]['variableAttribute'][0] ?? []))->toBeFalse()
+        ->and($passwordReport[0]['variableCharacteristics']['maxLimit'] ?? null)->toBe(64);
+});

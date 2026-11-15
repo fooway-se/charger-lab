@@ -7,6 +7,7 @@ namespace ChargerEmulator\Domain;
 use ChargerEmulator\Storage\OutletSessionRepository;
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\AvailabilityRepository;
+use Closure;
 
 /**
  * Implements the OCPP Device Model variables exposed by one charger.
@@ -29,6 +30,7 @@ final class DeviceModel
 
     private const REPORT_VARIABLES = [
         'AuthCtrlr' => ['AuthorizeRemoteStart' => ['boolean', 'ReadOnly', true]],
+        'SecurityCtrlr' => ['BasicAuthPassword' => ['string', 'WriteOnly', true, null, null, 64]],
         'TxCtrlr' => ['EVConnectionTimeOut' => ['integer', 'ReadWrite', true]],
         'AlignedDataCtrlr' => [
             'Interval' => ['integer', 'ReadWrite', true],
@@ -59,6 +61,7 @@ final class DeviceModel
         private readonly DeviceModelSettingsRepository $settings,
         private readonly int $chargerId,
         private readonly AvailabilityRepository $availability,
+        private readonly ?Closure $basicAuthPasswordWriter = null,
     ) {
     }
 
@@ -99,6 +102,7 @@ final class DeviceModel
                         $persistent,
                         $componentName === 'AuthCtrlr',
                         $definition[3] ?? null,
+                        $definition[5] ?? null,
                     );
                 }
             }
@@ -131,24 +135,27 @@ final class DeviceModel
         bool $persistent,
         bool $constant,
         ?string $valuesList = null,
+        ?int $maxLimit = null,
     ): array
     {
         $value = $this->readVariableValue($component, $variable);
+        $variableAttribute = [
+            'type' => 'Actual',
+            ...($mutability === 'WriteOnly' ? [] : ['value' => $value]),
+            'mutability' => $mutability,
+            'persistent' => $persistent,
+            'constant' => $constant,
+        ];
 
         return [
             'component' => $component,
             'variable' => $variable,
-            'variableAttribute' => [[
-                'type' => 'Actual',
-                'value' => $value,
-                'mutability' => $mutability,
-                'persistent' => $persistent,
-                'constant' => $constant,
-            ]],
+            'variableAttribute' => [$variableAttribute],
             'variableCharacteristics' => [
                 'dataType' => $dataType,
                 ...($valuesList === null ? [] : ['valuesList' => $valuesList]),
                 'supportsMonitoring' => false,
+                ...($maxLimit === null ? [] : ['maxLimit' => $maxLimit]),
             ],
         ];
     }
@@ -165,7 +172,9 @@ final class DeviceModel
             $variable = $this->arrayField($variableRequest, 'variable');
             $attributeType = is_string($variableRequest['attributeType'] ?? null) ? $variableRequest['attributeType'] : 'Actual';
             $attributeValue = $this->readVariableValue($component, $variable);
-            $attributeStatus = $attributeValue === null ? $this->unknownVariableStatus($component) : 'Accepted';
+            $attributeStatus = $attributeValue === null
+                ? ($this->isWriteOnlyVariable($component, $variable) ? 'Rejected' : $this->unknownVariableStatus($component))
+                : 'Accepted';
             if ($attributeValue !== null && $attributeType !== 'Actual') {
                 $attributeStatus = 'NotSupportedAttributeType';
             }
@@ -199,14 +208,22 @@ final class DeviceModel
             $attributeType = is_string($variableRequest['attributeType'] ?? null) ? $variableRequest['attributeType'] : 'Actual';
             $settingName = $this->settingName($component, $variable);
             $currentAttributeValue = $this->readVariableValue($component, $variable);
-            if ($currentAttributeValue === null) {
+            $isBasicAuthPassword = $this->isBasicAuthPassword($component, $variable);
+            if ($currentAttributeValue === null && !$isBasicAuthPassword) {
                 $attributeStatus = $this->unknownVariableStatus($component);
             } elseif ($attributeType !== 'Actual') {
                 $attributeStatus = 'NotSupportedAttributeType';
             } elseif ($this->isVariableWritable($component, $variable)) {
                 $newAttributeValue = $variableRequest['attributeValue'] ?? null;
-                if (is_string($newAttributeValue) && $this->isValidSettingValue($settingName, $newAttributeValue)) {
-                    $this->settings->set($this->chargerId, $settingName, $newAttributeValue);
+                if (is_string($newAttributeValue)
+                    && ($isBasicAuthPassword
+                        ? $this->isValidBasicAuthPassword($newAttributeValue) && $this->basicAuthPasswordWriter !== null
+                        : $this->isValidSettingValue($settingName, $newAttributeValue))) {
+                    if ($isBasicAuthPassword) {
+                        ($this->basicAuthPasswordWriter)($newAttributeValue);
+                    } else {
+                        $this->settings->set($this->chargerId, $settingName, $newAttributeValue);
+                    }
                     $attributeStatus = 'Accepted';
                 } else {
                     $attributeStatus = 'Rejected';
@@ -243,6 +260,10 @@ final class DeviceModel
                 'AuthorizeRemoteStart' => 'false',
                 default => null,
             };
+        }
+
+        if ($this->isBasicAuthPassword($component, $variable)) {
+            return null;
         }
 
         if ($componentName === 'TxCtrlr' && $variableName === 'EVConnectionTimeOut') {
@@ -335,7 +356,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'TxCtrlr'], true)) {
+        if (in_array($componentName, ['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'SecurityCtrlr', 'TxCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -365,6 +386,10 @@ final class DeviceModel
 
     private function isVariableWritable(array $component, array $variable): bool
     {
+        if ($this->isBasicAuthPassword($component, $variable)) {
+            return true;
+        }
+
         if (($component['name'] ?? null) === 'SampledDataCtrlr') {
             return in_array($variable['name'] ?? null, ['TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands'], true);
         }
@@ -394,6 +419,29 @@ final class DeviceModel
         }
 
         return $name;
+    }
+
+    private function isWriteOnlyVariable(array $component, array $variable): bool
+    {
+        return $this->isBasicAuthPassword($component, $variable);
+    }
+
+    private function isBasicAuthPassword(array $component, array $variable): bool
+    {
+        return ($component['name'] ?? null) === 'SecurityCtrlr'
+            && !isset($component['instance'])
+            && ($variable['name'] ?? null) === 'BasicAuthPassword';
+    }
+
+    private function isValidBasicAuthPassword(string $password): bool
+    {
+        if (strlen($password) < 16 || strlen($password) > 64) {
+            return false;
+        }
+
+        $allowedCharacters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*-_-=:+|@.';
+
+        return strspn($password, $allowedCharacters) === strlen($password);
     }
 
     private function isValidSettingValue(string $variable, string $value): bool

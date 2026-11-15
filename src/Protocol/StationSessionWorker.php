@@ -522,8 +522,74 @@ final class StationSessionWorker
     {
         $priority = $this->deviceModelSettings->get($chargerId, 'NetworkConfigurationPriority') ?? '0';
         $profiles = $this->networkProfiles->prioritized($chargerId, $charger, $priority);
+        $profiles = $profiles === [] ? $this->networkProfiles->prioritized($chargerId, $charger, '0') : $profiles;
+        foreach ($profiles as &$profile) {
+            $profile['password'] = $charger['csms_password'];
+        }
+        unset($profile);
 
-        return $profiles === [] ? $this->networkProfiles->prioritized($chargerId, $charger, '0') : $profiles;
+        return $profiles;
+    }
+
+    private function basicAuthPasswordUpdateAccepted(array $payload, array $response): bool
+    {
+        foreach ($payload['setVariableData'] ?? [] as $index => $variable) {
+            if (($variable['component']['name'] ?? null) === 'SecurityCtrlr'
+                && ($variable['variable']['name'] ?? null) === 'BasicAuthPassword'
+                && ($response['setVariableResult'][$index]['attributeStatus'] ?? null) === 'Accepted') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function reconnectAfterBasicAuthPasswordChange(int $chargerId): void
+    {
+        if (!isset($this->sessions[$chargerId])) {
+            return;
+        }
+
+        $charger = $this->chargers->get($chargerId);
+        if ($charger === null) {
+            return;
+        }
+
+        $password = (string) $charger['csms_password'];
+        foreach ($this->sessions[$chargerId]['network_profiles'] as &$profile) {
+            $profile['password'] = $password;
+        }
+        unset($profile);
+
+        $this->sessions[$chargerId]['password'] = $password;
+        $this->sessions[$chargerId]['connection'] = null;
+        $this->sessions[$chargerId]['next_reconnect_at'] = microtime(true);
+        $this->sessions[$chargerId]['reconnect_attempt'] = 0;
+        $this->sessions[$chargerId]['network_profile_attempts'] = 0;
+        $this->sessions[$chargerId]['next_heartbeat_at'] = null;
+        $this->transactionEvents->markPendingOffline($chargerId);
+    }
+
+    private function redactBasicAuthPasswordFromLog(string $direction, string $action, string $message): string
+    {
+        if ($direction !== 'incoming' || $action !== 'SetVariables') {
+            return $message;
+        }
+
+        $frame = json_decode($message, true);
+        if (!is_array($frame) || !is_array($frame[3] ?? null)) {
+            return '[redacted SetVariables request]';
+        }
+
+        foreach ($frame[3]['setVariableData'] ?? [] as $index => $variable) {
+            if (($variable['component']['name'] ?? null) === 'SecurityCtrlr'
+                && ($variable['variable']['name'] ?? null) === 'BasicAuthPassword'
+                && array_key_exists('attributeValue', $variable)) {
+                $frame[3]['setVariableData'][$index]['attributeValue'] = '[redacted]';
+            }
+        }
+
+        return json_encode($frame, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     }
 
     private function selectNetworkProfile(int $chargerId, int $index, array $charger): void
@@ -593,6 +659,7 @@ final class StationSessionWorker
             $this->deviceModelSettings,
             $chargerId,
             $this->availability,
+            fn (string $password): mixed => $this->chargers->setCsmsPassword($chargerId, $password),
         );
         $baseReport = new BaseReportRequestHandler($deviceModel);
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
@@ -628,7 +695,12 @@ final class StationSessionWorker
         return new OcppClient(
             $connection,
             function (string $direction, string $action, string $message) use ($chargerId): void {
-                $this->logs->record($chargerId, $direction, $action, $message);
+                $this->logs->record(
+                    $chargerId,
+                    $direction,
+                    $action,
+                    $this->redactBasicAuthPasswordFromLog($direction, $action, $message),
+                );
             },
             function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $localListVersion, $sendLocalList, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
@@ -710,6 +782,14 @@ final class StationSessionWorker
                 return $this->currentBootStatus($this->chargers->get($chargerId));
             },
             function (string $action, array $_payload, array $response) use ($baseReport, $changeAvailability, $chargerId, $triggerMessage): void {
+                if ($action === 'SetVariables') {
+                    if ($this->basicAuthPasswordUpdateAccepted($_payload, $response)) {
+                        $this->reconnectAfterBasicAuthPasswordChange($chargerId);
+                    }
+
+                    return;
+                }
+
                 if ($action === 'Reset') {
                     if (in_array($response['status'] ?? null, ['Accepted', 'Scheduled'], true)) {
                         $this->reportPendingResetUnavailable($chargerId);
