@@ -511,6 +511,154 @@ it('exposes EV-side and EVSE-side suspension and cold-boot controls for CSMS tes
     }
 })->group('integration');
 
+function runInvalidTransactionEventIdTokenScenario(bool $stopTxOnInvalidId): array
+{
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-invalid-idtoken-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+            'MOCK_CSMS_TRANSACTION_EVENT_ID_TOKEN_STATUS' => 'Invalid',
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'InvalidIdToken' . bin2hex(random_bytes(3)),
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Invalid IdToken Test Model',
+            'serial_number' => 'INVALID-IDTOKEN-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ];
+        [, $saveHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect($saveHeaders[0] ?? '')->toContain('200');
+
+        if ($stopTxOnInvalidId) {
+            $database = Database::connect($databasePath);
+            (new DeviceModelSettingsRepository($database))->set($chargerId, 'StopTxOnInvalidId', 'true');
+            unset($database);
+        }
+
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect($bootHeaders[0] ?? '')->toContain('200');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 5_000);
+
+        [, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($plugHeaders[0] ?? '')->toContain('200');
+
+        [, $authorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1, 'rfid_token' => 'INVALID-TEST-TAG'], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        $expectedTriggerReason = $stopTxOnInvalidId ? 'Deauthorized' : 'ChargingStateChanged';
+        $rejectionEvent = waitForTransactionEventTriggerReason($appPort, $chargerId, $expectedTriggerReason, 4_000);
+        [$finalStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $finalState = is_string($finalStateBody) ? json_decode($finalStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $charger = $finalState['chargers'][0] ?? [];
+        $database = Database::connect($databasePath);
+        $outletSession = (new ChargerEmulator\Storage\OutletSessionRepository($database))->find($chargerId, 1, 1);
+        unset($database);
+
+        return [
+            'authorize_status' => $authorizeHeaders[0] ?? '',
+            'connection_status' => $charger['connection_status'] ?? null,
+            'outlet' => $charger['outlets'][0] ?? [],
+            'outlet_session' => $outletSession,
+            'deauthorization_event' => $rejectionEvent,
+        ];
+    } finally {
+        foreach ([$worker, $app, $mockCsms] as $process) {
+            if (is_resource($process)) {
+                stopProcess($process);
+            }
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+}
+
+it('suspends energy on a rejected TransactionEvent idToken when StopTxOnInvalidId is false', function (): void {
+    $result = runInvalidTransactionEventIdTokenScenario(false);
+    $event = $result['deauthorization_event'] ?? [];
+
+    expect($result['authorize_status'])->toContain('200')
+        ->and($result['connection_status'])->toBe('Connected')
+        ->and($result['outlet']['connector_status'] ?? null)->toBe('Occupied')
+        ->and($result['outlet_session'])->toHaveKey('id_token')
+        ->and($result['outlet_session']['id_token'])->toBeNull()
+        ->and($result['outlet']['suspended_by'] ?? null)->toBe('EVSE')
+        ->and($result['outlet']['is_charging'] ?? true)->toBeFalse()
+        ->and($event[3]['eventType'] ?? null)->toBe('Updated')
+        ->and($event[3]['triggerReason'] ?? null)->toBe('ChargingStateChanged')
+        ->and($event[3]['transactionInfo']['chargingState'] ?? null)->toBe('SuspendedEVSE');
+})->group('integration');
+
+it('reports Deauthorized and keeps the transaction EVConnected when StopTxOnInvalidId is true', function (): void {
+    $result = runInvalidTransactionEventIdTokenScenario(true);
+    $event = $result['deauthorization_event'] ?? [];
+
+    expect($result['authorize_status'])->toContain('200')
+        ->and($result['connection_status'])->toBe('Connected')
+        ->and($result['outlet']['connector_status'] ?? null)->toBe('Occupied')
+        ->and($result['outlet_session'])->toHaveKey('id_token')
+        ->and($result['outlet_session']['id_token'])->toBeNull()
+        ->and($result['outlet']['suspended_by'] ?? null)->toBe('EVSE')
+        ->and($result['outlet']['is_charging'] ?? true)->toBeFalse()
+        ->and($event[3]['eventType'] ?? null)->toBe('Updated')
+        ->and($event[3]['triggerReason'] ?? null)->toBe('Deauthorized')
+        ->and($event[3]['transactionInfo']['chargingState'] ?? null)->toBe('EVConnected');
+})->group('integration');
+
 it('starts an authorization-first transaction and only charges after the vehicle plugs in', function (): void {
     $GLOBALS['testProcesses'] = [];
     $directory = sys_get_temp_dir() . '/charger-auth-first-' . bin2hex(random_bytes(6));

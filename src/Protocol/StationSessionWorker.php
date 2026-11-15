@@ -86,6 +86,9 @@ final class StationSessionWorker
             $this->deviceModelSettings,
             fn (int $chargerId): OcppClient => $this->createOcppClient($chargerId),
             $this->offlineStatuses,
+            function (int $chargerId, array $payload, array $response): void {
+                $this->handleTransactionEventResponse($chargerId, $payload, $response);
+            },
         );
         $this->meterValueReporter = new MeterValueReporter(
             $this->outletSessions,
@@ -1298,7 +1301,8 @@ final class StationSessionWorker
         if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
             $this->outletSessions->markAvailable($chargerId, $evseId, $connectorId, $transactionId, $session['meter_wh']);
             $this->reportReleasedOutlet($chargerId, $evseId, $connectorId);
-            throw new OcppProtocolException('The CSMS did not accept the remote-start idToken in the TransactionEvent response.');
+
+            return ['status' => 'Rejected'];
         }
 
         return ['status' => 'AwaitingVehicle', 'transactionId' => $transactionId];
@@ -1668,14 +1672,7 @@ final class StationSessionWorker
         );
         $authorizationResult = $this->transactionEventDelivery->deliverThrough($chargerId, $queuedAuthorization['id']);
         if (($authorizationResult['idTokenInfo']['status'] ?? null) !== 'Accepted') {
-            $this->outletSessions->clearToken(
-                $chargerId,
-                $outlet['evse_id'],
-                $outlet['connector_id'],
-                $session['transaction_id'],
-                $session['seq_no'],
-            );
-            throw new OcppProtocolException('The CSMS did not accept the idToken in the TransactionEvent response.');
+            return;
         }
 
         $chargingSequence = $sequence + 1;
@@ -1743,7 +1740,9 @@ final class StationSessionWorker
                 $transactionId,
                 $session['meter_wh'],
             );
-            throw new OcppProtocolException('The CSMS did not accept the authorization-first idToken in the TransactionEvent response.');
+            $this->reportReleasedOutlet($chargerId, $outlet['evse_id'], $outlet['connector_id']);
+
+            return;
         }
     }
 
@@ -1833,6 +1832,54 @@ final class StationSessionWorker
             $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
         }
         $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id'], $reportCurrentStatus);
+    }
+
+    private function handleTransactionEventResponse(int $chargerId, array $event, array $response): void
+    {
+        $token = $event['idToken']['idToken'] ?? null;
+        $status = $response['idTokenInfo']['status'] ?? null;
+        $transactionId = $event['transactionInfo']['transactionId'] ?? null;
+        if (!is_string($token) || !is_string($transactionId) || !is_string($status) || $status === 'Accepted') {
+            return;
+        }
+
+        $session = $this->outletSessions->findByTransactionId($chargerId, $transactionId);
+        if ($session === null
+            || $session['id_token'] !== $token
+            || $session['connector_status'] !== 'Occupied'
+            || $session['authorization_pending']
+            || $session['remote_start_pending']
+            || $session['stop_reason'] !== null) {
+            return;
+        }
+
+        $stopTxOnInvalidId = $this->deviceModelSettings->get($chargerId, 'StopTxOnInvalidId') === 'true';
+        $triggerReason = $stopTxOnInvalidId ? 'Deauthorized' : 'ChargingStateChanged';
+        $chargingState = $stopTxOnInvalidId ? 'EVConnected' : 'SuspendedEVSE';
+        $sequence = $session['seq_no'] + 1;
+        $deauthorizedEvent = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => $triggerReason,
+            'seqNo' => $sequence,
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => $chargingState,
+            ],
+            'evse' => ['id' => $session['evse_id'], 'connectorId' => $session['connector_id']],
+        ];
+        $queuedEvent = $this->transactionEventDelivery->enqueueForActiveTransaction(
+            $chargerId,
+            $deauthorizedEvent,
+            $session['evse_id'],
+            $session['connector_id'],
+            $transactionId,
+            $session['seq_no'],
+            'EVSE',
+            updateSuspension: true,
+            clearAuthorization: true,
+        );
+        $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
     }
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void

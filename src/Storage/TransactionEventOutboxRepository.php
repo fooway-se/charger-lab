@@ -64,6 +64,7 @@ final class TransactionEventOutboxRepository
         int $previousSequence,
         ?string $suspendedBy = null,
         bool $updateSuspension = false,
+        bool $clearAuthorization = false,
     ): array {
         $transactionInfo = is_array($payload['transactionInfo'] ?? null) ? $payload['transactionInfo'] : [];
         $eventTransactionId = $transactionInfo['transactionId'] ?? null;
@@ -87,6 +88,7 @@ final class TransactionEventOutboxRepository
                     $suspendedBy,
                     $previousSequence + 1,
                     $previousSequence,
+                    $clearAuthorization,
                 );
             } else {
                 $sessions->advanceSequenceForTrigger(

@@ -21,14 +21,21 @@ final class TransactionEventDelivery
      */
     private readonly Closure $ocppClientFactory;
 
+    /**
+     * @var (Closure(int, array<string, mixed>, array<string, mixed>): void)|null
+     */
+    private readonly ?Closure $transactionEventResponseHandler;
+
     public function __construct(
         private readonly TransactionEventOutboxRepository $outbox,
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $settings,
         Closure $ocppClientFactory,
         private readonly ?OfflineStatusRepository $offlineStatuses = null,
+        ?Closure $transactionEventResponseHandler = null,
     ) {
         $this->ocppClientFactory = $ocppClientFactory;
+        $this->transactionEventResponseHandler = $transactionEventResponseHandler;
     }
 
     public function enqueue(int $chargerId, array $payload): array
@@ -49,6 +56,7 @@ final class TransactionEventDelivery
         int $previousSequence,
         ?string $suspendedBy = null,
         bool $updateSuspension = false,
+        bool $clearAuthorization = false,
     ): array {
         return $this->outbox->enqueueForActiveTransaction(
             $chargerId,
@@ -60,6 +68,7 @@ final class TransactionEventDelivery
             $previousSequence,
             $suspendedBy,
             $updateSuspension,
+            $clearAuthorization,
         );
     }
 
@@ -78,6 +87,7 @@ final class TransactionEventDelivery
     public function deliverThrough(int $chargerId, int $targetId): array
     {
         $targetResponse = null;
+        $rejectedIdTokens = [];
         while (($queuedEvent = $this->outbox->nextPending($chargerId)) !== null) {
             try {
                 $response = ($this->ocppClientFactory)($chargerId)->request(
@@ -86,6 +96,11 @@ final class TransactionEventDelivery
                     $queuedEvent['message_id'],
                 );
                 $this->outbox->markDelivered($queuedEvent['id']);
+                if (is_array($queuedEvent['payload']['idToken'] ?? null)
+                    && is_string($response['idTokenInfo']['status'] ?? null)
+                    && $response['idTokenInfo']['status'] !== 'Accepted') {
+                    $rejectedIdTokens[] = [$queuedEvent['payload'], $response];
+                }
                 if ($queuedEvent['id'] === $targetId) {
                     $targetResponse = $response;
                 }
@@ -102,6 +117,12 @@ final class TransactionEventDelivery
 
         if ($targetResponse === null) {
             throw new TransactionEventRetryPendingException('The transaction event is queued until its retry interval expires.');
+        }
+
+        if ($this->transactionEventResponseHandler !== null) {
+            foreach ($rejectedIdTokens as [$payload, $response]) {
+                ($this->transactionEventResponseHandler)($chargerId, $payload, $response);
+            }
         }
 
         return $targetResponse;

@@ -396,15 +396,17 @@ final class OutletSessionRepository
         ?string $suspendedBy,
         int $sequence,
         ?int $previousSequence = null,
+        bool $clearAuthorization = false,
     ): void {
         if ($suspendedBy !== null && !in_array($suspendedBy, ['EV', 'EVSE'], true)) {
             throw new RuntimeException('Charging suspension must be controlled by the EV or EVSE.');
         }
 
         $sequenceCondition = $previousSequence === null ? '' : 'AND seq_no = :previous_sequence';
+        $authorizationUpdate = $clearAuthorization ? ', id_token = NULL' : '';
         $statement = $this->database->prepare(<<<SQL
             UPDATE outlet_session
-            SET suspended_by = :suspended_by, seq_no = :seq_no
+            SET suspended_by = :suspended_by, seq_no = :seq_no{$authorizationUpdate}
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND connector_status = 'Occupied' AND transaction_id = :transaction_id
                 AND id_token IS NOT NULL AND authorization_deadline IS NULL

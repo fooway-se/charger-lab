@@ -105,6 +105,44 @@ it('stores a triggered event and advances its active session sequence atomically
         ->and($database->inTransaction())->toBeFalse();
 });
 
+it('stores a deauthorization event while clearing the token and suspending energy atomically', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->markOccupied($chargerId, 1, 1, 'deauthorized-transaction');
+    $sessions->attachToken($chargerId, 1, 1, 'deauthorized-transaction', 'INVALID-TAG', 1);
+    $outbox = new TransactionEventOutboxRepository($database);
+    $payload = [
+        'eventType' => 'Updated',
+        'triggerReason' => 'Deauthorized',
+        'seqNo' => 2,
+        'transactionInfo' => ['transactionId' => 'deauthorized-transaction', 'chargingState' => 'EVConnected'],
+        'evse' => ['id' => 1, 'connectorId' => 1],
+    ];
+
+    $entry = $outbox->enqueueForActiveTransaction(
+        $chargerId,
+        $payload,
+        $sessions,
+        1,
+        1,
+        'deauthorized-transaction',
+        1,
+        'EVSE',
+        updateSuspension: true,
+        clearAuthorization: true,
+    );
+    $session = $sessions->find($chargerId, 1, 1);
+
+    expect($entry['payload'])->toBe($payload)
+        ->and($session)->toHaveKey('id_token')
+        ->and($session['id_token'])->toBeNull()
+        ->and($session['suspended_by'] ?? null)->toBe('EVSE')
+        ->and($session['seq_no'] ?? null)->toBe(2)
+        ->and($database->inTransaction())->toBeFalse();
+});
+
 it('rolls back a triggered event if its transaction sequence cannot advance', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();

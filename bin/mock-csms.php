@@ -1556,7 +1556,7 @@ function stationCallResult(string $action, mixed $payload = null): array|stdClas
     return match ($action) {
         'Heartbeat' => ['currentTime' => gmdate('Y-m-d\\TH:i:s\\Z')],
         'TransactionEvent' => isset($payload['idToken'])
-            ? ['idTokenInfo' => ['status' => 'Accepted']]
+            ? ['idTokenInfo' => ['status' => getenv('MOCK_CSMS_TRANSACTION_EVENT_ID_TOKEN_STATUS') ?: 'Accepted']]
             : new stdClass(),
         default => new stdClass(),
     };
