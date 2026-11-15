@@ -423,8 +423,8 @@ final class StationController
             if ($outlet === null) {
                 throw new InvalidArgumentException('Select a valid outlet.');
             }
-            if ($charger['connection_status'] !== 'Connected' || $charger['boot_status'] !== 'Accepted') {
-                return Response::json(409, ['error' => 'Connect the charger with BootNotification before simulating a vehicle.']);
+            if ($charger['boot_status'] !== 'Accepted') {
+                return Response::json(409, ['error' => 'Accept BootNotification before simulating a vehicle.']);
             }
 
             $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);

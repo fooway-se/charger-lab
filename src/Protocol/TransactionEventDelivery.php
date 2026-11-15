@@ -6,6 +6,7 @@ namespace ChargerEmulator\Protocol;
 
 use ChargerEmulator\Storage\DeviceModelSettingsRepository;
 use ChargerEmulator\Storage\OutletSessionRepository;
+use ChargerEmulator\Storage\OfflineStatusRepository;
 use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use Closure;
 use Throwable;
@@ -25,12 +26,17 @@ final class TransactionEventDelivery
         private readonly OutletSessionRepository $outletSessions,
         private readonly DeviceModelSettingsRepository $settings,
         Closure $ocppClientFactory,
+        private readonly ?OfflineStatusRepository $offlineStatuses = null,
     ) {
         $this->ocppClientFactory = $ocppClientFactory;
     }
 
     public function enqueue(int $chargerId, array $payload): array
     {
+        if ($this->offlineStatuses?->pending($chargerId) !== null) {
+            $payload['offline'] = true;
+        }
+
         return $this->outbox->enqueue($chargerId, $payload);
     }
 

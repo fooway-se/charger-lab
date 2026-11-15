@@ -18,6 +18,7 @@ use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\LocalAuthorizationListRepository;
+use ChargerEmulator\Storage\OfflineStatusRepository;
 use ChargerEmulator\Storage\FirmwareUpdateRepository;
 use ChargerEmulator\Domain\FirmwareUpdateManager;
 use ChargerEmulator\Domain\CertificateManagementManager;
@@ -48,6 +49,7 @@ $worker = new StationSessionWorker(
     new WorkspaceSettingsRepository($database),
     new NetworkProfileRepository($database),
     new LocalAuthorizationListRepository($database),
+    new OfflineStatusRepository($database),
     $firmwareUpdates,
     $certificateManagement,
 );

@@ -24,6 +24,7 @@ final class DeviceModel
         'RetryBackOffRandomRange',
         'RetryBackOffRepeatTimes',
         'HeartbeatInterval',
+        'OfflineThreshold',
         'NetworkConfigurationPriority',
         'NetworkProfileConnectionAttempts',
     ];
@@ -50,6 +51,7 @@ final class DeviceModel
             'RetryBackOffWaitMinimum' => ['integer', 'ReadWrite', true],
             'RetryBackOffRandomRange' => ['integer', 'ReadWrite', true],
             'RetryBackOffRepeatTimes' => ['integer', 'ReadWrite', true],
+            'OfflineThreshold' => ['integer', 'ReadWrite', true],
             'HeartbeatInterval' => ['integer', 'ReadWrite', true],
             'NetworkConfigurationPriority' => ['MemberList', 'ReadWrite', true, '0,1,2'],
             'NetworkProfileConnectionAttempts' => ['integer', 'ReadWrite', true],

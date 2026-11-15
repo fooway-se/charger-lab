@@ -26,6 +26,7 @@ final class DeviceModelSettingsRepository
         'RetryBackOffWaitMinimum' => '5',
         'RetryBackOffRandomRange' => '5',
         'RetryBackOffRepeatTimes' => '3',
+        'OfflineThreshold' => '300',
         'HeartbeatInterval' => '300',
         'NetworkConfigurationPriority' => '0',
         'NetworkProfileConnectionAttempts' => '3',

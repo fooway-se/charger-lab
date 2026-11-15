@@ -35,6 +35,7 @@ final class Database
             self::migrateOutletSessions($pdo);
             self::migrateAvailability($pdo);
             self::migrateDeviceModelSettings($pdo);
+            self::migrateOfflineStatus($pdo);
             self::migrateTransactionEventOutbox($pdo);
             self::migrateResetRequests($pdo);
             self::migrateNetworkProfiles($pdo);
@@ -484,7 +485,8 @@ final class Database
         if ($schema !== false && str_contains((string) $schema, "'Interval'")
             && str_contains((string) $schema, "'SendDuringIdle'")
             && str_contains((string) $schema, "'NetworkConfigurationPriority'")
-            && str_contains((string) $schema, "'NetworkProfileConnectionAttempts'")) {
+            && str_contains((string) $schema, "'NetworkProfileConnectionAttempts'")
+            && str_contains((string) $schema, "'OfflineThreshold'")) {
             return;
         }
 
@@ -495,7 +497,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'NetworkProfileConnectionAttempts', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'NetworkProfileConnectionAttempts', 'OfflineThreshold', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )
@@ -526,5 +528,23 @@ final class Database
             )
             SQL);
         $pdo->exec('CREATE INDEX IF NOT EXISTS transaction_event_outbox_pending ON transaction_event_outbox (charger_id, status, id)');
+    }
+
+    private static function migrateOfflineStatus(PDO $pdo): void
+    {
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS charger_offline_state (
+                charger_id INTEGER PRIMARY KEY REFERENCES charger(id) ON DELETE CASCADE,
+                offline_since REAL NOT NULL
+            )
+            SQL);
+        $pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS charger_offline_connector_change (
+                charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
+                evse_id INTEGER NOT NULL CHECK (evse_id > 0),
+                connector_id INTEGER NOT NULL CHECK (connector_id > 0),
+                PRIMARY KEY (charger_id, evse_id, connector_id)
+            )
+            SQL);
     }
 }

@@ -498,6 +498,195 @@ it('starts an authorization-first transaction and only charges after the vehicle
     }
 })->group('integration');
 
+function runOfflineStatusScenario(string $threshold, string $retryWait, int $expectedStatuses): array
+{
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-offline-status-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $closeSignalPath = $directory . '/close-csms-connection';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_CLOSE_AFTER_STATUS_COUNT' => '2',
+            'MOCK_CSMS_CLOSE_SIGNAL_PATH' => $closeSignalPath,
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $charger = $state['chargers'][0] ?? [];
+        $chargerId = (int) ($charger['id'] ?? 0);
+        expect($chargerId)->toBeGreaterThan(0);
+
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'OfflineStatusTest' . bin2hex(random_bytes(3)),
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => $charger['vendor_name'],
+            'model' => $charger['model'],
+            'serial_number' => $charger['serial_number'],
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ];
+        [, $configurationHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($configurationHeaders[0] ?? '')->toContain('200');
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($bootHeaders[0] ?? '')->toContain('200');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 8_000);
+
+        $database = new PDO('sqlite:' . $databasePath);
+        $settings = new ChargerEmulator\Storage\DeviceModelSettingsRepository($database);
+        $settings->set($chargerId, 'OfflineThreshold', $threshold);
+        $settings->set($chargerId, 'RetryBackOffWaitMinimum', $retryWait);
+        $settings->set($chargerId, 'RetryBackOffRandomRange', '0');
+        $settings->set($chargerId, 'RetryBackOffRepeatTimes', '0');
+        unset($database);
+
+        touch($closeSignalPath);
+        $deadline = microtime(true) + 3;
+        do {
+            [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $offlineState = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+            if (($offlineState['chargers'][0]['connection_status'] ?? null) === 'Connection failed') {
+                break;
+            }
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+        expect($offlineState['chargers'][0]['connection_status'] ?? null)->toBe('Connection failed');
+        unlink($closeSignalPath);
+
+        [$plugBody, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        [$unplugBody, $unplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($plugHeaders[0] ?? '')->toContain('200')
+            ->and($unplugHeaders[0] ?? '')->toContain('200')
+            ->and(json_decode((string) $plugBody, true)['result']['status'] ?? null)->toBe('PluggedIn')
+            ->and(json_decode((string) $unplugBody, true)['result']['status'] ?? null)->toBe('Unplugged');
+
+        $deadline = microtime(true) + 8;
+        do {
+            [$body] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $finalState = is_string($body) ? json_decode($body, true, flags: JSON_THROW_ON_ERROR) : [];
+            $chargerState = $finalState['chargers'][0] ?? [];
+            $entries = $chargerState['entries'] ?? [];
+            $statuses = array_values(array_filter($entries, static fn (array $entry): bool =>
+                ($entry['action'] ?? null) === 'StatusNotification' && ($entry['direction'] ?? null) === 'outgoing'));
+            $events = array_values(array_filter($entries, static fn (array $entry): bool =>
+                ($entry['action'] ?? null) === 'TransactionEvent' && ($entry['direction'] ?? null) === 'outgoing'));
+            if (count($statuses) >= 2 + $expectedStatuses && count($events) >= 2
+                && ($chargerState['connection_status'] ?? null) === 'Connected') {
+                break;
+            }
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+
+        $reconnectedStatuses = array_slice($statuses, 2);
+        $reconnectStatusPayloads = array_map(static function (array $entry): array {
+            $call = json_decode($entry['message'], true);
+
+            return $call[3] ?? [];
+        }, $reconnectedStatuses);
+        $firstReconnectedStatusIndex = array_search($reconnectedStatuses[0]['id'] ?? null, array_column($entries, 'id'), true);
+        $firstQueuedTransactionIndex = null;
+        $queuedEventsMarkedOffline = count($events) >= 2;
+        foreach ($entries as $index => $entry) {
+            if (($entry['action'] ?? null) === 'TransactionEvent'
+                && ($entry['direction'] ?? null) === 'outgoing') {
+                $call = json_decode($entry['message'], true);
+                if (!($call[3]['offline'] ?? false)) {
+                    $queuedEventsMarkedOffline = false;
+                }
+                if (($call[3]['eventType'] ?? null) === 'Started' && $firstQueuedTransactionIndex === null) {
+                    $firstQueuedTransactionIndex = $index;
+                }
+            }
+        }
+
+        return [
+            'status_count' => count($reconnectedStatuses),
+            'statuses' => $reconnectStatusPayloads,
+            'queued_events_follow_status' => is_int($firstReconnectedStatusIndex)
+                && is_int($firstQueuedTransactionIndex) && $firstReconnectedStatusIndex < $firstQueuedTransactionIndex,
+            'queued_events_marked_offline' => $queuedEventsMarkedOffline,
+            'connection_status' => $chargerState['connection_status'] ?? null,
+        ];
+    } finally {
+        if (is_resource($app)) {
+            stopProcess($app);
+        }
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        stopProcess($mockCsms);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $closeSignalPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+}
+
+it('reports every connector after an offline period exceeds OfflineThreshold', function (): void {
+    $result = runOfflineStatusScenario('1', '3', 2);
+
+    expect($result['status_count'])->toBe(2)
+        ->and(array_column($result['statuses'], 'connectorStatus'))->toBe(['Available', 'Available'])
+        ->and($result['queued_events_follow_status'])->toBeTrue()
+        ->and($result['queued_events_marked_offline'])->toBeTrue()
+        ->and($result['connection_status'])->toBe('Connected');
+})->group('integration');
+
+it('reports only changed connectors after a shorter offline period', function (): void {
+    $result = runOfflineStatusScenario('10', '1', 1);
+
+    expect($result['status_count'])->toBe(1)
+        ->and($result['statuses'][0]['connectorStatus'] ?? null)->toBe('Available')
+        ->and($result['statuses'][0]['evseId'] ?? null)->toBe(1)
+        ->and($result['statuses'][0]['connectorId'] ?? null)->toBe(1)
+        ->and($result['queued_events_follow_status'])->toBeTrue()
+        ->and($result['queued_events_marked_offline'])->toBeTrue()
+        ->and($result['connection_status'])->toBe('Connected');
+})->group('integration');
+
 it('boots multiple chargers and runs a plug authorize unplug flow', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];

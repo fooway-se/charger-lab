@@ -34,6 +34,7 @@ use ChargerEmulator\Storage\TransactionEventOutboxRepository;
 use ChargerEmulator\Storage\ResetRepository;
 use ChargerEmulator\Storage\NetworkProfileRepository;
 use ChargerEmulator\Storage\LocalAuthorizationListRepository;
+use ChargerEmulator\Storage\OfflineStatusRepository;
 use ChargerEmulator\Storage\WorkspaceSettingsRepository;
 use RuntimeException;
 use Throwable;
@@ -64,6 +65,7 @@ final class StationSessionWorker
         private readonly WorkspaceSettingsRepository $workspaceSettings,
         private readonly NetworkProfileRepository $networkProfiles,
         private readonly LocalAuthorizationListRepository $authorizationLists,
+        private readonly OfflineStatusRepository $offlineStatuses,
         private readonly ?FirmwareUpdateManager $firmwareUpdates = null,
         private readonly ?CertificateManagementManager $certificateManagement = null,
     ) {
@@ -72,6 +74,7 @@ final class StationSessionWorker
             $this->outletSessions,
             $this->deviceModelSettings,
             fn (int $chargerId): OcppClient => $this->createOcppClient($chargerId),
+            $this->offlineStatuses,
         );
         $this->meterValueReporter = new MeterValueReporter(
             $this->outletSessions,
@@ -161,7 +164,12 @@ final class StationSessionWorker
             return;
         }
 
-        $this->ensureOcppConnection($chargerId, $charger, $command['action']);
+        $isOfflinePhysicalAction = in_array($command['action'], ['PlugIn', 'Unplug'], true)
+            && ($this->sessions[$chargerId]['connection'] ?? null) === null
+            && ($charger['boot_status'] ?? null) === 'Accepted';
+        if (!$isOfflinePhysicalAction) {
+            $this->ensureOcppConnection($chargerId, $charger, $command['action']);
+        }
         $outletResult = match ($command['action']) {
             'PlugIn' => $this->plugIn($chargerId, $command['payload']),
             'Unplug' => $this->unplug($chargerId, $command['payload']),
@@ -348,6 +356,10 @@ final class StationSessionWorker
                     return true;
                 }
 
+                if ($this->reportOfflineStatusChanges($chargerId)) {
+                    return true;
+                }
+
                 if ($session['next_heartbeat_at'] !== null && microtime(true) >= $session['next_heartbeat_at']) {
                     $this->sendHeartbeat($chargerId);
                     $interval = $this->sessions[$chargerId]['heartbeat_interval'];
@@ -424,6 +436,9 @@ final class StationSessionWorker
             if (($charger['boot_status'] ?? null) !== 'Accepted' && !$resetReconnecting && !$firmwareRebootPending) {
                 continue;
             }
+            if (($charger['boot_status'] ?? null) === 'Accepted') {
+                $this->offlineStatuses->begin($chargerId);
+            }
 
             $profiles = $this->prioritizedNetworkProfiles($chargerId, $charger);
             $tlsSettings = $this->workspaceSettings->getTlsSettings();
@@ -466,11 +481,14 @@ final class StationSessionWorker
         $this->firmwareUpdates?->recoverInterrupted();
 
         $connectionFailedBeforeOpen = $this->sessions[$chargerId]['connection'] === null;
+        $charger = $this->chargers->get($chargerId);
+        if (!$connectionFailedBeforeOpen && ($charger['boot_status'] ?? null) === 'Accepted') {
+            $this->offlineStatuses->begin($chargerId);
+        }
         if ($connectionFailedBeforeOpen) {
             $attempts = $this->sessions[$chargerId]['network_profile_attempts'] + 1;
             $maximumAttempts = $this->deviceModelSettingInt($chargerId, 'NetworkProfileConnectionAttempts', 3, 1);
             if ($attempts >= $maximumAttempts) {
-                $charger = $this->chargers->get($chargerId);
                 if ($charger === null) {
                     unset($this->sessions[$chargerId]);
 
@@ -562,6 +580,9 @@ final class StationSessionWorker
         unset($profile);
 
         $this->sessions[$chargerId]['password'] = $password;
+        if (($charger['boot_status'] ?? null) === 'Accepted') {
+            $this->offlineStatuses->begin($chargerId);
+        }
         $this->sessions[$chargerId]['connection'] = null;
         $this->sessions[$chargerId]['next_reconnect_at'] = microtime(true);
         $this->sessions[$chargerId]['reconnect_attempt'] = 0;
@@ -634,6 +655,7 @@ final class StationSessionWorker
             $this->chargers->setBootStatus($chargerId, $bootStatus);
             $this->chargers->setConnectionStatus($chargerId, 'Connected');
             $this->reportAvailableOutlets($chargerId, $charger);
+            $this->offlineStatuses->clear($chargerId);
             $firmwareUpdate = $this->firmwareUpdates?->current($chargerId);
             if (($firmwareUpdate['state'] ?? null) === 'InstallRebooting') {
                 $this->sendFirmwareStatusNotification($chargerId, (int) $firmwareUpdate['request_id'], 'Installed');
@@ -1026,7 +1048,9 @@ final class StationSessionWorker
         $queuedEvent = $this->transactionEventDelivery->enqueue($chargerId, $transactionEvent);
         $this->outletSessions->markOccupied($chargerId, $evseId, $connectorId, $transactionId);
         $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
-        $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+        if (($this->sessions[$chargerId]['connection'] ?? null) instanceof WebSocketConnection) {
+            $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+        }
 
         return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
     }
@@ -1535,18 +1559,76 @@ final class StationSessionWorker
             $session['transaction_id'],
             $meterWh ?? $session['meter_wh'],
         );
-        $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+        if (($this->sessions[$chargerId]['connection'] ?? null) instanceof WebSocketConnection) {
+            $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+        }
         $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id'], $reportCurrentStatus);
     }
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void
     {
-        $this->createOcppClient($chargerId)->request('StatusNotification', [
-            'timestamp' => gmdate(DATE_ATOM),
-            'connectorStatus' => $status,
-            'evseId' => $evseId,
-            'connectorId' => $connectorId,
-        ]);
+        $connection = $this->sessions[$chargerId]['connection'] ?? null;
+        if (!$connection instanceof WebSocketConnection) {
+            $this->offlineStatuses->markConnectorChanged($chargerId, $evseId, $connectorId);
+
+            return;
+        }
+
+        try {
+            $this->createOcppClient($chargerId)->request('StatusNotification', [
+                'timestamp' => gmdate(DATE_ATOM),
+                'connectorStatus' => $status,
+                'evseId' => $evseId,
+                'connectorId' => $connectorId,
+            ]);
+        } catch (Throwable $exception) {
+            if (!$this->isOcppCallError($exception)) {
+                $this->offlineStatuses->begin($chargerId);
+                $this->offlineStatuses->markConnectorChanged($chargerId, $evseId, $connectorId);
+            }
+
+            throw $exception;
+        }
+    }
+
+    private function reportOfflineStatusChanges(int $chargerId): bool
+    {
+        $pending = $this->offlineStatuses->pending($chargerId);
+        $charger = $this->chargers->get($chargerId);
+        if ($pending === null
+            || !isset($this->sessions[$chargerId])
+            || !$this->sessions[$chargerId]['connection'] instanceof WebSocketConnection
+            || ($charger['boot_status'] ?? null) !== 'Accepted') {
+            return false;
+        }
+
+        $threshold = $this->deviceModelSettingInt($chargerId, 'OfflineThreshold', 0, 0);
+        $reportAll = microtime(true) - $pending['offline_since'] > $threshold;
+        if ($reportAll) {
+            $outlets = $this->outletSessions->allForCharger($chargerId);
+        } else {
+            $outlets = [];
+            foreach ($pending['changed_connectors'] as $connector) {
+                $outlet = $this->outletSessions->find($chargerId, $connector['evse_id'], $connector['connector_id']);
+                if ($outlet !== null) {
+                    $outlets[] = $outlet;
+                }
+            }
+        }
+
+        foreach ($outlets as $outlet) {
+            $status = $this->availability->connectorStatus(
+                $chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $outlet['connector_status'],
+            );
+            $this->sendStatusNotification($chargerId, $outlet['evse_id'], $outlet['connector_id'], $status);
+        }
+
+        $this->offlineStatuses->clear($chargerId);
+
+        return true;
     }
 
     private function processFirmwareUpdate(int $chargerId): bool

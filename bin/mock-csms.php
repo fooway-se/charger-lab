@@ -121,9 +121,36 @@ function serveOcppSession($client, string $requestLine, string $stationKey): voi
         getenv('MOCK_CSMS_BOOT_COUNT_PATH') ?: '',
         (int) (getenv('MOCK_CSMS_PENDING_BOOT_COUNT') ?: 0),
     );
-    while (($stationCall = readStationCall($client, $requestLine)) !== null) {
+    while (true) {
+        $statusCountToClose = (int) (getenv('MOCK_CSMS_CLOSE_AFTER_STATUS_COUNT') ?: 0);
+        $closeSignalPath = getenv('MOCK_CSMS_CLOSE_SIGNAL_PATH') ?: '';
+        if ($statusCountToClose > 0 && $closeSignalPath !== ''
+            && $session->statusNotificationCount >= $statusCountToClose && is_file($closeSignalPath)) {
+            writeFrame($client, 0x8, '');
+
+            return;
+        }
+
+        $read = [$client];
+        $write = [];
+        $except = [];
+        $ready = @stream_select($read, $write, $except, 0, 100_000);
+        if ($ready === false) {
+            return;
+        }
+        if ($ready === 0) {
+            continue;
+        }
+
+        $stationCall = readStationCall($client, $requestLine);
+        if ($stationCall === null) {
+            return;
+        }
         [$payload, $call] = $stationCall;
         handleStationCall($client, $payload, $call, $session);
+        if (($call[2] ?? null) === 'StatusNotification') {
+            $session->statusNotificationCount++;
+        }
     }
 }
 
@@ -853,6 +880,8 @@ final class MockCsmsSession
     public bool $triggerTransactionEventSent = false;
 
     public bool $baseReportSent = false;
+
+    public int $statusNotificationCount = 0;
 
     public function __construct(
         public readonly string $stationKey,

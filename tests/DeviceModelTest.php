@@ -58,6 +58,63 @@ it('reports supported device model variables and current outlet state', function
     ]);
 });
 
+it('exposes and persists OCPPCommCtrlr OfflineThreshold', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $settings = new DeviceModelSettingsRepository($database);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
+
+    $getInitial = $deviceModel->processVariableAction('GetVariables', ['getVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'OfflineThreshold'],
+    ]]]);
+    $set = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'OfflineThreshold'],
+        'attributeValue' => '300',
+    ]]]);
+    $getUpdated = $deviceModel->processVariableAction('GetVariables', ['getVariableData' => [[
+        'component' => ['name' => 'OCPPCommCtrlr'],
+        'variable' => ['name' => 'OfflineThreshold'],
+    ]]]);
+    $inventory = array_values(array_filter(
+        $deviceModel->inventory('FullInventory'),
+        static fn (array $entry): bool => ($entry['component']['name'] ?? null) === 'OCPPCommCtrlr'
+            && ($entry['variable']['name'] ?? null) === 'OfflineThreshold',
+    ));
+
+    expect($getInitial['getVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
+        ->and($getInitial['getVariableResult'][0]['attributeValue'] ?? null)->toBe('300')
+        ->and($set['setVariableResult'][0]['attributeStatus'] ?? null)->toBe('Accepted')
+        ->and($getUpdated['getVariableResult'][0]['attributeValue'] ?? null)->toBe('300')
+        ->and($settings->get($chargerId, 'OfflineThreshold'))->toBe('300')
+        ->and($inventory[0]['variableCharacteristics']['dataType'] ?? null)->toBe('integer')
+        ->and($inventory[0]['variableAttribute'][0]['mutability'] ?? null)->toBe('ReadWrite');
+});
+
+it('rejects invalid OCPPCommCtrlr OfflineThreshold values', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, (new OutletMap(1, 'independent'))->outlets());
+    $settings = new DeviceModelSettingsRepository($database);
+    $deviceModel = new DeviceModel($outletSessions, $settings, $chargerId, new AvailabilityRepository($database));
+
+    $set = $deviceModel->processVariableAction('SetVariables', ['setVariableData' => array_map(
+        static fn (string $value): array => [
+            'component' => ['name' => 'OCPPCommCtrlr'],
+            'variable' => ['name' => 'OfflineThreshold'],
+            'attributeValue' => $value,
+        ],
+        ['-1', '1.5', '01', 'not-a-number'],
+    )]);
+
+    expect(array_column($set['setVariableResult'], 'attributeStatus'))->toBe(['Rejected', 'Rejected', 'Rejected', 'Rejected'])
+        ->and($settings->get($chargerId, 'OfflineThreshold'))->toBe('300');
+});
+
 it('returns Device Model status codes for unknown and read-only variables', function (): void {
     $database = Database::connect(':memory:');
     $chargers = new ChargerRepository($database);
