@@ -486,7 +486,9 @@ final class Database
             && str_contains((string) $schema, "'SendDuringIdle'")
             && str_contains((string) $schema, "'NetworkConfigurationPriority'")
             && str_contains((string) $schema, "'NetworkProfileConnectionAttempts'")
-            && str_contains((string) $schema, "'OfflineThreshold'")) {
+            && str_contains((string) $schema, "'OfflineThreshold'")
+            && str_contains((string) $schema, "'OrganizationName'")
+            && str_contains((string) $schema, "'AlignedTxEndedInterval'")) {
             return;
         }
 
@@ -497,7 +499,7 @@ final class Database
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS device_model_setting (
                 charger_id INTEGER NOT NULL REFERENCES charger(id) ON DELETE CASCADE,
-                variable TEXT NOT NULL CHECK (variable IN ('EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'NetworkProfileConnectionAttempts', 'OfflineThreshold', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
+                variable TEXT NOT NULL CHECK (variable IN ('ActiveNetworkProfile', 'AlignedTxEndedInterval', 'AlignedTxEndedMeasurands', 'EVConnectionTimeOut', 'HeartbeatInterval', 'Interval', 'LocalAuthorizeOffline', 'LocalPreAuthorize', 'Measurands', 'MessageAttemptsTransactionEvent', 'MessageAttemptIntervalTransactionEvent', 'NetworkConfigurationPriority', 'NetworkProfileConnectionAttempts', 'OfflineThreshold', 'OrganizationName', 'ResetRetries', 'RetryBackOffWaitMinimum', 'RetryBackOffRandomRange', 'RetryBackOffRepeatTimes', 'SendDuringIdle', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId', 'TimeSource', 'TxEndedInterval', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedInterval', 'TxUpdatedMeasurands')),
                 value TEXT NOT NULL,
                 PRIMARY KEY (charger_id, variable)
             )

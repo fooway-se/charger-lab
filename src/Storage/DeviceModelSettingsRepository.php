@@ -13,6 +13,9 @@ use RuntimeException;
 final class DeviceModelSettingsRepository
 {
     private const DEFAULTS = [
+        'ActiveNetworkProfile' => '0',
+        'AlignedTxEndedInterval' => '0',
+        'AlignedTxEndedMeasurands' => 'Energy.Active.Import.Register,Power.Active.Import',
         'Interval' => '0',
         'Measurands' => 'Energy.Active.Import.Register,Power.Active.Import',
         'SendDuringIdle' => 'false',
@@ -23,6 +26,10 @@ final class DeviceModelSettingsRepository
         'TxEndedInterval' => '0',
         'MessageAttemptsTransactionEvent' => '3',
         'MessageAttemptIntervalTransactionEvent' => '60',
+        'LocalAuthorizeOffline' => 'false',
+        'LocalPreAuthorize' => 'false',
+        'OrganizationName' => 'ChargerEmulator',
+        'ResetRetries' => '3',
         'RetryBackOffWaitMinimum' => '5',
         'RetryBackOffRandomRange' => '5',
         'RetryBackOffRepeatTimes' => '3',
@@ -31,6 +38,9 @@ final class DeviceModelSettingsRepository
         'NetworkConfigurationPriority' => '0',
         'NetworkProfileConnectionAttempts' => '3',
         'EVConnectionTimeOut' => '30',
+        'StopTxOnEVSideDisconnect' => 'true',
+        'StopTxOnInvalidId' => 'false',
+        'TimeSource' => 'Heartbeat,RealTimeClock',
     ];
 
     public function __construct(private readonly PDO $database)

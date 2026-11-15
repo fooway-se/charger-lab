@@ -281,7 +281,9 @@ final class StationSessionWorker
             tlsServerName: $tlsSettings['tls_server_name'] !== '' ? $tlsSettings['tls_server_name'] : null,
             tlsCaCertificatePem: $tlsSettings['tls_ca_certificate'] !== '' ? $tlsSettings['tls_ca_certificate'] : null,
         );
+        $activeProfile = $this->sessions[$chargerId]['network_profiles'][$this->sessions[$chargerId]['network_profile_index']];
         $this->networkProfiles->rememberSuccessful($chargerId, $profile, $username, $password);
+        $this->deviceModelSettings->set($chargerId, 'ActiveNetworkProfile', (string) $this->activeNetworkProfileSlot($chargerId, $activeProfile));
     }
 
     private function queueDueBootRetries(): void
@@ -337,6 +339,14 @@ final class StationSessionWorker
                     $this->sessions[$chargerId]['network_profile_attempts'] = 0;
                     $profile = $session['network_profiles'][$session['network_profile_index']]['connectionData'];
                     $this->networkProfiles->rememberSuccessful($chargerId, $profile, $session['username'], $session['password']);
+                    $this->deviceModelSettings->set(
+                        $chargerId,
+                        'ActiveNetworkProfile',
+                        (string) $this->activeNetworkProfileSlot(
+                            $chargerId,
+                            $session['network_profiles'][$session['network_profile_index']],
+                        ),
+                    );
                     $this->sessions[$chargerId]['next_heartbeat_at'] = microtime(true) + $session['heartbeat_interval'];
                     $this->chargers->setConnectionStatus($chargerId, 'Connected');
                     $session = $this->sessions[$chargerId];
@@ -682,6 +692,7 @@ final class StationSessionWorker
             $chargerId,
             $this->availability,
             fn (string $password): mixed => $this->chargers->setCsmsPassword($chargerId, $password),
+            fn (array $component, array $variable): ?string => $this->runtimeDeviceModelVariableValue($chargerId, $component, $variable),
         );
         $baseReport = new BaseReportRequestHandler($deviceModel);
         $changeAvailability = new ChangeAvailabilityRequestHandler($chargerId, $this->availability);
@@ -901,6 +912,54 @@ final class StationSessionWorker
                 }
             },
         );
+    }
+
+    private function activeNetworkProfileSlot(int $chargerId, array $profile): int
+    {
+        $slot = $profile['slot'] ?? null;
+        if (is_int($slot) && $slot >= 0) {
+            return $slot;
+        }
+        if (is_string($slot) && ctype_digit($slot)) {
+            return (int) $slot;
+        }
+
+        return $this->deviceModelSettingInt($chargerId, 'ActiveNetworkProfile', 0, 0);
+    }
+
+    private function runtimeDeviceModelVariableValue(int $chargerId, array $component, array $variable): ?string
+    {
+        $componentName = $component['name'] ?? null;
+        $variableName = $variable['name'] ?? null;
+        if (!is_string($componentName) || !is_string($variableName)) {
+            return null;
+        }
+
+        if ($componentName === 'SecurityCtrlr') {
+            if ($variableName === 'CertificateEntries') {
+                return (string) ($this->certificateManagement?->certificateCount($chargerId) ?? 0);
+            }
+            if ($variableName === 'SecurityProfile') {
+                $session = $this->sessions[$chargerId] ?? null;
+                $profile = is_array($session)
+                    ? ($session['network_profiles'][$session['network_profile_index']]['connectionData']['securityProfile'] ?? null)
+                    : null;
+                if (is_int($profile)) {
+                    return (string) $profile;
+                }
+
+                $charger = $this->chargers->get($chargerId);
+
+                return str_starts_with((string) ($charger['csms_url'] ?? ''), 'wss://') ? '2' : '1';
+            }
+        }
+
+        if ($componentName === 'OCPPCommCtrlr' && $variableName === 'MessageTimeout'
+            && ($variable['instance'] ?? null) === 'Default') {
+            return (string) ($this->sessions[$chargerId]['connection_timeout'] ?? 8);
+        }
+
+        return null;
     }
 
     private function reportAvailableOutlets(int $chargerId, array $charger): void

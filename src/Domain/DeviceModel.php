@@ -25,18 +25,48 @@ final class DeviceModel
         'RetryBackOffRepeatTimes',
         'HeartbeatInterval',
         'OfflineThreshold',
+        'ResetRetries',
         'NetworkConfigurationPriority',
         'NetworkProfileConnectionAttempts',
     ];
 
     private const REPORT_VARIABLES = [
-        'AuthCtrlr' => ['AuthorizeRemoteStart' => ['boolean', 'ReadOnly', true]],
-        'SecurityCtrlr' => ['BasicAuthPassword' => ['string', 'WriteOnly', true, null, null, 64]],
-        'TxCtrlr' => ['EVConnectionTimeOut' => ['integer', 'ReadWrite', true]],
+        'AuthCtrlr' => [
+            'AuthorizeRemoteStart' => ['boolean', 'ReadOnly', true],
+            'LocalAuthorizeOffline' => ['boolean', 'ReadWrite', true],
+            'LocalPreAuthorize' => ['boolean', 'ReadWrite', true],
+        ],
+        'ClockCtrlr' => [
+            'DateTime' => ['DateTime', 'ReadOnly', false],
+            'TimeSource' => ['SequenceList', 'ReadWrite', true, 'Heartbeat,RealTimeClock'],
+        ],
+        'DeviceDataCtrlr' => [
+            'ItemsPerMessageGetReport' => ['integer', 'ReadOnly', true, null, 'GetReport', null, 'ItemsPerMessage'],
+            'ItemsPerMessageGetVariables' => ['integer', 'ReadOnly', true, null, 'GetVariables', null, 'ItemsPerMessage'],
+            'ItemsPerMessageSetVariables' => ['integer', 'ReadOnly', true, null, 'SetVariables', null, 'ItemsPerMessage'],
+            'BytesPerMessageGetReport' => ['integer', 'ReadOnly', true, null, 'GetReport', null, 'BytesPerMessage'],
+            'BytesPerMessageGetVariables' => ['integer', 'ReadOnly', true, null, 'GetVariables', null, 'BytesPerMessage'],
+            'BytesPerMessageSetVariables' => ['integer', 'ReadOnly', true, null, 'SetVariables', null, 'BytesPerMessage'],
+        ],
+        'SecurityCtrlr' => [
+            'BasicAuthPassword' => ['string', 'WriteOnly', true, null, null, 64],
+            'OrganizationName' => ['string', 'ReadWrite', true],
+            'CertificateEntries' => ['integer', 'ReadOnly', false],
+            'SecurityProfile' => ['integer', 'ReadOnly', false],
+        ],
+        'TxCtrlr' => [
+            'EVConnectionTimeOut' => ['integer', 'ReadWrite', true],
+            'StopTxOnEVSideDisconnect' => ['boolean', 'ReadWrite', true],
+            'TxStartPoint' => ['MemberList', 'ReadOnly', true, 'EVConnected,Authorized'],
+            'TxStopPoint' => ['MemberList', 'ReadOnly', true, 'EVConnected'],
+            'StopTxOnInvalidId' => ['boolean', 'ReadWrite', true],
+        ],
         'AlignedDataCtrlr' => [
             'Interval' => ['integer', 'ReadWrite', true],
             'Measurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
             'SendDuringIdle' => ['boolean', 'ReadWrite', true],
+            'TxEndedMeasurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST, null, 250],
+            'TxEndedInterval' => ['integer', 'ReadWrite', true],
         ],
         'SampledDataCtrlr' => [
             'TxStartedMeasurands' => ['MemberList', 'ReadWrite', true, MeterMeasurands::SUPPORTED_LIST],
@@ -48,12 +78,17 @@ final class DeviceModel
         'OCPPCommCtrlr' => [
             'MessageAttempts' => ['integer', 'ReadWrite', true, null, 'TransactionEvent'],
             'MessageAttemptInterval' => ['integer', 'ReadWrite', true, null, 'TransactionEvent'],
+            'ActiveNetworkProfile' => ['integer', 'ReadOnly', true],
+            'MessageTimeout' => ['integer', 'ReadOnly', true, null, 'Default'],
+            'FileTransferProtocols' => ['MemberList', 'ReadOnly', true, 'HTTP,HTTPS'],
             'RetryBackOffWaitMinimum' => ['integer', 'ReadWrite', true],
             'RetryBackOffRandomRange' => ['integer', 'ReadWrite', true],
             'RetryBackOffRepeatTimes' => ['integer', 'ReadWrite', true],
             'OfflineThreshold' => ['integer', 'ReadWrite', true],
             'HeartbeatInterval' => ['integer', 'ReadWrite', true],
-            'NetworkConfigurationPriority' => ['MemberList', 'ReadWrite', true, '0,1,2'],
+            'ResetRetries' => ['integer', 'ReadWrite', true],
+            'UnlockOnEVSideDisconnect' => ['boolean', 'ReadOnly', true],
+            'NetworkConfigurationPriority' => ['SequenceList', 'ReadWrite', true, '0,1,2'],
             'NetworkProfileConnectionAttempts' => ['integer', 'ReadWrite', true],
         ],
     ];
@@ -64,6 +99,7 @@ final class DeviceModel
         private readonly int $chargerId,
         private readonly AvailabilityRepository $availability,
         private readonly ?Closure $basicAuthPasswordWriter = null,
+        private readonly ?Closure $runtimeVariableReader = null,
     ) {
     }
 
@@ -81,9 +117,16 @@ final class DeviceModel
         $report = [];
         if ($reportBase !== 'ConfigurationInventory') {
             foreach ($this->physicalComponents() as $component) {
-                $report[] = $this->reportVariable($component, ['name' => 'AvailabilityState'], 'OptionList', 'ReadOnly', false, false, 'Available,Occupied,Unavailable');
+                $report[] = $this->reportVariable($component, ['name' => 'AvailabilityState'], 'OptionList', 'ReadOnly', false, false, 'Available,Occupied,Reserved,Unavailable,Faulted');
                 if ($reportBase === 'FullInventory') {
                     $report[] = $this->reportVariable($component, ['name' => 'Available'], 'boolean', 'ReadOnly', false, false);
+                    $report[] = $this->reportVariable($component, ['name' => 'SupplyPhases'], 'integer', 'ReadOnly', false, false);
+                    if (($component['name'] ?? null) === 'Connector') {
+                        $report[] = $this->reportVariable($component, ['name' => 'ConnectorType'], 'string', 'ReadOnly', false, false);
+                    }
+                    if (($component['name'] ?? null) === 'EVSE') {
+                        $report[] = $this->reportVariable($component, ['name' => 'Power'], 'decimal', 'ReadOnly', false, false, maxLimit: 22_000);
+                    }
                 }
             }
         }
@@ -96,13 +139,15 @@ final class DeviceModel
                         continue;
                     }
 
+                    $reportedVariableName = $definition[6] ?? $variableName;
+
                     $report[] = $this->reportVariable(
                         ['name' => $componentName],
-                        ['name' => $variableName, ...(($definition[4] ?? null) === null ? [] : ['instance' => $definition[4]])],
+                        ['name' => $reportedVariableName, ...(($definition[4] ?? null) === null ? [] : ['instance' => $definition[4]])],
                         $dataType,
                         $mutability,
                         $persistent,
-                        $componentName === 'AuthCtrlr',
+                        $componentName === 'AuthCtrlr' && $reportedVariableName === 'AuthorizeRemoteStart',
                         $definition[3] ?? null,
                         $definition[5] ?? null,
                     );
@@ -260,6 +305,7 @@ final class DeviceModel
         if ($componentName === 'AuthCtrlr') {
             return match ($variableName) {
                 'AuthorizeRemoteStart' => 'false',
+                'LocalAuthorizeOffline', 'LocalPreAuthorize' => $this->settings->get($this->chargerId, $variableName),
                 default => null,
             };
         }
@@ -268,15 +314,69 @@ final class DeviceModel
             return null;
         }
 
-        if ($componentName === 'TxCtrlr' && $variableName === 'EVConnectionTimeOut') {
+        $runtimeValue = $this->runtimeVariableReader === null
+            ? null
+            : ($this->runtimeVariableReader)($component, $variable);
+        if (is_string($runtimeValue)) {
+            return $runtimeValue;
+        }
+
+        if ($componentName === 'ClockCtrlr') {
+            return match ($variableName) {
+                'DateTime' => gmdate(DATE_ATOM),
+                'TimeSource' => $this->settings->get($this->chargerId, 'TimeSource'),
+                default => null,
+            };
+        }
+
+        if ($componentName === 'DeviceDataCtrlr') {
+            return match (($variable['instance'] ?? null) . ':' . $variableName) {
+                'GetReport:ItemsPerMessage', 'GetVariables:ItemsPerMessage', 'SetVariables:ItemsPerMessage' => '1000',
+                'GetReport:BytesPerMessage', 'GetVariables:BytesPerMessage', 'SetVariables:BytesPerMessage' => '1048576',
+                default => null,
+            };
+        }
+
+        if ($componentName === 'SecurityCtrlr') {
+            return match ($variableName) {
+                'OrganizationName' => $this->settings->get($this->chargerId, 'OrganizationName'),
+                'CertificateEntries' => '0',
+                'SecurityProfile' => '1',
+                default => null,
+            };
+        }
+
+        if ($componentName === 'TxCtrlr'
+            && in_array($variableName, ['EVConnectionTimeOut', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId'], true)) {
             return $this->settings->get($this->chargerId, $variableName);
+        }
+        if ($componentName === 'TxCtrlr') {
+            return match ($variableName) {
+                'TxStartPoint' => 'EVConnected,Authorized',
+                'TxStopPoint' => 'EVConnected',
+                default => null,
+            };
         }
 
         if (in_array($componentName, ['AlignedDataCtrlr', 'SampledDataCtrlr'], true)) {
-            return $this->settings->get($this->chargerId, $variableName);
+            return $this->settings->get($this->chargerId, $this->settingName($component, $variable));
         }
 
         $settingName = $this->settingName($component, $variable);
+        if ($componentName === 'OCPPCommCtrlr') {
+            if ($variableName === 'ActiveNetworkProfile') {
+                return $this->settings->get($this->chargerId, 'ActiveNetworkProfile');
+            }
+            if ($variableName === 'MessageTimeout' && ($variable['instance'] ?? null) === 'Default') {
+                return '8';
+            }
+            if ($variableName === 'FileTransferProtocols') {
+                return 'HTTP,HTTPS';
+            }
+            if ($variableName === 'UnlockOnEVSideDisconnect') {
+                return 'false';
+            }
+        }
         if ($componentName === 'OCPPCommCtrlr'
             && in_array($settingName, self::OCPP_COMMUNICATION_VARIABLES, true)) {
             return $this->settings->get($this->chargerId, $settingName);
@@ -284,6 +384,18 @@ final class DeviceModel
 
         if ($variableName === 'Available' && in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
             return $this->availabilityState($componentName, $component) === 'Unavailable' ? 'false' : 'true';
+        }
+
+        if (in_array($componentName, ['ChargingStation', 'EVSE', 'Connector'], true)) {
+            if ($variableName === 'SupplyPhases') {
+                return '3';
+            }
+            if ($componentName === 'Connector' && $variableName === 'ConnectorType') {
+                return 'sType2';
+            }
+            if ($componentName === 'EVSE' && $variableName === 'Power') {
+                return '0.0';
+            }
         }
 
         if ($variableName !== 'AvailabilityState'
@@ -358,7 +470,7 @@ final class DeviceModel
             return false;
         }
 
-        if (in_array($componentName, ['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'SecurityCtrlr', 'TxCtrlr'], true)) {
+        if (in_array($componentName, ['AlignedDataCtrlr', 'AuthCtrlr', 'ChargingStation', 'ClockCtrlr', 'DeviceDataCtrlr', 'OCPPCommCtrlr', 'SampledDataCtrlr', 'SecurityCtrlr', 'TxCtrlr'], true)) {
             return !isset($component['instance']);
         }
 
@@ -397,11 +509,23 @@ final class DeviceModel
         }
 
         if (($component['name'] ?? null) === 'AlignedDataCtrlr') {
-            return in_array($variable['name'] ?? null, ['Interval', 'Measurands', 'SendDuringIdle'], true);
+            return in_array($variable['name'] ?? null, ['Interval', 'Measurands', 'SendDuringIdle', 'TxEndedMeasurands', 'TxEndedInterval'], true);
         }
 
         if (($component['name'] ?? null) === 'TxCtrlr') {
-            return ($variable['name'] ?? null) === 'EVConnectionTimeOut';
+            return in_array($variable['name'] ?? null, ['EVConnectionTimeOut', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId'], true);
+        }
+
+        if (($component['name'] ?? null) === 'AuthCtrlr') {
+            return in_array($variable['name'] ?? null, ['LocalAuthorizeOffline', 'LocalPreAuthorize'], true);
+        }
+
+        if (($component['name'] ?? null) === 'ClockCtrlr') {
+            return ($variable['name'] ?? null) === 'TimeSource';
+        }
+
+        if (($component['name'] ?? null) === 'SecurityCtrlr') {
+            return ($variable['name'] ?? null) === 'OrganizationName';
         }
 
         return ($component['name'] ?? null) === 'OCPPCommCtrlr'
@@ -411,6 +535,13 @@ final class DeviceModel
     private function settingName(array $component, array $variable): string
     {
         $name = $variable['name'] ?? '';
+        if (($component['name'] ?? null) === 'AlignedDataCtrlr') {
+            return match ($name) {
+                'TxEndedMeasurands' => 'AlignedTxEndedMeasurands',
+                'TxEndedInterval' => 'AlignedTxEndedInterval',
+                default => $name,
+            };
+        }
         if (($component['name'] ?? null) === 'OCPPCommCtrlr'
             && ($variable['instance'] ?? null) === 'TransactionEvent') {
             return match ($name) {
@@ -460,6 +591,7 @@ final class DeviceModel
             'Interval',
             'TxEndedInterval',
             'TxUpdatedInterval',
+            'AlignedTxEndedInterval',
             ...self::OCPP_COMMUNICATION_VARIABLES,
             'EVConnectionTimeOut',
         ], true)) {
@@ -468,11 +600,25 @@ final class DeviceModel
                 && (!in_array($variable, ['MessageAttemptsTransactionEvent', 'RetryBackOffWaitMinimum', 'HeartbeatInterval', 'NetworkProfileConnectionAttempts', 'EVConnectionTimeOut'], true) || (int) $value > 0);
         }
 
-        if ($variable === 'SendDuringIdle') {
+        if ($variable === 'SendDuringIdle' || in_array($variable, [
+            'LocalAuthorizeOffline', 'LocalPreAuthorize', 'StopTxOnEVSideDisconnect', 'StopTxOnInvalidId',
+        ], true)) {
             return in_array($value, ['true', 'false'], true);
         }
 
-        if (!in_array($variable, ['Measurands', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands'], true)) {
+        if ($variable === 'TimeSource') {
+            $values = explode(',', $value);
+
+            return $values !== ['']
+                && count($values) === count(array_unique($values))
+                && array_all($values, static fn (string $source): bool => in_array($source, ['Heartbeat', 'RealTimeClock'], true));
+        }
+
+        if ($variable === 'OrganizationName') {
+            return $value !== '' && strlen($value) <= 250;
+        }
+
+        if (!in_array($variable, ['Measurands', 'TxEndedMeasurands', 'TxStartedMeasurands', 'TxUpdatedMeasurands', 'AlignedTxEndedMeasurands'], true)) {
             return false;
         }
 

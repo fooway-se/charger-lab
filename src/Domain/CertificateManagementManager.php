@@ -32,6 +32,11 @@ final class CertificateManagementManager
     {
     }
 
+    public function certificateCount(int $chargerId): int
+    {
+        return count($this->certificates->all($chargerId));
+    }
+
     public function install(int $chargerId, array $payload): array
     {
         $certificateType = $payload['certificateType'] ?? null;
