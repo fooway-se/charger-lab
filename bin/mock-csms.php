@@ -784,6 +784,14 @@ function runRemoteStartScenario($client, array $call, MockCsmsSession $session):
         sendAvailabilityChangeAfterRemoteStart($client, $call[1]);
         requestTransactionStatus($client, $call[1], $remoteTransactionId);
         resetAfterRemoteStart($client, $call[1]);
+        if (getenv('MOCK_CSMS_EXPECT_REMOTE_START_TIMEOUT') === '1') {
+            if (getenv('MOCK_CSMS_SEND_REJECTED_REMOTE_STOP') === '1') {
+                requestRejectedRemoteStop($client, $call[1]);
+            }
+            waitForRemoteStartTimeout($client, $remoteTransactionId);
+
+            return;
+        }
         waitForRemoteStartVehicle($client);
         sendRemoteStop($client, $call[1], $remoteTransactionId);
     }
@@ -865,6 +873,16 @@ function requestTransactionStatus($client, string $bootCallId, string $transacti
     waitForStationResponse($client, $messageId, 'GetTransactionStatus station response', [3]);
 }
 
+function requestRejectedRemoteStop($client, string $bootCallId): void
+{
+    $messageId = 'mock-csms-rejected-remote-stop-' . $bootCallId;
+    $call = json_encode([2, $messageId, 'RequestStopTransaction', [
+        'transactionId' => 'unknown-remote-stop-transaction',
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $call);
+    waitForStationResponse($client, $messageId, 'Rejected RemoteStop station response', [3]);
+}
+
 function resetAfterRemoteStart($client, string $bootCallId): void
 {
     $path = getenv('MOCK_CSMS_RESET_SENT_PATH') ?: '';
@@ -883,6 +901,27 @@ function waitForRemoteStartVehicle($client): void
     $stopBeforePlug = getenv('MOCK_CSMS_REMOTE_STOP_BEFORE_PLUG') === '1';
     if ($continuePath !== '' && !$stopBeforePlug) {
         waitForRemoteStartContinuation($client, $continuePath);
+    }
+}
+
+function waitForRemoteStartTimeout($client, string $transactionId): void
+{
+    while (($response = readOcppMessage($client)) !== null) {
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) !== 2) {
+            continue;
+        }
+
+        if (($message[2] ?? null) === 'TransactionEvent'
+            && ($message[3]['transactionInfo']['transactionId'] ?? null) === $transactionId
+            && ($message[3]['eventType'] ?? null) === 'Ended') {
+            fwrite(STDOUT, 'RemoteStart timeout TransactionEvent: ' . $payload . "\n");
+            respondToStationCall($client, $message);
+
+            return;
+        }
+
+        respondToStationCall($client, $message);
     }
 }
 

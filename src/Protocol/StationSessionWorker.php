@@ -1309,7 +1309,7 @@ final class StationSessionWorker
             return false;
         }
 
-        $this->endOutletTransaction($chargerId, $dueSessions[0], 'TimeLimitReached', 'Timeout');
+        $this->endOutletTransaction($chargerId, $dueSessions[0], 'EVConnectTimeout', 'Timeout');
 
         return true;
     }

@@ -669,6 +669,99 @@ it('answers GetTransactionStatus before replaying queued transaction events afte
     }
 })->group('integration');
 
+it('ends an unconnected remote-start transaction with EVConnectTimeout', function (): void {
+    $GLOBALS['testProcesses'] = [];
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $directory = sys_get_temp_dir() . '/charger-remote-start-timeout-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_SEND_CALL' => '1',
+            'MOCK_CSMS_SEND_REMOTE_START' => '1',
+            'MOCK_CSMS_EXPECT_REMOTE_START_TIMEOUT' => '1',
+            'MOCK_CSMS_SEND_REJECTED_REMOTE_STOP' => '1',
+            'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        expect($chargerId)->toBeGreaterThan(0);
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        (new DeviceModelSettingsRepository(Database::connect($databasePath)))
+            ->set($chargerId, 'EVConnectionTimeOut', '1');
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'RemoteStartTimeoutCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Test Model',
+            'serial_number' => 'REMOTE-START-TIMEOUT-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ];
+        [, $saveHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The charger configuration should save before booting.');
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The charger should boot before remote start.');
+
+        $timeoutOutput = waitForProcessOutput($mockCsms, 'RemoteStart timeout TransactionEvent: ', 8_000);
+        preg_match('/RemoteStart timeout TransactionEvent: (\[[^\r\n]+\])/', $timeoutOutput, $matches);
+        $event = json_decode($matches[1] ?? '[]', true, flags: JSON_THROW_ON_ERROR);
+        expect($timeoutOutput)->toContain('Rejected RemoteStop station response: ')
+            ->and($timeoutOutput)->toContain('"status":"Rejected"')
+            ->and($event[2] ?? null)->toBe('TransactionEvent')
+            ->and($event[3]['eventType'] ?? null)->toBe('Ended')
+            ->and($event[3]['triggerReason'] ?? null)->toBe('EVConnectTimeout')
+            ->and($event[3]['transactionInfo']['stoppedReason'] ?? null)->toBe('Timeout');
+    } finally {
+        foreach ([$worker, $app, $mockCsms] as $process) {
+            if (is_resource($process)) {
+                stopProcess($process);
+            }
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+})->group('integration');
+
 function runOfflineStatusScenario(string $threshold, string $retryWait, int $expectedStatuses): array
 {
     $GLOBALS['testProcesses'] = [];
