@@ -60,3 +60,24 @@ it('rejects a remote stop for an unknown transaction without queuing work', func
 
     rmdir($directory);
 });
+
+it('accepts a remote stop for an authorization-first transaction waiting for a vehicle', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->beginAuthorizationFirst(
+        $chargerId,
+        1,
+        1,
+        'authorization-first-transaction',
+        'PREAUTHORIZED-TAG',
+        gmdate(DATE_ATOM, time() + 30),
+    );
+    $commands = new OcppCommandRepository($database);
+    $handler = new RemoteStopRequestHandler($chargerId, $sessions, $commands);
+
+    expect($handler->requestStop(['transactionId' => 'authorization-first-transaction']))
+        ->toBe(['status' => 'Accepted'])
+        ->and($commands->claimNext()['action'] ?? null)->toBe('RemoteStop');
+});

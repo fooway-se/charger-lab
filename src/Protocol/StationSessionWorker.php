@@ -369,7 +369,7 @@ final class StationSessionWorker
                     return true;
                 }
 
-                if ($this->expireRemoteStart($chargerId)) {
+                if ($this->expireRemoteStart($chargerId) || $this->expireAuthorizationFirstStart($chargerId)) {
                     return true;
                 }
 
@@ -832,7 +832,7 @@ final class StationSessionWorker
         }
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
-            if ($session['connector_status'] === 'Available') {
+            if ($session['connector_status'] === 'Available' && $session['transaction_id'] === null) {
                 $this->sendStatusNotification(
                     $chargerId,
                     $session['evse_id'],
@@ -856,7 +856,7 @@ final class StationSessionWorker
 
         $activeSessions = array_values(array_filter(
             $this->outletSessions->allForCharger($chargerId),
-            static fn (array $session): bool => $session['connector_status'] === 'Occupied',
+            static fn (array $session): bool => $session['transaction_id'] !== null,
         ));
         if ($activeSessions !== []) {
             if ($pendingReset['type'] === 'OnIdle') {
@@ -913,6 +913,10 @@ final class StationSessionWorker
         $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
         if ($session !== null && $session['remote_start_pending']) {
             return $this->connectRemoteStartedVehicle($chargerId, $session);
+        }
+
+        if ($session !== null && $session['authorization_pending']) {
+            return $this->connectAuthorizationFirstVehicle($chargerId, $session);
         }
 
         if ($this->resets->blocksNewTransactions($chargerId)) {
@@ -1050,6 +1054,42 @@ final class StationSessionWorker
         return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
     }
 
+    private function connectAuthorizationFirstVehicle(int $chargerId, array $session): array
+    {
+        $transactionId = $session['transaction_id'];
+        if (!is_string($transactionId) || $transactionId === '') {
+            throw new RuntimeException('The authorization-first transaction is missing its transaction ID.');
+        }
+
+        $evseId = $session['evse_id'];
+        $connectorId = $session['connector_id'];
+        $connectedSequence = $session['seq_no'] + 1;
+        $this->outletSessions->markAuthorizationFirstConnected(
+            $chargerId,
+            $evseId,
+            $connectorId,
+            $transactionId,
+            $connectedSequence,
+        );
+        $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Occupied');
+
+        $chargingEvent = [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'ChargingStateChanged',
+            'seqNo' => $connectedSequence,
+            'transactionInfo' => [
+                'transactionId' => $transactionId,
+                'chargingState' => 'Charging',
+            ],
+            'evse' => ['id' => $evseId, 'connectorId' => $connectorId],
+        ];
+        $queuedChargingEvent = $this->transactionEventDelivery->enqueue($chargerId, $chargingEvent);
+        $this->transactionEventDelivery->deliverThrough($chargerId, $queuedChargingEvent['id']);
+
+        return ['status' => 'PluggedIn', 'transactionId' => $transactionId];
+    }
+
     private function expireRemoteStart(int $chargerId): bool
     {
         $dueSessions = $this->outletSessions->dueRemoteStarts($chargerId, gmdate(DATE_ATOM));
@@ -1062,15 +1102,41 @@ final class StationSessionWorker
         return true;
     }
 
+    private function expireAuthorizationFirstStart(int $chargerId): bool
+    {
+        $dueSessions = $this->outletSessions->dueAuthorizationFirstStarts($chargerId, gmdate(DATE_ATOM));
+        if ($dueSessions === []) {
+            return false;
+        }
+
+        $this->endOutletTransaction(
+            $chargerId,
+            $dueSessions[0],
+            'EVConnectTimeout',
+            'Timeout',
+            reportCurrentStatus: false,
+        );
+
+        return true;
+    }
+
     private function remoteStop(int $chargerId, array $payload): array
     {
         $evseId = $this->requiredOutletId($payload, 'evseId');
         $connectorId = $this->requiredOutletId($payload, 'connectorId');
         $transactionId = $payload['transactionId'] ?? null;
         $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
-        if (!is_string($transactionId) || $session === null
-            || $session['connector_status'] !== 'Occupied'
-            || $session['transaction_id'] !== $transactionId) {
+        if (!is_string($transactionId) || $session === null || $session['transaction_id'] !== $transactionId) {
+            throw new RuntimeException('The accepted remote-stop request no longer matches an active transaction.');
+        }
+
+        if ($session['authorization_pending']) {
+            $this->endOutletTransaction($chargerId, $session, 'RemoteStop', 'Remote', reportCurrentStatus: false);
+
+            return ['status' => 'Stopped'];
+        }
+
+        if ($session['connector_status'] !== 'Occupied') {
             throw new RuntimeException('The accepted remote-stop request no longer matches an active transaction.');
         }
 
@@ -1177,6 +1243,13 @@ final class StationSessionWorker
     private function attachAuthorizedToken(int $chargerId, array $outlet, array $idToken): void
     {
         $session = $this->outletSessions->find($chargerId, $outlet['evse_id'], $outlet['connector_id']);
+        if ($session !== null && $session['connector_status'] === 'Available'
+            && $session['transaction_id'] === null) {
+            $this->startAuthorizationFirstTransaction($chargerId, $outlet, $session, $idToken);
+
+            return;
+        }
+
         if ($session === null || $session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null) {
             throw new RuntimeException('Plug in the selected outlet before presenting an RFID token.');
         }
@@ -1257,7 +1330,54 @@ final class StationSessionWorker
         $this->transactionEventDelivery->deliverThrough($chargerId, $queuedCharging['id']);
     }
 
-    private function reportReleasedOutlet(int $chargerId, int $evseId, int $connectorId): void
+    private function startAuthorizationFirstTransaction(int $chargerId, array $outlet, array $session, array $idToken): void
+    {
+        if (!$this->availability->canStartTransaction($chargerId, $outlet['evse_id'], $outlet['connector_id'])
+            || $this->resets->blocksNewTransactions($chargerId)) {
+            throw new RuntimeException('The selected outlet is no longer available for an authorization-first transaction.');
+        }
+
+        $transactionId = $this->chargers->nextTransactionId($chargerId);
+        $timeout = $this->deviceModelSettingInt($chargerId, 'EVConnectionTimeOut', 30, 1);
+        $deadline = gmdate(DATE_ATOM, time() + $timeout);
+        $this->outletSessions->beginAuthorizationFirst(
+            $chargerId,
+            $outlet['evse_id'],
+            $outlet['connector_id'],
+            $transactionId,
+            $idToken['idToken'],
+            $deadline,
+        );
+
+        $event = [
+            'eventType' => 'Started',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'Authorized',
+            'seqNo' => 0,
+            'transactionInfo' => ['transactionId' => $transactionId],
+            'evse' => ['id' => $outlet['evse_id'], 'connectorId' => $outlet['connector_id']],
+            'idToken' => $idToken,
+        ];
+        $meterValue = $this->meterValueReporter->beginTransactionValue($chargerId, $session['meter_wh']);
+        if ($meterValue !== null) {
+            $event['meterValue'] = $meterValue;
+        }
+
+        $queuedEvent = $this->transactionEventDelivery->enqueue($chargerId, $event);
+        $result = $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
+        if (($result['idTokenInfo']['status'] ?? null) !== 'Accepted') {
+            $this->outletSessions->markAvailable(
+                $chargerId,
+                $outlet['evse_id'],
+                $outlet['connector_id'],
+                $transactionId,
+                $session['meter_wh'],
+            );
+            throw new OcppProtocolException('The CSMS did not accept the authorization-first idToken in the TransactionEvent response.');
+        }
+    }
+
+    private function reportReleasedOutlet(int $chargerId, int $evseId, int $connectorId, bool $reportCurrentStatus = true): void
     {
         if ($this->resets->blocksNewTransactions($chargerId)) {
             $this->sendStatusNotification($chargerId, $evseId, $connectorId, 'Unavailable');
@@ -1280,7 +1400,7 @@ final class StationSessionWorker
             );
         }
 
-        if (!$reportedCurrentOutlet) {
+        if (!$reportedCurrentOutlet && $reportCurrentStatus) {
             $session = $this->outletSessions->find($chargerId, $evseId, $connectorId);
             $status = $this->availability->connectorStatus(
                 $chargerId,
@@ -1300,6 +1420,7 @@ final class StationSessionWorker
         ?string $chargingState = null,
         ?int $meterWh = null,
         array $meterValues = [],
+        bool $reportCurrentStatus = true,
     ): void {
         $timestamp = gmdate(DATE_ATOM);
         $transactionInfo = [
@@ -1335,7 +1456,7 @@ final class StationSessionWorker
             $meterWh ?? $session['meter_wh'],
         );
         $this->transactionEventDelivery->deliverThrough($chargerId, $queuedEvent['id']);
-        $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id']);
+        $this->reportReleasedOutlet($chargerId, $session['evse_id'], $session['connector_id'], $reportCurrentStatus);
     }
 
     private function sendStatusNotification(int $chargerId, int $evseId, int $connectorId, string $status): void
@@ -1405,7 +1526,7 @@ final class StationSessionWorker
             && $this->firmwareUpdates->isDue($update)) {
             $activeSessions = array_filter(
                 $this->outletSessions->allForCharger($chargerId),
-                static fn (array $session): bool => $session['connector_status'] === 'Occupied',
+                static fn (array $session): bool => $session['transaction_id'] !== null,
             );
             if ($activeSessions !== []) {
                 if ($state === 'Downloaded') {
@@ -1501,7 +1622,7 @@ final class StationSessionWorker
 
         $timestamp = gmdate(DATE_ATOM);
         $transactionInfo = ['transactionId' => $transactionId];
-        if (!$session['remote_start_pending']) {
+        if (!$session['remote_start_pending'] && !$session['authorization_pending']) {
             $transactionInfo['chargingState'] = $session['id_token'] !== null && $session['stop_reason'] === null
                 ? 'Charging'
                 : 'EVConnected';

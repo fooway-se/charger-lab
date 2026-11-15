@@ -11,7 +11,7 @@ it('serves a standalone frontend with strict JavaScript', function (): void {
 
     $scriptPath = __DIR__ . '/../public/app.js';
 
-    expect(!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js" defer></script>'))->toBeFalse('The GUI should be static HTML with a separate browser script.');
+    expect(!is_string($html) || str_contains($html, '<?php') || !str_contains($html, '<script src="/app.js?v=4" defer></script>'))->toBeFalse('The GUI should be static HTML with a separate browser script.');
 
     foreach (['name="csms_password"', 'name="clear_csms_password"', 'name="outlet_count"', 'name="outlet_topology"', 'name="uses_default_csms"', 'name="outlet_number"', 'id="workspace-csms-form"', 'id="workspace-tls-form"', 'name="tls_server_name"', 'name="tls_ca_certificate"', 'id="network-test-form"', 'data-role="outlet-list"', 'id="charger-template"', 'id="add-charger"'] as $requiredElement) {
         expect(!str_contains($html, $requiredElement))->toBeFalse("The GUI should expose setup and charger controls: {$requiredElement}");
@@ -125,6 +125,36 @@ it('shows an animated charging indicator only for outlets that are actively char
         ->and($styles)->toContain('.charging-indicator')
         ->toContain('.charging-meter-fill')
         ->toContain('@keyframes charging-meter-flow');
+});
+
+it('loads versioned frontend assets and gives active charging a visible badge', function (): void {
+    $html = file_get_contents(__DIR__ . '/../public/index.html');
+    $styles = file_get_contents(__DIR__ . '/../public/style.css');
+    $chargingIndicatorStyles = is_string($styles)
+        && preg_match('/\.charging-indicator\s*\{([^}]*)\}/', $styles, $matches) === 1
+        ? $matches[1]
+        : '';
+
+    expect(!is_string($html))->toBeFalse()
+        ->and($html)->toContain('<script src="/app.js?v=4" defer></script>')
+        ->toContain('<link rel="stylesheet" href="/style.css?v=3">')
+        ->and($chargingIndicatorStyles)->toContain('min-height: 18px')
+        ->toContain('padding: 3px 7px')
+        ->toContain('background: #e5f5eb')
+        ->toContain('border-radius: 999px');
+});
+
+it('requires an outlet choice before linking an RFID token to a transaction', function (): void {
+    $html = file_get_contents(__DIR__ . '/../public/index.html');
+    $script = file_get_contents(__DIR__ . '/../public/app.js');
+
+    expect(!is_string($html))->toBeFalse()
+        ->and($html)->toContain('<select name="outlet_number" aria-label="Outlet" required>')
+        ->toContain('<option value="">Choose an outlet</option>')
+        ->toContain('<option value="authorization-only">Authorization only</option>')
+        ->and(!is_string($script))->toBeFalse()
+        ->and($script)->toContain('const selectedOutlet = form.elements.namedItem(\'outlet_number\').value;')
+        ->toContain("outlet_number: selectedOutlet === 'authorization-only' ? undefined : selectedOutlet");
 });
 
 it('keeps the log count and clear control together in one responsive toolbar', function (): void {

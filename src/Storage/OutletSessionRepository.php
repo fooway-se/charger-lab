@@ -35,7 +35,7 @@ final class OutletSessionRepository
     public function allForCharger(int $chargerId): array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
             FROM outlet_session WHERE charger_id = :charger_id ORDER BY evse_id, connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId]);
@@ -52,6 +52,8 @@ final class OutletSessionRepository
                 'stop_reason' => $row['stop_reason'],
                 'remote_start_deadline' => $row['remote_start_deadline'],
                 'remote_start_pending' => $row['remote_start_deadline'] !== null,
+                'authorization_deadline' => $row['authorization_deadline'],
+                'authorization_pending' => $row['authorization_deadline'] !== null,
                 ...self::meterSampleFields($row),
             ];
         }, $statement->fetchAll());
@@ -60,7 +62,7 @@ final class OutletSessionRepository
     public function find(int $chargerId, int $evseId, int $connectorId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
             FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
             SQL);
         $statement->execute(['charger_id' => $chargerId, 'evse_id' => $evseId, 'connector_id' => $connectorId]);
@@ -80,6 +82,8 @@ final class OutletSessionRepository
             'stop_reason' => $row['stop_reason'],
             'remote_start_deadline' => $row['remote_start_deadline'],
             'remote_start_pending' => $row['remote_start_deadline'] !== null,
+            'authorization_deadline' => $row['authorization_deadline'],
+            'authorization_pending' => $row['authorization_deadline'] !== null,
             ...self::meterSampleFields($row),
         ];
     }
@@ -87,9 +91,9 @@ final class OutletSessionRepository
     public function findByTransactionId(int $chargerId, string $transactionId): ?array
     {
         $statement = $this->database->prepare(<<<'SQL'
-            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline
+            SELECT evse_id, connector_id, connector_status, transaction_id, id_token, seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at, meter_end_samples, remote_start_deadline, authorization_deadline
             FROM outlet_session
-            WHERE charger_id = :charger_id AND transaction_id = :transaction_id AND connector_status = 'Occupied'
+            WHERE charger_id = :charger_id AND transaction_id = :transaction_id
             LIMIT 1
             SQL);
         $statement->execute(['charger_id' => $chargerId, 'transaction_id' => $transactionId]);
@@ -109,6 +113,8 @@ final class OutletSessionRepository
             'stop_reason' => $row['stop_reason'],
             'remote_start_deadline' => $row['remote_start_deadline'],
             'remote_start_pending' => $row['remote_start_deadline'] !== null,
+            'authorization_deadline' => $row['authorization_deadline'],
+            'authorization_pending' => $row['authorization_deadline'] !== null,
             ...self::meterSampleFields($row),
         ];
     }
@@ -118,10 +124,10 @@ final class OutletSessionRepository
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
             SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = NULL, seq_no = 0,
-                remote_start_deadline = NULL,
+                remote_start_deadline = NULL, authorization_deadline = NULL,
                 stop_reason = NULL, meter_updated_at = :meter_updated_at, meter_ended_at = :meter_ended_at, meter_end_samples = '[]'
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
-                AND connector_status = 'Available'
+                AND connector_status = 'Available' AND transaction_id IS NULL
             SQL);
         $statement->execute([
             'charger_id' => $chargerId,
@@ -142,9 +148,9 @@ final class OutletSessionRepository
             UPDATE outlet_session
             SET connector_status = 'Occupied', transaction_id = :transaction_id, id_token = :id_token, seq_no = 0,
                 stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]',
-                remote_start_deadline = :deadline
+                remote_start_deadline = :deadline, authorization_deadline = NULL
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
-                AND connector_status = 'Available'
+                AND connector_status = 'Available' AND transaction_id IS NULL
             SQL);
         $statement->execute([
             'charger_id' => $chargerId,
@@ -156,6 +162,73 @@ final class OutletSessionRepository
         ]);
         if ($statement->rowCount() !== 1) {
             throw new RuntimeException('The selected outlet is no longer available for remote start.');
+        }
+    }
+
+    public function beginAuthorizationFirst(int $chargerId, int $evseId, int $connectorId, string $transactionId, string $idToken, string $deadline): void
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE outlet_session
+            SET transaction_id = :transaction_id, id_token = :id_token, seq_no = 0,
+                remote_start_deadline = NULL, authorization_deadline = :deadline,
+                stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Available' AND transaction_id IS NULL
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'id_token' => $idToken,
+            'deadline' => $deadline,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The selected outlet is no longer available for authorization-first start.');
+        }
+    }
+
+    public function dueAuthorizationFirstStarts(int $chargerId, string $now): array
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            SELECT charger_id, evse_id, connector_id, transaction_id, seq_no, meter_wh
+            FROM outlet_session
+            WHERE charger_id = :charger_id AND authorization_deadline IS NOT NULL AND authorization_deadline <= :now
+            ORDER BY authorization_deadline, charger_id, evse_id, connector_id
+            SQL);
+        $statement->execute(['charger_id' => $chargerId, 'now' => $now]);
+
+        return array_map(static fn (array $row): array => [
+            'charger_id' => (int) $row['charger_id'],
+            'evse_id' => (int) $row['evse_id'],
+            'connector_id' => (int) $row['connector_id'],
+            'transaction_id' => (string) $row['transaction_id'],
+            'seq_no' => (int) $row['seq_no'],
+            'meter_wh' => (int) $row['meter_wh'],
+        ], $statement->fetchAll());
+    }
+
+    public function markAuthorizationFirstConnected(int $chargerId, int $evseId, int $connectorId, string $transactionId, int $sequence): void
+    {
+        $statement = $this->database->prepare(<<<'SQL'
+            UPDATE outlet_session
+            SET connector_status = 'Occupied', authorization_deadline = NULL,
+                seq_no = :seq_no, meter_updated_at = :meter_updated_at, meter_ended_at = :meter_ended_at
+            WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
+                AND connector_status = 'Available' AND transaction_id = :transaction_id
+                AND authorization_deadline IS NOT NULL
+            SQL);
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'evse_id' => $evseId,
+            'connector_id' => $connectorId,
+            'transaction_id' => $transactionId,
+            'seq_no' => $sequence,
+            'meter_updated_at' => gmdate(DATE_ATOM),
+            'meter_ended_at' => gmdate(DATE_ATOM),
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The authorization-first transaction is no longer waiting for a vehicle.');
         }
     }
 
@@ -232,7 +305,8 @@ final class OutletSessionRepository
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session SET seq_no = :next_sequence
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
-                AND connector_status = 'Occupied' AND transaction_id = :transaction_id
+                AND transaction_id = :transaction_id
+                AND (connector_status = 'Occupied' OR (connector_status = 'Available' AND authorization_deadline IS NOT NULL))
                 AND seq_no = :previous_sequence
             SQL);
         $statement->execute([
@@ -293,7 +367,7 @@ final class OutletSessionRepository
         $statement = $this->database->prepare(<<<'SQL'
             UPDATE outlet_session
             SET connector_status = 'Available', transaction_id = NULL, id_token = NULL, seq_no = 0,
-                remote_start_deadline = NULL,
+                remote_start_deadline = NULL, authorization_deadline = NULL,
                 meter_wh = :meter_wh, stop_reason = NULL, meter_updated_at = NULL, meter_ended_at = NULL, meter_end_samples = '[]'
             WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id
                 AND transaction_id = :transaction_id
@@ -443,7 +517,7 @@ final class OutletSessionRepository
 
     public function hasActiveTransactions(int $chargerId): bool
     {
-        $statement = $this->database->prepare("SELECT 1 FROM outlet_session WHERE charger_id = :charger_id AND connector_status = 'Occupied' LIMIT 1");
+        $statement = $this->database->prepare('SELECT 1 FROM outlet_session WHERE charger_id = :charger_id AND transaction_id IS NOT NULL LIMIT 1');
         $statement->execute(['charger_id' => $chargerId]);
 
         return $statement->fetchColumn() !== false;

@@ -30,7 +30,7 @@ final class UnlockConnectorRequestHandler
         if ($session === null) {
             return ['status' => 'UnknownConnector'];
         }
-        if ($session['connector_status'] === 'Occupied' && $session['transaction_id'] !== null) {
+        if ($session['transaction_id'] !== null) {
             return ['status' => 'OngoingAuthorizedTransaction'];
         }
 

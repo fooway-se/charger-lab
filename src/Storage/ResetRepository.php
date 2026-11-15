@@ -27,7 +27,7 @@ final class ResetRepository
 
         $hasActiveTransactions = array_any(
             $this->outletSessions->allForCharger($chargerId),
-            static fn (array $session): bool => $session['connector_status'] === 'Occupied',
+            static fn (array $session): bool => $session['transaction_id'] !== null,
         );
         $status = $type === 'OnIdle' && $hasActiveTransactions ? 'Scheduled' : 'Accepted';
         $statement = $this->database->prepare(<<<'SQL'

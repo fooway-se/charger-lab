@@ -103,6 +103,36 @@ it('rejects a remote start when the requested EVSE has no available outlet', fun
     rmdir($directory);
 });
 
+it('rejects a remote start on an outlet with an authorization-first transaction pending', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $sessions = new OutletSessionRepository($database);
+    $sessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $sessions->beginAuthorizationFirst(
+        $chargerId,
+        1,
+        1,
+        'authorization-first-tx',
+        'PREAUTHORIZED-TAG',
+        gmdate(DATE_ATOM, time() + 30),
+    );
+    $commands = new OcppCommandRepository($database);
+    $handler = new RemoteStartRequestHandler(
+        $chargerId,
+        $sessions,
+        $commands,
+        new AvailabilityRepository($database),
+        new ResetRepository($database, $sessions),
+    );
+
+    expect($handler->requestStart([
+        'remoteStartId' => 44,
+        'idToken' => ['idToken' => 'REMOTE-44', 'type' => 'ISO14443'],
+        'evseId' => 1,
+    ]))->toBe(['status' => 'Rejected'])
+        ->and($commands->claimNext())->toBeNull();
+});
+
 it('rejects a remote start for an inoperative EVSE', function (): void {
     $database = Database::connect(':memory:');
     $chargerId = (new ChargerRepository($database))->createDefault();

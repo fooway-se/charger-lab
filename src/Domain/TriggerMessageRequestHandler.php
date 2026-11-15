@@ -24,7 +24,7 @@ final class TriggerMessageRequestHandler
     private bool $firmwareStatusNotificationRequested = false;
 
     /**
-     * @var list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool}>
+     * @var list<array{evse_id:int,connector_id:int,connector_status:string,transaction_id:?string,id_token:?string,seq_no:int,meter_wh:int,stop_reason:?string,meter_updated_at:?string,meter_ended_at:?string,meter_end_samples:list<array<string,mixed>>,remote_start_deadline:?string,remote_start_pending:bool,authorization_deadline:?string,authorization_pending:bool}>
      */
     private array $transactionSessions = [];
 
@@ -98,8 +98,7 @@ final class TriggerMessageRequestHandler
         if ($requestedMessage === 'TransactionEvent') {
             $this->transactionSessions = array_values(array_filter(
                 $outlets,
-                static fn (array $outlet): bool => $outlet['connector_status'] === 'Occupied'
-                    && is_string($outlet['transaction_id'])
+                static fn (array $outlet): bool => is_string($outlet['transaction_id'])
                     && $outlet['transaction_id'] !== '',
             ));
             if ($this->transactionSessions === []) {

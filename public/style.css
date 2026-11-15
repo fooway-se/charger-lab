@@ -137,9 +137,9 @@ input:disabled { background: #f5f8f6; color: #82918d; }
 .outlet-details { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .outlet-details strong { color: #52635c; font-size: 9px; }
 .outlet-details small { color: #8b9993; font: 400 8px var(--mono); white-space: nowrap; }
-.charging-indicator { display: flex; align-items: center; gap: 7px; color: #28785b; }
-.charging-label { font: 700 7px var(--mono); letter-spacing: .5px; }
-.charging-meter { width: 64px; height: 5px; display: block; overflow: hidden; border-radius: 4px; background: #dcefe5; }
+.charging-indicator { width: fit-content; min-height: 18px; display: flex; align-items: center; gap: 7px; padding: 3px 7px; border-radius: 999px; background: #e5f5eb; color: #1d694d; }
+.charging-label { font: 700 8px var(--mono); letter-spacing: .5px; }
+.charging-meter { width: 48px; height: 6px; display: block; overflow: hidden; border-radius: 4px; background: #c4e7d2; }
 .charging-meter-fill { width: 38%; height: 100%; display: block; border-radius: inherit; background: #2b9d70; animation: charging-meter-flow 1.2s ease-in-out infinite alternate; }
 @keyframes charging-meter-flow { from { transform: translateX(0); } to { transform: translateX(160%); } }
 .outlet-tag { padding: 4px 5px; border-radius: 3px; background: #edf5f0; color: #56806d; font: 500 7px var(--mono); letter-spacing: .3px; }

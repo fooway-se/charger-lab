@@ -38,7 +38,7 @@ final class RemoteStartRequestHandler
         }
 
         foreach ($this->outletSessions->allForCharger($this->chargerId) as $session) {
-            if ($session['connector_status'] !== 'Available'
+            if ($session['connector_status'] !== 'Available' || $session['transaction_id'] !== null
                 || !$this->availability->canStartTransaction(
                     $this->chargerId,
                     $session['evse_id'],

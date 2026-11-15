@@ -71,8 +71,10 @@ final class StationController
                 }
                 $outlet['transaction_id'] = $state['transaction_id'] ?? null;
                 $outlet['remote_start_pending'] = $state['remote_start_pending'] ?? false;
+                $outlet['authorization_pending'] = $state['authorization_pending'] ?? false;
                 $outlet['can_start_transaction'] = $state !== null
                     && $state['connector_status'] === 'Available'
+                    && $state['transaction_id'] === null
                     && $this->availability->canStartTransaction(
                         $chargerId,
                         $outlet['evse_id'],
@@ -82,6 +84,7 @@ final class StationController
                 // Accepted tokens start simulated energy transfer unless the vehicle is still pending or a remote stop was requested.
                 $outlet['is_charging'] = $state !== null
                     && $state['connector_status'] === 'Occupied'
+                    && !$state['authorization_pending']
                     && $state['id_token'] !== null
                     && $state['stop_reason'] === null
                     && !$state['remote_start_pending'];
@@ -330,8 +333,21 @@ final class StationController
                 }
 
                 $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);
-                if ($outletState === null || $outletState['connector_status'] !== 'Occupied' || $outletState['transaction_id'] === null) {
-                    return Response::json(409, ['error' => 'Plug in a vehicle on the selected outlet before presenting a token.']);
+                if ($outletState === null) {
+                    return Response::json(409, ['error' => 'The selected outlet is not available for authorization.']);
+                }
+
+                if ($outletState['authorization_pending']) {
+                    return Response::json(409, ['error' => 'This outlet is already waiting for the authorized vehicle.']);
+                }
+
+                if ($outletState['connector_status'] === 'Available' && $outletState['transaction_id'] === null) {
+                    if (!$this->availability->canStartTransaction($id, $outlet['evse_id'], $outlet['connector_id'])
+                        || $this->resets->blocksNewTransactions($id)) {
+                        return Response::json(409, ['error' => 'The selected outlet is not available for a new transaction.']);
+                    }
+                } elseif ($outletState['connector_status'] !== 'Occupied' || $outletState['transaction_id'] === null) {
+                    return Response::json(409, ['error' => 'The selected outlet cannot start an authorization-first transaction.']);
                 }
 
                 if ($outletState['id_token'] === $token
@@ -413,15 +429,19 @@ final class StationController
 
             $outletState = $this->outletSessions->find($id, $outlet['evse_id'], $outlet['connector_id']);
             if ($action === 'PlugIn' && ($outletState === null
-                || ($outletState['connector_status'] !== 'Available' && !$outletState['remote_start_pending'])
-                || (!$outletState['remote_start_pending']
+                || ($outletState['connector_status'] !== 'Available'
+                    && !$outletState['remote_start_pending'])
+                || ($outletState['transaction_id'] !== null && !$outletState['remote_start_pending']
+                    && !$outletState['authorization_pending'])
+                || (!$outletState['remote_start_pending'] && !$outletState['authorization_pending']
                     && (!$this->availability->canStartTransaction($id, $outlet['evse_id'], $outlet['connector_id'])
                         || $this->resets->blocksNewTransactions($id))))) {
                 return Response::json(409, ['error' => 'The selected outlet is not available for a vehicle.']);
             }
             if ($action === 'Unplug' && ($outletState === null
                 || $outletState['connector_status'] !== 'Occupied'
-                || $outletState['remote_start_pending'])) {
+                || $outletState['remote_start_pending']
+                || $outletState['authorization_pending'])) {
                 return Response::json(409, ['error' => 'The selected outlet has no vehicle to unplug.']);
             }
         } catch (InvalidArgumentException $exception) {

@@ -271,6 +271,8 @@ final class Database
         $needsLocalStopMigration = is_string($schema)
             && str_contains($schema, "stop_reason = 'Remote'")
             && !str_contains($schema, "'Local'");
+        $needsAuthorizationFirstMigration = !is_string($schema)
+            || !str_contains($schema, 'authorization_deadline IS NOT NULL');
 
         $pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS outlet_session (
@@ -287,10 +289,16 @@ final class Database
                 meter_ended_at TEXT,
                 meter_end_samples TEXT NOT NULL DEFAULT '[]',
                 remote_start_deadline TEXT,
+                authorization_deadline TEXT,
                 PRIMARY KEY (charger_id, evse_id, connector_id),
                 UNIQUE (charger_id, transaction_id),
-                CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
-                    OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL))
+                CHECK (
+                    (connector_status = 'Available' AND (
+                        (transaction_id IS NULL AND id_token IS NULL AND authorization_deadline IS NULL)
+                        OR (transaction_id IS NOT NULL AND id_token IS NOT NULL AND authorization_deadline IS NOT NULL)
+                    ))
+                    OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL AND authorization_deadline IS NULL)
+                )
             )
             SQL);
 
@@ -319,7 +327,11 @@ final class Database
             $pdo->exec('ALTER TABLE outlet_session ADD COLUMN remote_start_deadline TEXT');
         }
 
-        if ($needsLocalStopMigration) {
+        if (!in_array('authorization_deadline', $columns, true)) {
+            $pdo->exec('ALTER TABLE outlet_session ADD COLUMN authorization_deadline TEXT');
+        }
+
+        if ($needsLocalStopMigration || $needsAuthorizationFirstMigration) {
             $pdo->exec('ALTER TABLE outlet_session RENAME TO outlet_session_legacy');
             $pdo->exec(<<<'SQL'
                 CREATE TABLE outlet_session (
@@ -336,21 +348,27 @@ final class Database
                     meter_ended_at TEXT,
                     meter_end_samples TEXT NOT NULL DEFAULT '[]',
                     remote_start_deadline TEXT,
+                    authorization_deadline TEXT,
                     PRIMARY KEY (charger_id, evse_id, connector_id),
                     UNIQUE (charger_id, transaction_id),
-                    CHECK ((connector_status = 'Available' AND transaction_id IS NULL AND id_token IS NULL)
-                        OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL))
+                    CHECK (
+                        (connector_status = 'Available' AND (
+                            (transaction_id IS NULL AND id_token IS NULL AND authorization_deadline IS NULL)
+                            OR (transaction_id IS NOT NULL AND id_token IS NOT NULL AND authorization_deadline IS NOT NULL)
+                        ))
+                        OR (connector_status = 'Occupied' AND transaction_id IS NOT NULL AND authorization_deadline IS NULL)
+                    )
                 )
                 SQL);
             $pdo->exec(<<<'SQL'
                 INSERT INTO outlet_session (
                     charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
                     seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
-                    meter_end_samples, remote_start_deadline
+                    meter_end_samples, remote_start_deadline, authorization_deadline
                 )
                 SELECT charger_id, evse_id, connector_id, connector_status, transaction_id, id_token,
                     seq_no, meter_wh, stop_reason, meter_updated_at, meter_ended_at,
-                    meter_end_samples, remote_start_deadline
+                    meter_end_samples, remote_start_deadline, authorization_deadline
                 FROM outlet_session_legacy
                 SQL);
             $pdo->exec('DROP TABLE outlet_session_legacy');

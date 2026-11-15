@@ -213,6 +213,223 @@ function stopProcess($process): void
     }
 }
 
+it('starts an authorization-first transaction and only charges after the vehicle plugs in', function (): void {
+    $GLOBALS['testProcesses'] = [];
+    $directory = sys_get_temp_dir() . '/charger-auth-first-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $charger = $state['chargers'][0] ?? [];
+        $chargerId = (int) ($charger['id'] ?? 0);
+        expect($chargerId)->toBeGreaterThan(0);
+
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'AuthorizationFirstTest',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => $charger['vendor_name'],
+            'model' => $charger['model'],
+            'serial_number' => $charger['serial_number'],
+            'outlet_count' => 2,
+            'outlet_topology' => 'independent',
+        ];
+        [, $configurationHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($configurationHeaders[0] ?? '')->toContain('200');
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        [, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        expect($bootHeaders[0] ?? '')->toContain('200');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 8_000);
+
+        $database = new PDO('sqlite:' . $databasePath);
+        (new ChargerEmulator\Storage\DeviceModelSettingsRepository($database))->set($chargerId, 'EVConnectionTimeOut', '3');
+        unset($database);
+
+        $authorizePayload = json_encode([
+            ...$configuration,
+            'rfid_token' => 'PREPLUG-TAG',
+            'outlet_number' => 1,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [$authorizeBody, $authorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            $authorizePayload,
+            'application/json',
+        );
+        $authorizeResponse = is_string($authorizeBody) ? json_decode($authorizeBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($authorizeHeaders[0] ?? '')->toContain('200')
+            ->and($authorizeResponse['result']['idTokenInfo']['status'] ?? null)->toBe('Accepted');
+
+        [$pendingBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $pendingState = is_string($pendingBody) ? json_decode($pendingBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $pendingOutlet = $pendingState['chargers'][0]['outlets'][0] ?? [];
+        expect($pendingOutlet['connector_status'] ?? null)->toBe('Available')
+            ->and($pendingOutlet['authorization_pending'] ?? false)->toBeTrue()
+            ->and($pendingOutlet['is_charging'] ?? true)->toBeFalse();
+        $authorizationStartedEvents = array_values(array_filter(
+            $pendingState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['evse']['id'] ?? null) === 1
+                    && ($call[3]['eventType'] ?? null) === 'Started';
+            },
+        ));
+        $authorizationStarted = json_decode($authorizationStartedEvents[0]['message'] ?? 'null', true);
+        $startedPower = null;
+        foreach ($authorizationStarted[3]['meterValue'][0]['sampledValue'] ?? [] as $sample) {
+            if (($sample['measurand'] ?? null) === 'Power.Active.Import') {
+                $startedPower = $sample['value'] ?? null;
+            }
+        }
+        expect(count($authorizationStartedEvents))->toBe(1)
+            ->and($authorizationStarted[3]['triggerReason'] ?? null)->toBe('Authorized')
+            ->and($authorizationStarted[3]['idToken']['idToken'] ?? null)->toBe('PREPLUG-TAG')
+            ->and($startedPower)->toBe(0);
+
+        [$plugBody, $plugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/plug-in",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        $plugResponse = is_string($plugBody) ? json_decode($plugBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($plugHeaders[0] ?? '')->toContain('200')
+            ->and($plugResponse['result']['status'] ?? null)->toBe('PluggedIn');
+
+        [$chargingBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $chargingState = is_string($chargingBody) ? json_decode($chargingBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargingOutlet = $chargingState['chargers'][0]['outlets'][0] ?? [];
+        $authorizationFirstUpdates = array_values(array_filter(
+            $chargingState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['evse']['id'] ?? null) === 1
+                    && ($call[3]['eventType'] ?? null) === 'Updated';
+            },
+        ));
+        $authorizationFirstCharging = json_decode($authorizationFirstUpdates[0]['message'] ?? 'null', true);
+        $statusCountBeforeTimeout = count(array_filter(
+            $chargingState['chargers'][0]['entries'] ?? [],
+            static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification'
+                && ($entry['direction'] ?? null) === 'outgoing',
+        ));
+        expect($chargingOutlet['connector_status'] ?? null)->toBe('Occupied')
+            ->and($chargingOutlet['authorization_pending'] ?? true)->toBeFalse()
+            ->and($chargingOutlet['is_charging'] ?? false)->toBeTrue()
+            ->and(count($authorizationFirstUpdates))->toBe(1)
+            ->and($authorizationFirstCharging[3]['triggerReason'] ?? null)->toBe('ChargingStateChanged')
+            ->and($authorizationFirstCharging[3]['seqNo'] ?? null)->toBe(1)
+            ->and($authorizationFirstCharging[3]['transactionInfo']['chargingState'] ?? null)->toBe('Charging');
+
+        $secondAuthorizePayload = json_encode([
+            ...$configuration,
+            'rfid_token' => 'TIMEOUT-TAG',
+            'outlet_number' => 2,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [$timeoutAuthorizeBody, $timeoutAuthorizeHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/authorize",
+            'POST',
+            $secondAuthorizePayload,
+            'application/json',
+        );
+        $timeoutAuthorizeResponse = is_string($timeoutAuthorizeBody) ? json_decode($timeoutAuthorizeBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        expect($timeoutAuthorizeHeaders[0] ?? '')->toContain('200')
+            ->and($timeoutAuthorizeResponse['result']['idTokenInfo']['status'] ?? null)->toBe('Accepted');
+
+        $deadline = microtime(true) + 6;
+        do {
+            [$timeoutStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+            $timeoutState = is_string($timeoutStateBody) ? json_decode($timeoutStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+            $timeoutOutlet = $timeoutState['chargers'][0]['outlets'][1] ?? [];
+            if (($timeoutOutlet['authorization_pending'] ?? false) === false
+                && ($timeoutOutlet['transaction_id'] ?? null) === null) {
+                break;
+            }
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+
+        $entries = $timeoutState['chargers'][0]['entries'] ?? [];
+        $events = array_values(array_filter($entries, static function (array $entry): bool {
+            if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                return false;
+            }
+            $call = json_decode($entry['message'], true);
+
+            return ($call[3]['evse']['id'] ?? null) === 2;
+        }));
+        $started = json_decode($events[0]['message'] ?? 'null', true);
+        $ended = json_decode($events[array_key_last($events)]['message'] ?? 'null', true);
+        $statusCountAfterTimeout = count(array_filter(
+            $entries,
+            static fn (array $entry): bool => ($entry['action'] ?? null) === 'StatusNotification'
+                && ($entry['direction'] ?? null) === 'outgoing',
+        ));
+        expect($timeoutOutlet['transaction_id'] ?? null)->toBeNull()
+            ->and($started[3]['eventType'] ?? null)->toBe('Started')
+            ->and($started[3]['triggerReason'] ?? null)->toBe('Authorized')
+            ->and($started[3]['idToken']['idToken'] ?? null)->toBe('TIMEOUT-TAG')
+            ->and($ended[3]['eventType'] ?? null)->toBe('Ended')
+            ->and($ended[3]['triggerReason'] ?? null)->toBe('EVConnectTimeout')
+            ->and($ended[3]['transactionInfo']['stoppedReason'] ?? null)->toBe('Timeout')
+            ->and($statusCountAfterTimeout)->toBe($statusCountBeforeTimeout);
+    } finally {
+        foreach ([$worker, $app, $mockCsms] as $process) {
+            if (is_resource($process)) {
+                stopProcess($process);
+            }
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+})->group('integration');
+
 it('boots multiple chargers and runs a plug authorize unplug flow', function (): void {
     $GLOBALS['capturedMockCsmsOutput'] = '';
     $GLOBALS['testProcesses'] = [];

@@ -190,6 +190,7 @@ function createOutletTile(outlet, isConnected) {
 function updateOutletTile(tile, outlet, isConnected) {
     const connectorStatus = outlet.connector_status || 'Available';
     const remoteStartPending = outlet.remote_start_pending === true;
+    const authorizationPending = outlet.authorization_pending === true;
     const availabilityScheduled = connectorStatus === 'Available' && outlet.can_start_transaction === false;
     const isCharging = outlet.is_charging === true;
     tile.dataset.outletNumber = String(outlet.number);
@@ -198,21 +199,25 @@ function updateOutletTile(tile, outlet, isConnected) {
     setTextContent(tile.querySelector('.outlet-details small'), `EVSE ${outlet.evse_id} · Connector ${outlet.connector_id}`);
     tile.querySelector('.charging-indicator').hidden = !isCharging;
     const badge = tile.querySelector('.outlet-tag') || tile.children[2];
-    const badgeClass = `outlet-tag outlet-status-${remoteStartPending || availabilityScheduled ? 'waiting' : connectorStatus.toLowerCase()}`;
+    const badgeClass = `outlet-tag outlet-status-${remoteStartPending || authorizationPending || availabilityScheduled ? 'waiting' : connectorStatus.toLowerCase()}`;
     if (badge.className !== badgeClass) {
         badge.className = badgeClass;
     }
-    setTextContent(badge, remoteStartPending ? 'WAITING FOR VEHICLE' : (availabilityScheduled ? 'CHANGE SCHEDULED' : connectorStatus.toUpperCase()));
+    setTextContent(badge, remoteStartPending || authorizationPending
+        ? 'WAITING FOR VEHICLE'
+        : (availabilityScheduled ? 'CHANGE SCHEDULED' : connectorStatus.toUpperCase()));
     const action = tile.querySelector('.outlet-action');
     const actionName = connectorStatus === 'Occupied' && !remoteStartPending ? 'unplug' : 'plug-in';
-    const actionText = remoteStartPending ? 'Connect vehicle' : (connectorStatus === 'Occupied' ? 'Unplug' : 'Plug in');
+    const actionText = remoteStartPending || authorizationPending
+        ? 'Connect vehicle'
+        : (connectorStatus === 'Occupied' ? 'Unplug' : 'Plug in');
     if (action.dataset.action !== actionName) {
         action.dataset.action = actionName;
     }
     action.dataset.outletNumber = String(outlet.number);
     const shouldDisableAction = !isConnected
         || connectorStatus === 'Unavailable'
-        || (connectorStatus === 'Available' && outlet.can_start_transaction === false);
+        || (connectorStatus === 'Available' && outlet.can_start_transaction === false && !authorizationPending);
     if (action.disabled !== shouldDisableAction) {
         action.disabled = shouldDisableAction;
     }
@@ -264,21 +269,28 @@ function updateChargerConfigForm(workspace, charger) {
 
 function updateOutletAuthorizationSelect(workspace, outlets) {
     const outletSelect = workspace.querySelector('[data-action="authorize"] select[name="outlet_number"]');
-    const occupiedOutlets = outlets.filter((outlet) => outlet.connector_status === 'Occupied');
+    const selectableOutlets = outlets.filter((outlet) => outlet.connector_status === 'Occupied'
+        || (outlet.connector_status === 'Available' && outlet.can_start_transaction === true));
     const currentValue = outletSelect.value;
     const existingOptions = new Map(Array.from(outletSelect.options, (option) => [option.value, option]));
-    const options = [existingOptions.get('') || outletSelect.options[0]];
-    for (const outlet of occupiedOutlets) {
+    const options = [
+        existingOptions.get('') || outletSelect.options[0],
+        existingOptions.get('authorization-only') || outletSelect.options[1],
+    ];
+    for (const outlet of selectableOutlets) {
         const value = String(outlet.number);
         const option = existingOptions.get(value) || document.createElement('option');
         option.value = value;
-        setTextContent(option, `Outlet ${outlet.number} · EVSE ${outlet.evse_id}`);
+        const state = outlet.connector_status === 'Occupied' ? 'Occupied' : 'Available';
+        setTextContent(option, `Outlet ${outlet.number} · EVSE ${outlet.evse_id} · ${state}`);
         options.push(option);
     }
     reconcileChildren(outletSelect, options);
-    if (occupiedOutlets.length === 1) {
-        outletSelect.value = String(occupiedOutlets[0].number);
-    } else if (!occupiedOutlets.some((outlet) => String(outlet.number) === currentValue)) {
+    if (currentValue === 'authorization-only') {
+        outletSelect.value = currentValue;
+    } else if (selectableOutlets.length === 1) {
+        outletSelect.value = String(selectableOutlets[0].number);
+    } else if (!selectableOutlets.some((outlet) => String(outlet.number) === currentValue)) {
         outletSelect.value = '';
     }
 }
@@ -559,9 +571,10 @@ chargerList.addEventListener('submit', async (event) => {
                 uses_default_csms: form.elements.namedItem('uses_default_csms').checked,
             });
         } else if (form.dataset.action === 'authorize') {
+            const selectedOutlet = form.elements.namedItem('outlet_number').value;
             await postAction('/api/authorize', {
                 rfid_token: formValues(form).rfid_token,
-                outlet_number: formValues(form).outlet_number || undefined,
+                outlet_number: selectedOutlet === 'authorization-only' ? undefined : selectedOutlet,
                 charger_id: chargerId,
             });
         }

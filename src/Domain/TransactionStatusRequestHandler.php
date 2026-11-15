@@ -32,7 +32,7 @@ final class TransactionStatusRequestHandler
         }
 
         foreach ($this->outletSessions->allForCharger($this->chargerId) as $session) {
-            if ($session['transaction_id'] === null || $session['connector_status'] !== 'Occupied') {
+            if ($session['transaction_id'] === null) {
                 continue;
             }
 

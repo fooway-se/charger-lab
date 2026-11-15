@@ -38,7 +38,7 @@ final class AvailabilityRepository
         }
 
         $before = $this->statusSnapshot($chargerId, $outlets);
-        $busy = array_any($outlets, static fn (array $outlet): bool => $outlet['connector_status'] === 'Occupied');
+        $busy = array_any($outlets, static fn (array $outlet): bool => $outlet['transaction_id'] !== null);
         $existingStatus = $this->operationalStatus($chargerId, $scope, $evseId, $connectorId);
         if ($busy && $existingStatus !== $operationalStatus) {
             $this->saveStatus($chargerId, $scope, $evseId, $connectorId, $existingStatus, $operationalStatus);
@@ -119,7 +119,7 @@ final class AvailabilityRepository
                 );
                 if ($targetOutlets === [] || array_any(
                     $targetOutlets,
-                    static fn (array $outlet): bool => $outlet['connector_status'] === 'Occupied',
+                    static fn (array $outlet): bool => $outlet['transaction_id'] !== null,
                 )) {
                     continue;
                 }
@@ -153,15 +153,16 @@ final class AvailabilityRepository
             'evse_id' => (int) $outlet['evse_id'],
             'connector_id' => (int) $outlet['connector_id'],
             'connector_status' => (string) $outlet['connector_status'],
+            'transaction_id' => $outlet['transaction_id'] ?? null,
         ];
     }
 
     private function matchingOutlets(int $chargerId, string $scope, int $evseId, int $connectorId): array
     {
         $sql = match ($scope) {
-            'station' => 'SELECT evse_id, connector_id, connector_status FROM outlet_session WHERE charger_id = :charger_id',
-            'evse' => 'SELECT evse_id, connector_id, connector_status FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id',
-            default => 'SELECT evse_id, connector_id, connector_status FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id',
+            'station' => 'SELECT evse_id, connector_id, connector_status, transaction_id FROM outlet_session WHERE charger_id = :charger_id',
+            'evse' => 'SELECT evse_id, connector_id, connector_status, transaction_id FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id',
+            default => 'SELECT evse_id, connector_id, connector_status, transaction_id FROM outlet_session WHERE charger_id = :charger_id AND evse_id = :evse_id AND connector_id = :connector_id',
         };
         $statement = $this->database->prepare($sql);
         $statement->bindValue(':charger_id', $chargerId, PDO::PARAM_INT);
@@ -180,7 +181,7 @@ final class AvailabilityRepository
 
     private function allOutlets(int $chargerId): array
     {
-        $statement = $this->database->prepare('SELECT evse_id, connector_id, connector_status FROM outlet_session WHERE charger_id = :charger_id');
+        $statement = $this->database->prepare('SELECT evse_id, connector_id, connector_status, transaction_id FROM outlet_session WHERE charger_id = :charger_id');
         $statement->execute(['charger_id' => $chargerId]);
 
         return array_map(fn (array $outlet): array => $this->normalizeOutlet($outlet), $statement->fetchAll());
