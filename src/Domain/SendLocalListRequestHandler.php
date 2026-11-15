@@ -26,7 +26,7 @@ final class SendLocalListRequestHandler
         $updateType = $payload['updateType'] ?? null;
         $entries = array_key_exists('localAuthorizationList', $payload) ? $payload['localAuthorizationList'] : [];
         if (array_diff(array_keys($payload), ['customData', 'versionNumber', 'updateType', 'localAuthorizationList']) !== []
-            || !$this->validCustomData($payload['customData'] ?? null, array_key_exists('customData', $payload))
+            || !CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))
             || !is_int($versionNumber)
             || $versionNumber < 1
             || !in_array($updateType, ['Full', 'Differential'], true)
@@ -45,7 +45,7 @@ final class SendLocalListRequestHandler
     {
         if (!is_array($entry)
             || array_diff(array_keys($entry), ['customData', 'idToken', 'idTokenInfo']) !== []
-            || !$this->validCustomData($entry['customData'] ?? null, array_key_exists('customData', $entry))
+            || !CustomDataValidator::isValid($entry['customData'] ?? null, array_key_exists('customData', $entry))
             || !$this->validIdToken($entry['idToken'] ?? null)) {
             return false;
         }
@@ -58,7 +58,7 @@ final class SendLocalListRequestHandler
 
         return is_array($info)
             && array_diff(array_keys($info), ['customData', 'status', 'cacheExpiryDateTime', 'chargingPriority', 'language1', 'evseId', 'groupIdToken', 'language2', 'personalMessage']) === []
-            && $this->validCustomData($info['customData'] ?? null, array_key_exists('customData', $info))
+            && CustomDataValidator::isValid($info['customData'] ?? null, array_key_exists('customData', $info))
             && in_array($info['status'] ?? null, self::ID_TOKEN_STATUSES, true)
             && (!array_key_exists('cacheExpiryDateTime', $info) || (is_string($info['cacheExpiryDateTime']) && preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/', $info['cacheExpiryDateTime']) === 1 && strtotime($info['cacheExpiryDateTime']) !== false))
             && (!array_key_exists('chargingPriority', $info) || is_int($info['chargingPriority']))
@@ -73,7 +73,7 @@ final class SendLocalListRequestHandler
     {
         return is_array($idToken)
             && array_diff(array_keys($idToken), ['customData', 'idToken', 'type', 'additionalInfo']) === []
-            && $this->validCustomData($idToken['customData'] ?? null, array_key_exists('customData', $idToken))
+            && CustomDataValidator::isValid($idToken['customData'] ?? null, array_key_exists('customData', $idToken))
             && is_string($idToken['idToken'] ?? null)
             && $idToken['idToken'] !== ''
             && strlen($idToken['idToken']) <= 36
@@ -85,27 +85,18 @@ final class SendLocalListRequestHandler
     {
         return is_array($info)
             && array_diff(array_keys($info), ['customData', 'additionalIdToken', 'type']) === []
-            && $this->validCustomData($info['customData'] ?? null, array_key_exists('customData', $info))
+            && CustomDataValidator::isValid($info['customData'] ?? null, array_key_exists('customData', $info))
             && is_string($info['additionalIdToken'] ?? null)
             && $info['additionalIdToken'] !== ''
             && is_string($info['type'] ?? null)
             && $info['type'] !== '';
     }
 
-    private function validCustomData(mixed $customData, bool $present): bool
-    {
-        return !$present || (is_array($customData)
-            && array_diff(array_keys($customData), ['vendorId']) === []
-            && is_string($customData['vendorId'] ?? null)
-            && $customData['vendorId'] !== ''
-            && strlen($customData['vendorId']) <= 255);
-    }
-
     private function validPersonalMessage(mixed $message): bool
     {
         return is_array($message)
             && array_diff(array_keys($message), ['customData', 'format', 'language', 'content']) === []
-            && $this->validCustomData($message['customData'] ?? null, array_key_exists('customData', $message))
+            && CustomDataValidator::isValid($message['customData'] ?? null, array_key_exists('customData', $message))
             && in_array($message['format'] ?? null, ['ASCII', 'UTF8'], true)
             && (!array_key_exists('language', $message) || is_string($message['language']))
             && is_string($message['content'] ?? null);

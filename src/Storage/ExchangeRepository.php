@@ -44,4 +44,78 @@ final class ExchangeRepository
 
         return array_reverse($statement->fetchAll());
     }
+
+    /** @return list<array{direction:string,action:string,message:string,created_at:string}> */
+    public function forLogUpload(int $chargerId, string $logType, ?string $oldestTimestamp, ?string $latestTimestamp): array
+    {
+        $statement = $this->database->prepare(
+            'SELECT direction, action, message, created_at FROM exchange_log WHERE charger_id = :charger_id ORDER BY id',
+        );
+        $statement->execute(['charger_id' => $chargerId]);
+
+        $oldest = $oldestTimestamp === null ? null : strtotime($oldestTimestamp);
+        $latest = $latestTimestamp === null ? null : strtotime($latestTimestamp);
+        $securityActions = ['SecurityEventNotification', 'InstallCertificate', 'DeleteCertificate', 'GetInstalledCertificateIds', 'UpdateFirmware'];
+        $entries = [];
+        foreach ($statement->fetchAll() as $entry) {
+            $createdAt = strtotime($entry['created_at']);
+            if ($createdAt === false || ($oldest !== null && $createdAt < $oldest) || ($latest !== null && $createdAt > $latest)) {
+                continue;
+            }
+            if ($logType === 'SecurityLog' && !in_array($entry['action'], $securityActions, true)) {
+                continue;
+            }
+
+            $message = $entry['message'];
+            try {
+                $decoded = json_decode($message, true, flags: JSON_THROW_ON_ERROR);
+                $this->redactIdTokens($decoded);
+                $message = json_encode($decoded, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+            } catch (\JsonException) {
+                // System log messages are plain text; they contain no OCPP token objects to redact.
+            }
+
+            $entries[] = [
+                'direction' => $entry['direction'],
+                'action' => $entry['action'],
+                'message' => $message,
+                'timestamp' => $entry['created_at'],
+            ];
+        }
+
+        return $entries;
+    }
+
+    private function redactIdTokens(mixed &$value): bool
+    {
+        if (!is_array($value)) {
+            return false;
+        }
+
+        $redacted = false;
+        foreach ($value as $key => &$child) {
+            if ($key === 'idToken' && is_string($child)) {
+                $child = '[REDACTED]';
+                $redacted = true;
+                continue;
+            }
+
+            if ($key === 'data' && is_string($child)) {
+                try {
+                    $decodedData = json_decode($child, true, flags: JSON_THROW_ON_ERROR);
+                    if (is_array($decodedData) && $this->redactIdTokens($decodedData)) {
+                        $child = json_encode($decodedData, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+                        $redacted = true;
+                    }
+                } catch (\JsonException) {
+                    // Customer information may be plain text rather than JSON.
+                }
+                continue;
+            }
+
+            $redacted = $this->redactIdTokens($child) || $redacted;
+        }
+
+        return $redacted;
+    }
 }

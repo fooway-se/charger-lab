@@ -15,7 +15,9 @@ final class DataTransferRequestHandler
     {
         $vendorId = $payload['vendorId'] ?? null;
         $messageId = $payload['messageId'] ?? null;
-        if (!is_string($vendorId) || $vendorId === '' || strlen($vendorId) > 255
+        if (array_diff(array_keys($payload), ['customData', 'data', 'messageId', 'vendorId']) !== []
+            || !CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))
+            || !is_string($vendorId) || $vendorId === '' || strlen($vendorId) > 255
             || (array_key_exists('messageId', $payload)
                 && (!is_string($messageId) || $messageId === '' || strlen($messageId) > 50))) {
             throw new OcppCallErrorException('FormationViolation', 'DataTransfer requires a valid vendorId and messageId.');

@@ -549,6 +549,136 @@ it('starts an authorization-first transaction and only charges after the vehicle
     }
 })->group('integration');
 
+it('retrieves diagnostics and security logs, retries failed uploads, cancels superseded requests and handles customer information', function (): void {
+    $GLOBALS['testProcesses'] = [];
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $directory = sys_get_temp_dir() . '/charger-diagnostics-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $uploadRequestsPath = $directory . '/uploads.ndjson';
+    $uploadPort = findOpenPort();
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $uploadServer = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$uploadPort}", __DIR__ . '/fixtures/log-upload-server.php'], [
+        'PATH' => (string) getenv('PATH'),
+        'LOG_UPLOAD_REQUESTS_PATH' => $uploadRequestsPath,
+    ]);
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        waitUntilAvailable($uploadPort);
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_HEARTBEAT_INTERVAL' => '30',
+            'MOCK_CSMS_SEND_DIAGNOSTICS_FLOW' => '1',
+            'MOCK_CSMS_LOG_UPLOAD_URL' => "http://127.0.0.1:{$uploadPort}",
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $chargerId = (int) ($state['chargers'][0]['id'] ?? 0);
+        expect($chargerId)->toBeGreaterThan(0);
+        $chargerPayload = json_encode([
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => 'DiagnosticsIntegrationCharger',
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Diagnostics Test Model',
+            'serial_number' => 'DIAGNOSTICS-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        [, $saveHeaders] = request("http://127.0.0.1:{$appPort}/api/charger", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The diagnostics test charger should save before booting.');
+        [$bootBody, $bootHeaders] = request("http://127.0.0.1:{$appPort}/api/boot", 'POST', $chargerPayload, 'application/json');
+        expect(!str_contains($bootHeaders[0] ?? '', '200'))->toBeFalse('The diagnostics test charger should complete BootNotification: ' . (string) $bootBody);
+
+        $output = waitForProcessOutput($mockCsms, 'Diagnostics flow complete', 30_000);
+        $output .= drainProcessOutput($mockCsms);
+        $output = ($GLOBALS['capturedMockCsmsOutput'] ?? '') . $output;
+
+        expect($output)->toContain('CustomData SetVariables station response: ')
+            ->toContain('"attributeStatus":"Accepted"')
+            ->toContain('CustomData GetVariables station response: ')
+            ->toContain('"attributeValue":"200"')
+            ->toContain('GetLog station response: ')
+            ->toContain('"status":"AcceptedCanceled"')
+            ->toContain('LogStatusNotification CALL: ')
+            ->toContain('CustomerInformation station response: ')
+            ->toContain('NotifyCustomerInformation CALL: ');
+
+        preg_match_all('/LogStatusNotification CALL: (\[[^\r\n]+\])/', $output, $logStatusMatches);
+        $logStatuses = array_map(static fn (string $call): array => json_decode($call, true, flags: JSON_THROW_ON_ERROR)[3] ?? [], $logStatusMatches[1] ?? []);
+        expect(array_any($logStatuses, static fn (array $status): bool => ($status['requestId'] ?? null) === 251 && ($status['status'] ?? null) === 'UploadFailure'))
+            ->toBeTrue()
+            ->and(array_any($logStatuses, static fn (array $status): bool => ($status['requestId'] ?? null) === 252 && ($status['status'] ?? null) === 'Uploaded'))
+            ->toBeTrue()
+            ->and(array_any($logStatuses, static fn (array $status): bool => ($status['requestId'] ?? null) === 253 && ($status['status'] ?? null) === 'AcceptedCanceled'))
+            ->toBeTrue()
+            ->and(array_any($logStatuses, static fn (array $status): bool => ($status['requestId'] ?? null) === 254 && ($status['status'] ?? null) === 'Uploaded'))
+            ->toBeTrue();
+
+        preg_match_all('/NotifyCustomerInformation CALL: (\[[^\r\n]+\])/', $output, $customerMatches);
+        $customerNotifications = array_map(static fn (string $call): array => json_decode($call, true, flags: JSON_THROW_ON_ERROR)[3] ?? [], $customerMatches[1] ?? []);
+        $customerDataByRequest = [];
+        foreach ($customerNotifications as $notification) {
+            $customerDataByRequest[$notification['requestId'] ?? -1] = $notification['data'] ?? null;
+        }
+        expect($customerDataByRequest[270] ?? null)->toContain('diagnostics-rfid')
+            ->and($customerDataByRequest[271] ?? null)->toBe('')
+            ->and($customerDataByRequest[272] ?? null)->toContain('diagnostics-rfid')
+            ->and(array_key_exists(273, $customerDataByRequest))->toBeFalse()
+            ->and($customerDataByRequest[274] ?? null)->toBe('')
+            ->and($customerDataByRequest[275] ?? null)->toBe('');
+
+        $uploadLines = is_file($uploadRequestsPath) ? file($uploadRequestsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) : [];
+        $uploads = array_map(static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR), $uploadLines);
+        $failedUploads = array_values(array_filter($uploads, static fn (array $upload): bool => str_contains($upload['path'] ?? '', 'diagnostics-251.log')));
+        $successUpload = array_values(array_filter($uploads, static fn (array $upload): bool => str_contains($upload['path'] ?? '', 'diagnostics-250.log')));
+        $securityUpload = array_values(array_filter($uploads, static fn (array $upload): bool => str_contains($upload['path'] ?? '', 'security-252.log')));
+        $secondUpload = array_values(array_filter($uploads, static fn (array $upload): bool => str_contains($upload['path'] ?? '', 'diagnostics-254.log')));
+        expect($failedUploads)->toHaveCount(4)
+            ->and($successUpload)->toHaveCount(1)
+            ->and($securityUpload)->toHaveCount(1)
+            ->and($secondUpload)->toHaveCount(1)
+            ->and($successUpload[0]['method'] ?? null)->toBe('POST')
+            ->and($successUpload[0]['headers']['Content-Type'] ?? null)->toBe('application/octet-stream')
+            ->and($successUpload[0]['body'] ?? '')->toContain('BootNotification')
+            ->not->toContain('diagnostics-rfid')
+            ->and($securityUpload[0]['body'] ?? '')->toContain('SecurityEventNotification')
+            ->not->toContain('TransactionEvent');
+    } finally {
+        if (is_resource($worker)) {
+            stopProcess($worker);
+        }
+        if (is_resource($mockCsms)) {
+            stopProcess($mockCsms);
+        }
+        stopProcess($uploadServer);
+        foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm', $uploadRequestsPath] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+    }
+})->group('integration');
+
 it('answers GetTransactionStatus before replaying queued transaction events after reconnect', function (): void {
     $GLOBALS['testProcesses'] = [];
     $GLOBALS['capturedMockCsmsOutput'] = '';

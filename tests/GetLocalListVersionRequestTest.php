@@ -32,6 +32,14 @@ it('accepts the optional OCPP customData object', function (): void {
     ]))->toBe(['versionNumber' => 0]);
 });
 
+it('accepts vendor-specific properties in customData', function (): void {
+    [, $handler] = createLocalListVersionHandler();
+
+    expect($handler->getVersion([
+        'customData' => ['vendorId' => 'com.example.csms', 'traceId' => 'abc-123'],
+    ]))->toBe(['versionNumber' => 0]);
+});
+
 it('returns FormationViolation for a GetLocalListVersion payload outside its schema', function (array $payload): void {
     [, $handler] = createLocalListVersionHandler();
 
@@ -41,5 +49,6 @@ it('returns FormationViolation for a GetLocalListVersion payload outside its sch
     'unknown property' => [['unexpected' => true]],
     'customData is not an object' => [['customData' => 'invalid']],
     'customData vendor ID is empty' => [['customData' => ['vendorId' => '']]],
-    'customData has an unknown property' => [['customData' => ['vendorId' => 'csms', 'extra' => true]]],
+    'customData has no vendor ID' => [['customData' => ['extra' => true]]],
+    'customData is null' => [['customData' => null]],
 ]);

@@ -13,14 +13,8 @@ final class ClearCacheRequestHandler
 {
     public function clear(array $payload): array
     {
-        $customData = $payload['customData'] ?? null;
         if (array_diff(array_keys($payload), ['customData']) !== []
-            || (array_key_exists('customData', $payload)
-                && (!is_array($customData)
-                    || array_diff(array_keys($customData), ['vendorId']) !== []
-                    || !is_string($customData['vendorId'] ?? null)
-                    || $customData['vendorId'] === ''
-                    || strlen($customData['vendorId']) > 255))) {
+            || !CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))) {
             throw new OcppCallErrorException('FormationViolation', 'ClearCache only accepts a valid customData object.');
         }
 

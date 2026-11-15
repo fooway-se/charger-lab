@@ -15,6 +15,12 @@ it('accepts the optional OCPP customData object', function (): void {
     ]))->toBe(['status' => 'Accepted']);
 });
 
+it('accepts vendor-specific properties inside customData', function (): void {
+    expect((new ClearCacheRequestHandler())->clear([
+        'customData' => ['vendorId' => 'com.example.csms', 'traceId' => ['id' => 'abc-123']],
+    ]))->toBe(['status' => 'Accepted']);
+});
+
 it('returns FormationViolation for a ClearCache payload outside its schema', function (array $payload): void {
     expect(fn () => (new ClearCacheRequestHandler())->clear($payload))
         ->toThrow(OcppCallErrorException::class, 'ClearCache only accepts a valid customData object.');
@@ -22,6 +28,6 @@ it('returns FormationViolation for a ClearCache payload outside its schema', fun
     'unknown property' => [['unexpected' => true]],
     'customData is not an object' => [['customData' => 'invalid']],
     'customData vendor ID is empty' => [['customData' => ['vendorId' => '']]],
-    'customData has an unknown property' => [['customData' => ['vendorId' => 'csms', 'extra' => true]]],
     'customData vendor ID is too long' => [['customData' => ['vendorId' => str_repeat('v', 256)]]],
+    'customData is null' => [['customData' => null]],
 ]);

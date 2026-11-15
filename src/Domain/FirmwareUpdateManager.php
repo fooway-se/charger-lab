@@ -30,7 +30,7 @@ final class FirmwareUpdateManager
         $requestId = $payload['requestId'] ?? null;
         $firmware = $payload['firmware'] ?? null;
         if (array_diff(array_keys($payload), ['customData', 'firmware', 'requestId', 'retries', 'retryInterval']) !== []
-            || !$this->validCustomData($payload['customData'] ?? null)
+            || !CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))
             || !is_int($requestId) || !is_array($firmware) || !$this->validFirmwareRequest($firmware)) {
             return ['status' => 'Rejected'];
         }
@@ -248,7 +248,7 @@ final class FirmwareUpdateManager
         $signature = $firmware['signature'] ?? null;
 
         return array_diff(array_keys($firmware), $allowed) === []
-            && $this->validCustomData($firmware['customData'] ?? null)
+            && CustomDataValidator::isValid($firmware['customData'] ?? null, array_key_exists('customData', $firmware))
             && is_string($location)
             && strlen($location) <= 512
             && is_array($parts)
@@ -263,14 +263,6 @@ final class FirmwareUpdateManager
             && is_string($signature)
             && strlen($signature) <= 800
             && base64_decode($signature, true) !== false;
-    }
-
-    private function validCustomData(mixed $customData): bool
-    {
-        return $customData === null
-            || (is_array($customData)
-                && is_string($customData['vendorId'] ?? null)
-                && strlen($customData['vendorId']) <= 255);
     }
 
     private function validSigningCertificate(int $chargerId, string $certificate): bool

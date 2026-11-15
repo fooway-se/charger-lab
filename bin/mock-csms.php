@@ -294,6 +294,7 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
         sendResetAfterBoot($client, $call, $result);
         changeAvailabilityAfterBoot($client, $call, $result, $session);
         runConfiguredServerCalls($client, $call, $result, $session);
+        sendConfiguredDiagnosticsFlow($client, $call[1], $session);
         sendCallAfterRejectedBoot($client, $call, $result);
     }
 
@@ -917,10 +918,13 @@ function configureMeterTestSettings($client, string $bootCallId): void
 {
     if (getenv('MOCK_CSMS_SET_METER_SETTINGS') === '1') {
         $meterSettingsCallId = 'mock-csms-meter-settings-' . $bootCallId;
+        $customData = ['vendorId' => 'com.example.ocpp-test', 'testCase' => 'TC_P_03'];
         $meterSettingsCall = json_encode([2, $meterSettingsCallId, 'SetVariables', [
+            'customData' => $customData,
             'setVariableData' => [[
-                'component' => ['name' => 'SampledDataCtrlr'],
-                'variable' => ['name' => 'TxUpdatedInterval'],
+                'customData' => $customData,
+                'component' => ['name' => 'SampledDataCtrlr', 'customData' => $customData],
+                'variable' => ['name' => 'TxUpdatedInterval', 'customData' => $customData],
                 'attributeValue' => '1',
             ], [
                 'component' => ['name' => 'SampledDataCtrlr'],
@@ -954,6 +958,216 @@ function configureMeterTestSettings($client, string $bootCallId): void
         ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         writeFrame($client, 0x1, $meterSettingsCall);
         waitForStationResponse($client, $meterSettingsCallId, 'Meter settings station response');
+    }
+}
+
+function sendConfiguredDiagnosticsFlow($client, string $bootCallId, MockCsmsSession $session): void
+{
+    if (getenv('MOCK_CSMS_SEND_DIAGNOSTICS_FLOW') !== '1' || $session->diagnosticsSent) {
+        return;
+    }
+    $session->diagnosticsSent = true;
+
+    $listCallId = 'mock-csms-diagnostics-list-' . $bootCallId;
+    $listCall = json_encode([2, $listCallId, 'SendLocalList', [
+        'versionNumber' => 1,
+        'updateType' => 'Full',
+        'localAuthorizationList' => [[
+            'idToken' => ['idToken' => 'diagnostics-rfid', 'type' => 'ISO14443'],
+            'idTokenInfo' => ['status' => 'Accepted'],
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $listCall);
+    waitForStationResponse($client, $listCallId, 'Diagnostics SendLocalList station response');
+
+    $customData = ['vendorId' => 'com.example.octt', 'traceId' => 'core-custom-data'];
+    $setCustomCallId = 'mock-csms-custom-data-set-' . $bootCallId;
+    $setCustomCall = json_encode([2, $setCustomCallId, 'SetVariables', [
+        'customData' => $customData,
+        'setVariableData' => [[
+            'customData' => $customData,
+            'component' => ['name' => 'OCPPCommCtrlr', 'customData' => $customData],
+            'variable' => ['name' => 'OfflineThreshold', 'customData' => $customData],
+            'attributeValue' => '200',
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $setCustomCall);
+    waitForStationResponse($client, $setCustomCallId, 'CustomData SetVariables station response');
+
+    $getCustomCallId = 'mock-csms-custom-data-get-' . $bootCallId;
+    $getCustomCall = json_encode([2, $getCustomCallId, 'GetVariables', [
+        'customData' => $customData,
+        'getVariableData' => [[
+            'customData' => $customData,
+            'component' => ['name' => 'OCPPCommCtrlr', 'customData' => $customData],
+            'variable' => ['name' => 'OfflineThreshold', 'customData' => $customData],
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $getCustomCall);
+    waitForStationResponse($client, $getCustomCallId, 'CustomData GetVariables station response');
+
+    foreach ([
+        ['requestId' => 270, 'report' => true, 'clear' => false, 'idToken' => ['idToken' => 'diagnostics-rfid', 'type' => 'ISO14443']],
+        ['requestId' => 271, 'report' => true, 'clear' => false, 'idToken' => ['idToken' => 'missing-rfid', 'type' => 'ISO14443']],
+        ['requestId' => 272, 'report' => true, 'clear' => true, 'idToken' => ['idToken' => 'diagnostics-rfid', 'type' => 'ISO14443']],
+    ] as $request) {
+        $messageId = 'mock-csms-customer-information-' . $request['requestId'];
+        $call = json_encode([2, $messageId, 'CustomerInformation', $request], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        fwrite(STDOUT, 'CustomerInformation CSMS call: ' . $call . "\n");
+        writeFrame($client, 0x1, $call);
+        $response = waitForStationResponse($client, $messageId, 'CustomerInformation station response');
+        if (($response[2]['status'] ?? null) === 'Accepted') {
+            waitForCustomerInformationNotification($client, $request['requestId']);
+        }
+    }
+
+    $clearWithoutReportCallId = 'mock-csms-customer-information-list-clear-' . $bootCallId;
+    $clearWithoutReportCall = json_encode([2, $clearWithoutReportCallId, 'SendLocalList', [
+        'versionNumber' => 2,
+        'updateType' => 'Full',
+        'localAuthorizationList' => [[
+            'idToken' => ['idToken' => 'clear-no-report-rfid', 'type' => 'ISO14443'],
+            'idTokenInfo' => ['status' => 'Accepted'],
+        ]],
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    writeFrame($client, 0x1, $clearWithoutReportCall);
+    waitForStationResponse($client, $clearWithoutReportCallId, 'CustomerInformation clear without report list station response');
+
+    foreach ([
+        ['requestId' => 273, 'report' => false, 'clear' => true, 'idToken' => ['idToken' => 'clear-no-report-rfid', 'type' => 'ISO14443']],
+        ['requestId' => 274, 'report' => true, 'clear' => true, 'idToken' => ['idToken' => 'missing-rfid', 'type' => 'ISO14443']],
+        ['requestId' => 275, 'report' => true, 'clear' => false, 'idToken' => ['idToken' => 'diagnostics-rfid', 'type' => 'ISO14443']],
+    ] as $request) {
+        $messageId = 'mock-csms-customer-information-' . $request['requestId'];
+        $call = json_encode([2, $messageId, 'CustomerInformation', $request], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        fwrite(STDOUT, 'CustomerInformation CSMS call: ' . $call . "\n");
+        writeFrame($client, 0x1, $call);
+        $response = waitForStationResponse($client, $messageId, 'CustomerInformation station response');
+        if (($response[2]['status'] ?? null) === 'Accepted' && $request['report']) {
+            waitForCustomerInformationNotification($client, $request['requestId']);
+        }
+    }
+
+    $baseUrl = rtrim((string) (getenv('MOCK_CSMS_LOG_UPLOAD_URL') ?: ''), '/');
+    if ($baseUrl === '') {
+        throw new RuntimeException('MOCK_CSMS_LOG_UPLOAD_URL is required for the diagnostics integration flow.');
+    }
+    $successfulUpload = [
+        'requestId' => 250,
+        'logType' => 'DiagnosticsLog',
+        'log' => ['remoteLocation' => $baseUrl . '/success/'],
+        'waitForStatuses' => [['requestId' => 250, 'status' => 'Uploading'], ['requestId' => 250, 'status' => 'Uploaded']],
+    ];
+    $failedUpload = [
+        'requestId' => 251,
+        'logType' => 'DiagnosticsLog',
+        'log' => ['remoteLocation' => $baseUrl . '/fail/'],
+        'retries' => 3,
+        'retryInterval' => 0,
+        'waitForStatuses' => [['requestId' => 251, 'status' => 'Uploading'], ['requestId' => 251, 'status' => 'UploadFailure']],
+    ];
+    $securityUpload = [
+        'requestId' => 252,
+        'logType' => 'SecurityLog',
+        'log' => ['remoteLocation' => $baseUrl . '/security/'],
+        'waitForStatuses' => [['requestId' => 252, 'status' => 'Uploading'], ['requestId' => 252, 'status' => 'Uploaded']],
+    ];
+    foreach ([$successfulUpload, $failedUpload, $securityUpload] as $request) {
+        sendGetLogRequest($client, $bootCallId, $request);
+    }
+
+    $firstCanceledRequest = [
+        'requestId' => 253,
+        'logType' => 'DiagnosticsLog',
+        'log' => ['remoteLocation' => $baseUrl . '/fail/'],
+        'retries' => 3,
+        'retryInterval' => 10,
+        'waitForStatuses' => [['requestId' => 253, 'status' => 'Uploading']],
+    ];
+    sendGetLogRequest($client, $bootCallId, $firstCanceledRequest);
+    sendGetLogRequest($client, $bootCallId, [
+        'requestId' => 254,
+        'logType' => 'DiagnosticsLog',
+        'log' => ['remoteLocation' => $baseUrl . '/success/'],
+        'expectedResponseStatus' => 'AcceptedCanceled',
+        'waitForStatuses' => [
+            ['requestId' => 253, 'status' => 'AcceptedCanceled'],
+            ['requestId' => 254, 'status' => 'Uploading'],
+            ['requestId' => 254, 'status' => 'Uploaded'],
+        ],
+    ]);
+
+    fwrite(STDOUT, "Diagnostics flow complete.\n");
+}
+
+function sendGetLogRequest($client, string $bootCallId, array $request): void
+{
+    $messageId = 'mock-csms-get-log-' . $bootCallId . '-' . $request['requestId'];
+    $payload = array_intersect_key($request, array_flip(['requestId', 'logType', 'log', 'retries', 'retryInterval']));
+    $call = json_encode([2, $messageId, 'GetLog', $payload], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    fwrite(STDOUT, 'GetLog CSMS call: ' . $call . "\n");
+    writeFrame($client, 0x1, $call);
+    $response = waitForStationResponse($client, $messageId, 'GetLog station response');
+    $expected = $request['expectedResponseStatus'] ?? 'Accepted';
+    if (($response[2]['status'] ?? null) !== $expected) {
+        throw new RuntimeException("GetLog request {$request['requestId']} returned an unexpected status.");
+    }
+
+    waitForLogStatusNotifications($client, $request['waitForStatuses'] ?? []);
+}
+
+function waitForCustomerInformationNotification($client, int $requestId): void
+{
+    $deadline = microtime(true) + 10;
+    while (microtime(true) < $deadline) {
+        $response = readOcppMessage($client);
+        if ($response === null) {
+            throw new RuntimeException("Connection closed waiting for customer information request {$requestId}.");
+        }
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) === 2 && ($message[2] ?? null) === 'NotifyCustomerInformation') {
+            fwrite(STDOUT, 'NotifyCustomerInformation CALL: ' . $payload . "\n");
+            respondToStationCall($client, $message);
+            if (($message[3]['requestId'] ?? null) === $requestId && ($message[3]['tbc'] ?? true) === false) {
+                return;
+            }
+            continue;
+        }
+        if (($message[0] ?? null) === 2) {
+            respondToStationCall($client, $message);
+        }
+    }
+
+    throw new RuntimeException("Timed out waiting for customer information request {$requestId}.");
+}
+
+function waitForLogStatusNotifications($client, array $expectedStatuses): void
+{
+    $deadline = microtime(true) + 20;
+    $next = 0;
+    while ($next < count($expectedStatuses) && microtime(true) < $deadline) {
+        $response = readOcppMessage($client);
+        if ($response === null) {
+            throw new RuntimeException('Connection closed while waiting for LogStatusNotification.');
+        }
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) === 2 && ($message[2] ?? null) === 'LogStatusNotification') {
+            fwrite(STDOUT, 'LogStatusNotification CALL: ' . $payload . "\n");
+            $expected = $expectedStatuses[$next];
+            if (($message[3]['requestId'] ?? null) === $expected['requestId']
+                && ($message[3]['status'] ?? null) === $expected['status']) {
+                $next++;
+            }
+            respondToStationCall($client, $message);
+            continue;
+        }
+        if (($message[0] ?? null) === 2) {
+            respondToStationCall($client, $message);
+        }
+    }
+
+    if ($next !== count($expectedStatuses)) {
+        throw new RuntimeException('Timed out waiting for configured LogStatusNotification sequence.');
     }
 }
 
@@ -1196,6 +1410,8 @@ final class MockCsmsSession
     public bool $triggerTransactionEventSent = false;
 
     public bool $baseReportSent = false;
+
+    public bool $diagnosticsSent = false;
 
     public int $statusNotificationCount = 0;
 

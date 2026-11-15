@@ -8,11 +8,13 @@ use ChargerEmulator\Domain\BaseReportRequestHandler;
 use ChargerEmulator\Domain\ChangeAvailabilityRequestHandler;
 use ChargerEmulator\Domain\ClearCacheRequestHandler;
 use ChargerEmulator\Domain\CertificateManagementManager;
+use ChargerEmulator\Domain\CustomerInformationRequestHandler;
 use ChargerEmulator\Domain\DataTransferRequestHandler;
 use ChargerEmulator\Domain\DeviceModel;
 use ChargerEmulator\Domain\FirmwareSignatureException;
 use ChargerEmulator\Domain\FirmwareInstallationVerificationException;
 use ChargerEmulator\Domain\FirmwareUpdateManager;
+use ChargerEmulator\Domain\LogRetrievalManager;
 use ChargerEmulator\Domain\GetLocalListVersionRequestHandler;
 use ChargerEmulator\Domain\MeterMeasurands;
 use ChargerEmulator\Domain\OutletMap;
@@ -54,6 +56,8 @@ final class StationSessionWorker
 
     private readonly MeterValueReporter $meterValueReporter;
 
+    private readonly LogRetrievalManager $logRetrievals;
+
     /** @var array<int, true> */
     private array $firmwareUnavailableReported = [];
 
@@ -86,6 +90,7 @@ final class StationSessionWorker
             $this->transactionEventDelivery,
             fn (int $chargerId): OcppClient => $this->createOcppClient($chargerId),
         );
+        $this->logRetrievals = new LogRetrievalManager($this->logs);
     }
 
     public function run(int $pollMicroseconds = 20_000): never
@@ -381,6 +386,10 @@ final class StationSessionWorker
                 }
 
                 if ($this->reportOfflineStatusChanges($chargerId)) {
+                    return true;
+                }
+
+                if ($this->processLogRetrieval($chargerId)) {
                     return true;
                 }
 
@@ -727,6 +736,7 @@ final class StationSessionWorker
         $networkProfile = new SetNetworkProfileRequestHandler($this->networkProfiles, $chargerId);
         $unlockConnector = new UnlockConnectorRequestHandler($chargerId, $this->outletSessions);
         $dataTransfer = new DataTransferRequestHandler();
+        $customerInformation = new CustomerInformationRequestHandler($chargerId, $this->authorizationLists);
         $clearCache = new ClearCacheRequestHandler();
         $localListVersion = new GetLocalListVersionRequestHandler($chargerId, $this->authorizationLists);
         $sendLocalList = new SendLocalListRequestHandler($chargerId, $this->authorizationLists);
@@ -746,7 +756,7 @@ final class StationSessionWorker
                     $this->redactBasicAuthPasswordFromLog($direction, $action, $message),
                 );
             },
-            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $clearCache, $localListVersion, $sendLocalList, $chargerId): ?array {
+            function (string $action, array $payload) use ($deviceModel, $baseReport, $changeAvailability, $remoteStart, $remoteStop, $reset, $transactionStatus, $triggerMessage, $networkProfile, $unlockConnector, $dataTransfer, $customerInformation, $clearCache, $localListVersion, $sendLocalList, $chargerId): ?array {
                 $deviceModelResponse = $deviceModel->processVariableAction($action, $payload);
                 if ($deviceModelResponse !== null) {
                     return $deviceModelResponse;
@@ -766,6 +776,14 @@ final class StationSessionWorker
 
                 if ($action === 'DataTransfer') {
                     return $dataTransfer->transfer($payload);
+                }
+
+                if ($action === 'GetLog') {
+                    return $this->logRetrievals->request($chargerId, $payload);
+                }
+
+                if ($action === 'CustomerInformation') {
+                    return $customerInformation->request($payload);
                 }
 
                 if ($action === 'ClearCache') {
@@ -829,7 +847,7 @@ final class StationSessionWorker
             function () use ($chargerId): ?string {
                 return $this->currentBootStatus($this->chargers->get($chargerId));
             },
-            function (string $action, array $_payload, array $response) use ($baseReport, $changeAvailability, $chargerId, $triggerMessage): void {
+            function (string $action, array $_payload, array $response) use ($baseReport, $changeAvailability, $chargerId, $triggerMessage, $customerInformation): void {
                 if ($action === 'SetVariables') {
                     if ($this->basicAuthPasswordUpdateAccepted($_payload, $response)) {
                         $this->reconnectAfterBasicAuthPasswordChange($chargerId);
@@ -861,6 +879,28 @@ final class StationSessionWorker
                                 $this->reportFirmwareUnavailable($chargerId);
                             }
                         }
+                    }
+
+                    return;
+                }
+
+                if ($action === 'GetLog' && in_array($response['status'] ?? null, ['Accepted', 'AcceptedCanceled'], true)) {
+                    $this->logRetrievals->acceptedResponse($chargerId, (int) ($_payload['requestId'] ?? -1));
+                    $this->sendPendingLogStatusNotifications($chargerId);
+
+                    return;
+                }
+
+                if ($action === 'CustomerInformation' && ($response['status'] ?? null) === 'Accepted') {
+                    $notifications = $customerInformation->takeNotifications();
+                    if ($notifications === []) {
+                        $customerInformation->responseSent();
+                    }
+                    foreach ($notifications as $notification) {
+                        $this->createOcppClient($chargerId)->request('NotifyCustomerInformation', $notification);
+                    }
+                    if ($notifications !== []) {
+                        $customerInformation->notificationsSent();
                     }
 
                     return;
@@ -1769,6 +1809,26 @@ final class StationSessionWorker
         $this->offlineStatuses->clear($chargerId);
 
         return true;
+    }
+
+    private function processLogRetrieval(int $chargerId): bool
+    {
+        if ($this->sendPendingLogStatusNotifications($chargerId)) {
+            return true;
+        }
+
+        return $this->logRetrievals->uploadWhenDue($chargerId);
+    }
+
+    private function sendPendingLogStatusNotifications(int $chargerId): bool
+    {
+        $sent = false;
+        while (($notification = $this->logRetrievals->takeNextNotification($chargerId)) !== null) {
+            $this->createOcppClient($chargerId)->request('LogStatusNotification', $notification);
+            $sent = true;
+        }
+
+        return $sent;
     }
 
     private function processFirmwareUpdate(int $chargerId): bool

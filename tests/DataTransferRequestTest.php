@@ -15,6 +15,13 @@ it('returns UnknownVendorId when no vendor extension is implemented', function (
     expect($response)->toBe(['status' => 'UnknownVendorId']);
 });
 
+it('accepts customData extensions on DataTransfer', function (): void {
+    expect((new DataTransferRequestHandler())->transfer([
+        'vendorId' => 'com.example.extension',
+        'customData' => ['vendorId' => 'com.example.csms', 'traceId' => 'abc-123'],
+    ]))->toBe(['status' => 'UnknownVendorId']);
+});
+
 it('returns FormationViolation when DataTransfer has invalid identifiers', function (array $payload): void {
     expect(fn () => (new DataTransferRequestHandler())->transfer($payload))
         ->toThrow(OcppCallErrorException::class, 'DataTransfer requires a valid vendorId and messageId');

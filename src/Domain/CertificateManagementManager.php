@@ -41,7 +41,7 @@ final class CertificateManagementManager
     {
         $certificateType = $payload['certificateType'] ?? null;
         $certificate = $payload['certificate'] ?? null;
-        if (!$this->validCustomData($payload['customData'] ?? null)
+        if (!CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))
             || !is_string($certificateType) || !in_array($certificateType, self::INSTALLABLE_TYPES, true)
             || !is_string($certificate) || strlen($certificate) > 5500) {
             return ['status' => 'Rejected'];
@@ -68,7 +68,7 @@ final class CertificateManagementManager
 
     public function getInstalledCertificateIds(int $chargerId, array $payload): array
     {
-        if (!$this->validCustomData($payload['customData'] ?? null)) {
+        if (!CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload))) {
             return ['status' => 'NotFound'];
         }
 
@@ -105,8 +105,8 @@ final class CertificateManagementManager
     public function delete(int $chargerId, array $payload): array
     {
         $requestedHash = $payload['certificateHashData'] ?? null;
-        if (!$this->validCustomData($payload['customData'] ?? null) || !is_array($requestedHash)
-            || !$this->validCustomData($requestedHash['customData'] ?? null)) {
+        if (!CustomDataValidator::isValid($payload['customData'] ?? null, array_key_exists('customData', $payload)) || !is_array($requestedHash)
+            || !CustomDataValidator::isValid($requestedHash['customData'] ?? null, array_key_exists('customData', $requestedHash))) {
             return ['status' => 'Failed'];
         }
 
@@ -331,14 +331,6 @@ final class CertificateManagementManager
             'issuerKeyHash' => hash(self::HASH_ALGORITHMS[$algorithm], $fields['publicKeyBits']),
             'serialNumber' => $serialNumber,
         ];
-    }
-
-    private function validCustomData(mixed $customData): bool
-    {
-        return $customData === null
-            || (is_array($customData)
-                && is_string($customData['vendorId'] ?? null)
-                && strlen($customData['vendorId']) <= 255);
     }
 
     private function boundedString(mixed $value, int $maximumLength): bool

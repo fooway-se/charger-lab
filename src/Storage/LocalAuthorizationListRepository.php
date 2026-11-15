@@ -33,6 +33,34 @@ final class LocalAuthorizationListRepository
         return $entries === false ? [] : json_decode((string) $entries, true, flags: JSON_THROW_ON_ERROR);
     }
 
+    /** Remove the local customer data selected by a CustomerInformation clear request. */
+    public function clearCustomerInformation(int $chargerId, ?array $idToken): void
+    {
+        $entries = $this->entries($chargerId);
+        $remainingEntries = array_values(array_filter(
+            $entries,
+            static function (array $entry) use ($idToken): bool {
+                if ($idToken === null) {
+                    return false;
+                }
+
+                $entryToken = $entry['idToken'] ?? [];
+
+                return ($entryToken['idToken'] ?? null) !== ($idToken['idToken'] ?? null)
+                    || ($entryToken['type'] ?? null) !== ($idToken['type'] ?? null);
+            },
+        ));
+        if ($remainingEntries === $entries) {
+            return;
+        }
+
+        $statement = $this->database->prepare('UPDATE local_authorization_list SET entries = :entries WHERE charger_id = :charger_id');
+        $statement->execute([
+            'charger_id' => $chargerId,
+            'entries' => json_encode($remainingEntries, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+        ]);
+    }
+
     public function apply(int $chargerId, int $versionNumber, string $updateType, array $updates): string
     {
         $this->database->beginTransaction();
