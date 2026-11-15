@@ -40,6 +40,17 @@ it('reports whether a requested transaction or any transaction is ongoing', func
         ->and($handler->getTransactionStatus([]))
         ->toBe(['messagesInQueue' => true]);
 
+    $endedEvent = $events->enqueue($chargerId, [
+        'eventType' => 'Ended',
+        'seqNo' => 2,
+        'transactionInfo' => ['transactionId' => 'ended-transaction'],
+    ]);
+    expect($handler->getTransactionStatus(['transactionId' => 'ended-transaction']))
+        ->toBe(['ongoingIndicator' => false, 'messagesInQueue' => true]);
+    $events->markDelivered($endedEvent['id']);
+    expect($handler->getTransactionStatus(['transactionId' => 'ended-transaction']))
+        ->toBe(['ongoingIndicator' => false, 'messagesInQueue' => false]);
+
     unset($handler, $sessions, $database);
     foreach ([$databasePath, $databasePath . '-wal', $databasePath . '-shm'] as $path) {
         if (is_file($path)) {

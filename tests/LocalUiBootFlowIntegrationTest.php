@@ -500,6 +500,175 @@ it('starts an authorization-first transaction and only charges after the vehicle
     }
 })->group('integration');
 
+it('answers GetTransactionStatus before replaying queued transaction events after reconnect', function (): void {
+    $GLOBALS['testProcesses'] = [];
+    $GLOBALS['capturedMockCsmsOutput'] = '';
+    $directory = sys_get_temp_dir() . '/charger-reconnect-transaction-status-' . bin2hex(random_bytes(6));
+    mkdir($directory, 0775, true);
+    $databasePath = $directory . '/emulator.sqlite';
+    $connectionCountPath = $directory . '/csms-connections';
+    $mockCsmsPort = findOpenPort();
+    $appPort = findOpenPort();
+    $stationIdentity = 'ReconnectStatusCharger';
+    $transactionId = 'reconnect-status-transaction';
+    $mockCsms = null;
+    $app = null;
+    $worker = null;
+
+    try {
+        $mockCsms = startProcess([PHP_BINARY, __DIR__ . '/../bin/mock-csms.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'MOCK_CSMS_PORT' => (string) $mockCsmsPort,
+            'MOCK_CSMS_CONNECTION_COUNT_PATH' => $connectionCountPath,
+            'MOCK_CSMS_STATUS_ON_RECONNECT' => '1',
+            'MOCK_CSMS_STATUS_STATION_IDENTITY' => $stationIdentity,
+            'MOCK_CSMS_STATUS_TRANSACTION_ID' => $transactionId,
+            'MOCK_CSMS_TRANSACTION_EVENT_CALLERROR_COUNT' => '1',
+        ]);
+        waitUntilAvailable($mockCsmsPort);
+
+        $app = startProcess([PHP_BINARY, '-S', "127.0.0.1:{$appPort}", '-t', __DIR__ . '/../public', __DIR__ . '/../public/router.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilAvailable($appPort);
+        [$stateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $state = is_string($stateBody) ? json_decode($stateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $charger = $state['chargers'][0] ?? [];
+        $chargerId = (int) ($charger['id'] ?? 0);
+        expect($chargerId)->toBeGreaterThan(0);
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        waitUntilDatabaseReady($databasePath);
+        $configuration = [
+            'charger_id' => $chargerId,
+            'uses_default_csms' => false,
+            'station_identity' => $stationIdentity,
+            'csms_url' => "ws://127.0.0.1:{$mockCsmsPort}/ocpp",
+            'vendor_name' => 'Test Vendor',
+            'model' => 'Test Model',
+            'serial_number' => 'RECONNECT-STATUS-001',
+            'outlet_count' => 1,
+            'outlet_topology' => 'independent',
+        ];
+        [, $saveHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/charger",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($saveHeaders[0] ?? '', '200'))->toBeFalse('The test charger should save before booting.');
+        [$bootBody, $bootHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/boot",
+            'POST',
+            json_encode($configuration, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
+            'application/json',
+        );
+        expect(!str_contains($bootHeaders[0] ?? '', '200') || !is_string($bootBody))->toBeFalse('The test charger should boot.');
+        waitForBootStatus($appPort, $chargerId, 'Accepted', 5_000);
+
+        stopProcess($worker);
+        $worker = null;
+        $database = Database::connect($databasePath);
+        (new DeviceModelSettingsRepository($database))->set($chargerId, 'RetryBackOffWaitMinimum', '1');
+        $outbox = new TransactionEventOutboxRepository($database);
+        $outbox->enqueue($chargerId, [
+            'eventType' => 'Updated',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'MeterValuePeriodic',
+            'seqNo' => 1,
+            'meterValue' => [[
+                'timestamp' => gmdate(DATE_ATOM),
+                'sampledValue' => [['value' => 100, 'context' => 'Sample.Periodic', 'measurand' => 'Energy.Active.Import.Register']],
+            ]],
+            'transactionInfo' => ['transactionId' => $transactionId, 'chargingState' => 'Charging'],
+            'evse' => ['id' => 1, 'connectorId' => 1],
+        ]);
+        $outbox->markPendingOffline($chargerId);
+        unset($database, $outbox);
+
+        $worker = startProcess([PHP_BINARY, __DIR__ . '/../bin/station-worker.php'], [
+            'PATH' => (string) getenv('PATH'),
+            'DATA_PATH' => $databasePath,
+        ]);
+        $statusOutput = waitForProcessOutput($mockCsms, 'Reconnect GetTransactionStatus station response: ', 8_000);
+        if (!str_contains($statusOutput, 'Reconnect TransactionEvent: ')) {
+            $statusOutput .= waitForProcessOutput($mockCsms, 'Reconnect TransactionEvent: ', 3_000);
+        }
+        $statusResponsePosition = strpos($statusOutput, 'Reconnect GetTransactionStatus station response: ');
+        $transactionEventPosition = strpos($statusOutput, 'Reconnect TransactionEvent: ');
+        expect($statusOutput)->toContain('"ongoingIndicator":false,"messagesInQueue":true')
+            ->and($statusOutput)->toContain('"offline":true')
+            ->and($statusOutput)->toContain($transactionId)
+            ->and($statusResponsePosition)->toBeInt()
+            ->and($transactionEventPosition)->toBeInt()
+            ->and($statusResponsePosition)->toBeLessThan($transactionEventPosition);
+
+        $database = Database::connect($databasePath);
+        $retrySettings = new DeviceModelSettingsRepository($database);
+        $retrySettings->set($chargerId, 'MessageAttemptsTransactionEvent', '3');
+        $retrySettings->set($chargerId, 'MessageAttemptIntervalTransactionEvent', '0');
+        $retryTransactionId = 'callerror-retry-transaction';
+        (new TransactionEventOutboxRepository($database))->enqueue($chargerId, [
+            'eventType' => 'Started',
+            'timestamp' => gmdate(DATE_ATOM),
+            'triggerReason' => 'CablePluggedIn',
+            'seqNo' => 0,
+            'transactionInfo' => ['transactionId' => $retryTransactionId, 'chargingState' => 'EVConnected'],
+            'evse' => ['id' => 1, 'connectorId' => 1],
+        ]);
+        unset($database);
+
+        $callErrorOutput = waitForProcessOutput($mockCsms, 'TransactionEvent CALLERROR: ', 5_000);
+        $deadline = microtime(true) + 5;
+        do {
+            $database = new PDO('sqlite:' . $databasePath);
+            $retryRow = $database->prepare('SELECT status, attempt_count FROM transaction_event_outbox WHERE transaction_id = :transaction_id');
+            $retryRow->execute(['transaction_id' => $retryTransactionId]);
+            $retryState = $retryRow->fetch(PDO::FETCH_ASSOC);
+            if (($retryState['status'] ?? null) === 'delivered') {
+                break;
+            }
+            unset($database);
+            usleep(20_000);
+        } while (microtime(true) < $deadline);
+        $retryMessages = $database->prepare("SELECT message FROM exchange_log WHERE charger_id = :charger_id AND action = 'TransactionEvent' AND direction = 'outgoing'");
+        $retryMessages->execute(['charger_id' => $chargerId]);
+        $retryUniqueIds = [];
+        foreach ($retryMessages->fetchAll(PDO::FETCH_COLUMN) as $messageJson) {
+            $message = json_decode($messageJson, true, flags: JSON_THROW_ON_ERROR);
+            if (($message[3]['transactionInfo']['transactionId'] ?? null) === $retryTransactionId) {
+                $retryUniqueIds[] = $message[1] ?? null;
+            }
+        }
+        unset($database);
+
+        expect($callErrorOutput)->toContain($retryTransactionId)
+            ->and($retryState['status'] ?? null)->toBe('delivered')
+            ->and($retryState['attempt_count'] ?? null)->toBe(1)
+            ->and($retryUniqueIds)->toHaveCount(2)
+            ->and($retryUniqueIds[0])->toBe($retryUniqueIds[1])
+            ->and((int) file_get_contents($connectionCountPath))->toBe(2);
+    } finally {
+        foreach ([$worker, $app, $mockCsms] as $process) {
+            if (is_resource($process)) {
+                stopProcess($process);
+            }
+        }
+        foreach (glob($directory . '/*') ?: [] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($directory)) {
+            rmdir($directory);
+        }
+    }
+})->group('integration');
+
 function runOfflineStatusScenario(string $threshold, string $retryWait, int $expectedStatuses): array
 {
     $GLOBALS['testProcesses'] = [];

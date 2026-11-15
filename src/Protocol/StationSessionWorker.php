@@ -368,6 +368,14 @@ final class StationSessionWorker
                     return true;
                 }
 
+                $incomingFrameJson = $session['connection']->receiveAvailable();
+                if ($incomingFrameJson !== null) {
+                    $bootStatus = $this->currentBootStatus($this->chargers->get($chargerId));
+                    $this->createOcppClient($chargerId)->answerIncomingCallMessage($incomingFrameJson, $bootStatus);
+
+                    return true;
+                }
+
                 if ($this->reportOfflineStatusChanges($chargerId)) {
                     return true;
                 }
@@ -417,13 +425,6 @@ final class StationSessionWorker
                     return true;
                 }
 
-                $incomingFrameJson = $session['connection']->receiveAvailable();
-                if ($incomingFrameJson !== null) {
-                    $bootStatus = $this->currentBootStatus($this->chargers->get($chargerId));
-                    $this->createOcppClient($chargerId)->answerIncomingCallMessage($incomingFrameJson, $bootStatus);
-
-                    return true;
-                }
             } catch (Throwable $exception) {
                 $this->logs->record($chargerId, 'system', 'Session', $exception->getMessage());
                 if (!$this->isOcppCallError($exception) && !($exception instanceof TransactionEventRetryPendingException)) {

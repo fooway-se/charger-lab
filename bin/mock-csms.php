@@ -63,7 +63,80 @@ function serveClient($client): void
         return;
     }
 
+    $connectionNumber = nextStationConnectionNumber();
+    $pathSegments = explode('/', trim($stationKey, '/'));
+    $stationIdentity = rawurldecode((string) end($pathSegments));
+    if (getenv('MOCK_CSMS_STATUS_ON_RECONNECT') === '1'
+        && $connectionNumber > 1
+        && $stationIdentity === (getenv('MOCK_CSMS_STATUS_STATION_IDENTITY') ?: '')) {
+        sendTransactionStatusOnReconnect($client, (string) getenv('MOCK_CSMS_STATUS_TRANSACTION_ID'));
+    }
+
     serveOcppSession($client, $requestLine, $stationKey);
+}
+
+function nextStationConnectionNumber(): int
+{
+    $countPath = getenv('MOCK_CSMS_CONNECTION_COUNT_PATH') ?: '';
+    if ($countPath === '') {
+        return 1;
+    }
+
+    $handle = fopen($countPath, 'c+');
+    if (!is_resource($handle)) {
+        return 1;
+    }
+
+    try {
+        flock($handle, LOCK_EX);
+        rewind($handle);
+        $connectionNumber = ((int) stream_get_contents($handle)) + 1;
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, (string) $connectionNumber);
+        fflush($handle);
+
+        return $connectionNumber;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+}
+
+function sendTransactionStatusOnReconnect($client, string $transactionId): void
+{
+    $messageId = 'mock-csms-reconnect-transaction-status';
+    $call = json_encode([2, $messageId, 'GetTransactionStatus', [
+        'transactionId' => $transactionId,
+    ]], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+    fwrite(STDOUT, 'Reconnect GetTransactionStatus CSMS call: ' . $call . "\n");
+    writeFrame($client, 0x1, $call);
+
+    $statusResponseReceived = false;
+    $transactionEventReceived = false;
+    while (!$statusResponseReceived || !$transactionEventReceived) {
+        $response = readOcppMessage($client);
+        if ($response === null) {
+            return;
+        }
+
+        [$payload, $message] = $response;
+        if (($message[0] ?? null) === 3 && ($message[1] ?? null) === $messageId) {
+            fwrite(STDOUT, 'Reconnect GetTransactionStatus station response: ' . $payload . "\n");
+            $statusResponseReceived = true;
+            continue;
+        }
+
+        if (($message[0] ?? null) !== 2) {
+            continue;
+        }
+
+        if (($message[2] ?? null) === 'TransactionEvent') {
+            fwrite(STDOUT, 'Reconnect TransactionEvent: ' . $payload . "\n");
+            $transactionEventReceived = true;
+        }
+        respondToStationCall($client, $message);
+    }
 }
 
 function acceptWebSocketUpgrade($client, string $requestLine): ?string
@@ -186,7 +259,18 @@ function handleStationCall($client, string $payload, array $call, MockCsmsSessio
             'SecurityEventNotification' => new stdClass(),
             'FirmwareStatusNotification' => new stdClass(),
         };
-        $replyFrame = [3, $call[1], $result];
+        if ($action === 'TransactionEvent') {
+            $session->transactionEventCalls++;
+            $callErrorAttempts = (int) (getenv('MOCK_CSMS_TRANSACTION_EVENT_CALLERROR_COUNT') ?: 0);
+            if ($session->transactionEventCalls <= $callErrorAttempts) {
+                fwrite(STDOUT, 'TransactionEvent CALLERROR: ' . $payload . "\n");
+                $replyFrame = [4, $call[1], 'InternalError', 'Temporary transaction event rejection.', new stdClass()];
+            } else {
+                $replyFrame = [3, $call[1], $result];
+            }
+        } else {
+            $replyFrame = [3, $call[1], $result];
+        }
     }
 
     $reply = json_encode($replyFrame, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
@@ -882,6 +966,8 @@ final class MockCsmsSession
     public bool $baseReportSent = false;
 
     public int $statusNotificationCount = 0;
+
+    public int $transactionEventCalls = 0;
 
     public function __construct(
         public readonly string $stationKey,
