@@ -257,12 +257,18 @@ final class MeterValueReporter
 
     public function sampleTransactionEnd(int $chargerId): bool
     {
-        $sampling = $this->meterValueSettings($chargerId, 'TxEndedInterval', 'TxEndedMeasurands');
-        if ($sampling === null) {
-            return false;
-        }
-        $interval = $sampling['interval'];
-        $measurands = $sampling['measurands'];
+        $samplingSources = [
+            [
+                'interval' => 'TxEndedInterval',
+                'measurands' => 'TxEndedMeasurands',
+                'context' => 'Sample.Periodic',
+            ],
+            [
+                'interval' => 'AlignedTxEndedInterval',
+                'measurands' => 'AlignedTxEndedMeasurands',
+                'context' => 'Sample.Clock',
+            ],
+        ];
 
         foreach ($this->outletSessions->allForCharger($chargerId) as $session) {
             if ($session['connector_status'] !== 'Occupied' || $session['transaction_id'] === null
@@ -270,36 +276,74 @@ final class MeterValueReporter
                 continue;
             }
 
-            $lastSampleAt = $session['meter_ended_at'] === null
-                ? false
-                : strtotime($session['meter_ended_at']);
-            if ($lastSampleAt !== false && time() < $lastSampleAt + $interval) {
-                continue;
+            foreach ($samplingSources as $source) {
+                $sampling = $this->meterValueSettings($chargerId, $source['interval'], $source['measurands']);
+                if ($sampling === null) {
+                    continue;
+                }
+
+                $lastSampleAt = $this->lastTransactionEndSampleAt($session, $source['context']);
+                if ($lastSampleAt === null && is_string($session['meter_ended_at'])) {
+                    $lastSampleAt = strtotime($session['meter_ended_at']) ?: null;
+                }
+
+                $now = time();
+                $sampleTimestamp = $now;
+                if ($source['context'] === 'Sample.Clock') {
+                    $sampleTimestamp = (new ClockAlignedMeterValueSchedule())->nextSampleAt(
+                        $sampling['interval'],
+                        $lastSampleAt ?? ($now - $sampling['interval']),
+                    ) ?? PHP_INT_MAX;
+                    if ($now < $sampleTimestamp) {
+                        continue;
+                    }
+                } elseif ($lastSampleAt !== null && $now < $lastSampleAt + $sampling['interval']) {
+                    continue;
+                }
+
+                $sampledAt = $source['context'] === 'Sample.Clock'
+                    ? gmdate('Y-m-d\\TH:i:s\\Z', $sampleTimestamp)
+                    : gmdate(DATE_ATOM, $sampleTimestamp);
+                $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
+                $meterValue = $this->value(
+                    $meterWh,
+                    $source['context'],
+                    $sampledAt,
+                    $sampling['measurands'],
+                    SimulatedMeter::powerForOutlet($session),
+                )[0];
+                $this->outletSessions->recordTransactionEndSample(
+                    $chargerId,
+                    $session['evse_id'],
+                    $session['connector_id'],
+                    $session['transaction_id'],
+                    $meterWh,
+                    $sampledAt,
+                    $meterValue,
+                );
+
+                return true;
             }
-
-            $sampledAt = gmdate(DATE_ATOM);
-            $meterWh = $session['meter_wh'] + self::PERIODIC_ENERGY_WH;
-            $meterValue = $this->value(
-                $meterWh,
-                'Sample.Periodic',
-                $sampledAt,
-                $measurands,
-                SimulatedMeter::powerForOutlet($session),
-            )[0];
-            $this->outletSessions->recordTransactionEndSample(
-                $chargerId,
-                $session['evse_id'],
-                $session['connector_id'],
-                $session['transaction_id'],
-                $meterWh,
-                $sampledAt,
-                $meterValue,
-            );
-
-            return true;
         }
 
         return false;
+    }
+
+    private function lastTransactionEndSampleAt(array $session, string $context): ?int
+    {
+        $lastSampleAt = null;
+        foreach ($session['meter_end_samples'] as $meterValue) {
+            if (($meterValue['sampledValue'][0]['context'] ?? null) !== $context) {
+                continue;
+            }
+
+            $timestamp = strtotime($meterValue['timestamp'] ?? '');
+            if ($timestamp !== false && ($lastSampleAt === null || $timestamp > $lastSampleAt)) {
+                $lastSampleAt = $timestamp;
+            }
+        }
+
+        return $lastSampleAt;
     }
 
     /** @return array{interval:int,measurands:list<string>}|null */

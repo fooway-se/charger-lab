@@ -101,3 +101,34 @@ it('persists and delivers a periodic meter sample for an active charging transac
         ->and($session['meter_wh'] ?? null)->toBe(100)
         ->and($session['seq_no'] ?? null)->toBe(2);
 });
+
+it('stores clock-aligned meter samples configured for transaction end', function (): void {
+    $database = Database::connect(':memory:');
+    $chargerId = (new ChargerRepository($database))->createDefault();
+    $outletSessions = new OutletSessionRepository($database);
+    $outletSessions->initialize($chargerId, [['number' => 1, 'evse_id' => 1, 'connector_id' => 1]]);
+    $outletSessions->markOccupied($chargerId, 1, 1, 'aligned-ended-transaction');
+    $database->exec("UPDATE outlet_session SET meter_ended_at = '2000-01-01T00:00:00+00:00'");
+    $settings = new DeviceModelSettingsRepository($database);
+    $settings->set($chargerId, 'AlignedTxEndedInterval', '1');
+    $settings->set($chargerId, 'AlignedTxEndedMeasurands', 'Energy.Active.Import.Register,Power.Active.Import');
+    $settings->set($chargerId, 'TxEndedInterval', '0');
+    $settings->set($chargerId, 'TxEndedMeasurands', '');
+    $clientFactory = static fn (int $_chargerId): OcppClient => throw new RuntimeException('No OCPP exchange expected.');
+    $delivery = new TransactionEventDelivery(
+        new TransactionEventOutboxRepository($database),
+        $outletSessions,
+        $settings,
+        $clientFactory,
+    );
+    $reporter = new MeterValueReporter($outletSessions, $settings, $delivery, $clientFactory);
+
+    expect($reporter->sampleTransactionEnd($chargerId))->toBeTrue();
+
+    $session = $outletSessions->find($chargerId, 1, 1);
+    $sample = $session['meter_end_samples'][0] ?? [];
+    expect($sample['sampledValue'][0]['context'] ?? null)->toBe('Sample.Clock')
+        ->and($sample['sampledValue'][0]['measurand'] ?? null)->toBe('Energy.Active.Import.Register')
+        ->and($sample['sampledValue'][1]['context'] ?? null)->toBe('Sample.Clock')
+        ->and($sample['sampledValue'][1]['measurand'] ?? null)->toBe('Power.Active.Import');
+});

@@ -1399,7 +1399,6 @@ final class StationSessionWorker
             $stoppedReason,
             chargingState: 'Idle',
             meterWh: $meterWh,
-            meterValues: $session['meter_end_samples'],
         );
 
         return ['status' => 'Unplugged'];
@@ -1631,7 +1630,6 @@ final class StationSessionWorker
         string $stoppedReason,
         ?string $chargingState = null,
         ?int $meterWh = null,
-        array $meterValues = [],
         bool $reportCurrentStatus = true,
     ): void {
         $timestamp = gmdate(DATE_ATOM);
@@ -1643,8 +1641,13 @@ final class StationSessionWorker
             $transactionInfo['chargingState'] = $chargingState;
         }
 
+        $latestSession = $this->outletSessions->find(
+            $chargerId,
+            $session['evse_id'],
+            $session['connector_id'],
+        );
         $meterValues = [
-            ...$meterValues,
+            ...($latestSession['meter_end_samples'] ?? $session['meter_end_samples'] ?? []),
             ...($this->meterValueReporter->endTransactionValue($chargerId, $meterWh ?? $session['meter_wh']) ?? []),
         ];
         $event = [

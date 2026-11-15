@@ -2748,6 +2748,10 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
         $settings = new DeviceModelSettingsRepository($database);
         $settings->set($chargerId, 'Interval', '1');
         $settings->set($chargerId, 'Measurands', 'Energy.Active.Import.Register');
+        $settings->set($chargerId, 'AlignedTxEndedInterval', '1');
+        $settings->set($chargerId, 'AlignedTxEndedMeasurands', 'Energy.Active.Import.Register');
+        $settings->set($chargerId, 'TxEndedInterval', '0');
+        $settings->set($chargerId, 'TxEndedMeasurands', '');
         expect($settings->getInteger($chargerId, 'Interval', 0, 1))->toBe(1)
             ->and($settings->get($chargerId, 'Measurands'))->toBe('Energy.Active.Import.Register');
         unset($database, $settings);
@@ -2810,6 +2814,58 @@ it('sends clock-aligned transaction samples as MeterValueClock events', function
             ->and($payload['transactionInfo']['transactionId'] ?? null)->toBeString()
             ->and($sampledValue['context'] ?? null)->toBe('Sample.Clock')
             ->and($sampledValue['measurand'] ?? null)->toBe('Energy.Active.Import.Register');
+
+        $sampleDeadline = microtime(true) + 5;
+        $storedSamples = [];
+        do {
+            $sampleDatabase = new PDO('sqlite:' . $databasePath);
+            $sampleQuery = $sampleDatabase->prepare(
+                'SELECT meter_end_samples FROM outlet_session WHERE charger_id = :charger_id AND evse_id = 1 AND connector_id = 1',
+            );
+            $sampleQuery->execute(['charger_id' => $chargerId]);
+            $storedSamples = json_decode((string) $sampleQuery->fetchColumn(), true, flags: JSON_THROW_ON_ERROR);
+            unset($sampleDatabase);
+            if (count($storedSamples) >= 2) {
+                break;
+            }
+            usleep(50_000);
+        } while (microtime(true) < $sampleDeadline);
+
+        [$unplugBody, $unplugHeaders] = request(
+            "http://127.0.0.1:{$appPort}/api/outlet/unplug",
+            'POST',
+            json_encode(['charger_id' => $chargerId, 'outlet_number' => 1], JSON_THROW_ON_ERROR),
+            'application/json',
+        );
+        [$endedStateBody] = request("http://127.0.0.1:{$appPort}/api/state", 'GET', '', 'application/json');
+        $endedState = is_string($endedStateBody) ? json_decode($endedStateBody, true, flags: JSON_THROW_ON_ERROR) : [];
+        $endedCalls = array_values(array_filter(
+            $endedState['chargers'][0]['entries'] ?? [],
+            static function (array $entry): bool {
+                if (($entry['action'] ?? null) !== 'TransactionEvent' || ($entry['direction'] ?? null) !== 'outgoing') {
+                    return false;
+                }
+
+                $call = json_decode($entry['message'], true);
+
+                return ($call[3]['eventType'] ?? null) === 'Ended'
+                    && ($call[3]['evse']['id'] ?? null) === 1;
+            },
+        ));
+        $endedCall = $endedCalls[0] ?? [];
+        $endedPayload = json_decode($endedCall['message'] ?? 'null', true);
+        $endedSamples = $endedPayload[3]['meterValue'] ?? [];
+        $endedSampleTimes = array_map(
+            static fn (array $meterValue): int|false => strtotime($meterValue['timestamp'] ?? ''),
+            $endedSamples,
+        );
+        expect(count($storedSamples))->toBeGreaterThanOrEqual(2)
+            ->and(!str_contains($unplugHeaders[0] ?? '', '200'))->toBeFalse('The test vehicle should be able to unplug after meter sampling.')
+            ->and(($endedPayload[3]['eventType'] ?? null))->toBe('Ended')
+            ->and(count($endedSamples))->toBeGreaterThanOrEqual(2)
+            ->and($endedSamples[0]['sampledValue'][0]['context'] ?? null)->toBe('Sample.Clock')
+            ->and($endedSamples[1]['sampledValue'][0]['context'] ?? null)->toBe('Sample.Clock')
+            ->and($endedSampleTimes[1] - $endedSampleTimes[0])->toBe(1);
     } finally {
         if ($app !== null) {
             stopProcess($app);
