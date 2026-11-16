@@ -32,6 +32,8 @@ The outlet layout supports 1–16 outlets:
 - **Independent EVSEs** assigns one EVSE ID to each outlet, with connector ID 1.
 - **Shared EVSE** assigns all outlets to EVSE 1, with a distinct connector ID for each outlet.
 
+![Charger Lab setup screen showing station identity, CSMS endpoint, password, and outlet configuration](docs/images/charger-lab-setup.png)
+
 ## Connect to another CSMS
 
 The app and station worker run in containers. If your CSMS runs in a separate Compose project, attach both Charger Lab containers to its Docker network with the optional overlay:
