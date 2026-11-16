@@ -49,9 +49,21 @@ The Compose setup publishes the browser app and mock CSMS on `127.0.0.1` only. T
 
 Local `.env` and `.env.*` files are excluded from the Docker build context so they are not copied into the image. `.env.example` is allowed for non-secret configuration examples.
 
-## Scope
+## Implemented OCPP coverage
 
-Charger Lab simulates station behavior and meter readings; it does not control or measure real charging hardware. It implements a selected OCPP 2.0.1 Core subset, and intentionally omits other actions and Device Model variables. Its repository tests are preparation for interoperability work; they are not an OCA Compliance Testing Tool (OCTT) result or certification. See the [Core conformance notes](docs/ocpp-2.0.1-core-compliance.md) for the current implementation audit and remaining verification gaps.
+Charger Lab targets the OCPP 2.0.1 Core profile. The current implementation covers these areas:
+
+- WebSocket boot, heartbeat, reconnect, TLS, and Basic Authentication.
+- Local RFID authorization, remote start/stop, TransactionEvents, transaction status, and retry/offline delivery.
+- Selected Device Model reads/writes and reports, network profiles, availability, reset, and TriggerMessage behavior.
+- Simulated sampled and clock-aligned meter values.
+- Simulated secure firmware-update and certificate-management flows, plus diagnostic and security log uploads.
+
+This is a **subset implementation**, not a claim that every mandatory or conditional Core behavior has been implemented or passed. Charger Lab simulates station behavior and meter readings; it does not control or measure real charging hardware. Some OCPP actions and Device Model variables are unsupported.
+
+## Conformance status
+
+Repository unit and CSMS integration tests cover the behaviors described above. They do not replace OCA's Compliance Testing Tool (OCTT), and no OCTT result or OCA certification is claimed. The [Core conformance notes](docs/ocpp-2.0.1-core-compliance.md) list tracked areas and remaining PICS/OCTT verification gaps.
 
 ## Run the test suite
 
