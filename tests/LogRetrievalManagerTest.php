@@ -58,6 +58,47 @@ it('uploads diagnostics and reports Uploading followed by Uploaded', function ()
         ->and($uploader->uploads[0]['contents'])->toContain('Heartbeat');
 });
 
+it('routes loopback log upload locations through the active CSMS hostname', function (): void {
+    [$chargerId, , $uploader, $manager] = createLogRetrievalManager([true]);
+    $request = getLogRequest(27);
+    $request['log']['remoteLocation'] = 'http://localhost:8090/logs/?token=abc';
+
+    expect($manager->request($chargerId, $request, 'wss://ocpp-gateway:8080/ocpp/station-1')['status'])->toBe('Accepted');
+    $manager->acceptedResponse($chargerId, 27);
+    $manager->takeNextNotification($chargerId);
+    $manager->uploadWhenDue($chargerId);
+
+    expect($uploader->uploads[0]['remoteLocation'])->toBe('http://ocpp-gateway:8090/logs/?token=abc');
+});
+
+it('rewrites loopback and keeps non-loopback log upload locations unchanged', function (): void {
+    [$chargerId, , $uploader, $manager] = createLogRetrievalManager([true, true]);
+    $manager->request($chargerId, getLogRequest(28), 'wss://ocpp-gateway:8080/ocpp/station-1');
+    $manager->acceptedResponse($chargerId, 28);
+    $manager->takeNextNotification($chargerId);
+    $manager->uploadWhenDue($chargerId);
+
+    $request = getLogRequest(29);
+    $request['log']['remoteLocation'] = 'https://logs.allmeter.example/upload';
+    $manager->request($chargerId, $request, 'wss://ocpp-gateway:8080/ocpp/station-1');
+    $manager->acceptedResponse($chargerId, 29);
+    $manager->takeNextNotification($chargerId);
+    $manager->uploadWhenDue($chargerId);
+
+    expect($uploader->uploads[0]['remoteLocation'])->toBe('http://ocpp-gateway:8080/logs/')
+        ->and($uploader->uploads[1]['remoteLocation'])->toBe('https://logs.allmeter.example/upload');
+});
+
+it('does not rewrite loopback uploads when the CSMS endpoint is also loopback', function (): void {
+    [$chargerId, , $uploader, $manager] = createLogRetrievalManager([true]);
+    $manager->request($chargerId, getLogRequest(30), 'ws://127.0.0.1:8080/ocpp/station-1');
+    $manager->acceptedResponse($chargerId, 30);
+    $manager->takeNextNotification($chargerId);
+    $manager->uploadWhenDue($chargerId);
+
+    expect($uploader->uploads[0]['remoteLocation'])->toBe('http://127.0.0.1:8080/logs/');
+});
+
 it('retries failed log uploads and reports one terminal UploadFailure', function (): void {
     [$chargerId, , $uploader, $manager] = createLogRetrievalManager([false, false, false, false]);
     expect($manager->request($chargerId, getLogRequest(26, overrides: [

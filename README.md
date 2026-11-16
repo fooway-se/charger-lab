@@ -20,7 +20,7 @@ The web app and station worker run in containers. `localhost` therefore refers t
 CSMS_DOCKER_NETWORK=allmeter-mono_default docker compose -f compose.yaml -f compose.external-csms.yaml up --build -d
 ```
 
-Use the CSMS service name and its container port in **Setup** (for AllMeter, `wss://ocpp-gateway:8080/ocpp`). For a CSMS running directly on the host, use `host.docker.internal` and make sure its port is reachable from containers. TLS verification stays enabled: the certificate must match the URL host and the issuing CA must be trusted by the PHP containers.
+Use the CSMS service name and its container port in **Setup** (for AllMeter, `wss://ocpp-gateway:8080/ocpp`). A loopback hostname (`localhost`, `127.0.0.0/8`, or `::1`) in a `GetLog.remoteLocation` is automatically replaced with the hostname from the active CSMS URL; its advertised port and remaining URL are kept. The port must be reachable on the CSMS container from the station worker. Non-loopback upload URLs are used as supplied. For a CSMS running directly on the host, use `host.docker.internal` and make sure its port is reachable from containers. TLS verification stays enabled: the certificate must match the URL host and the issuing CA must be trusted by the PHP containers.
 
 Set the outlet count from 1 to 16. **Independent EVSEs** assign one EVSE ID per outlet, each with connector ID 1. **Shared EVSE** assigns all outlets to EVSE 1 with a distinct connector ID for each outlet. Existing databases migrate to one independent outlet by default.
 

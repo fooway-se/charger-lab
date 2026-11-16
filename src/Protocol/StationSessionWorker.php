@@ -807,7 +807,7 @@ final class StationSessionWorker
                 }
 
                 if ($action === 'GetLog') {
-                    return $this->logRetrievals->request($chargerId, $payload);
+                    return $this->logRetrievals->request($chargerId, $payload, $this->sessions[$chargerId]['url'] ?? null);
                 }
 
                 if ($action === 'CustomerInformation') {

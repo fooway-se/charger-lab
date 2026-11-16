@@ -17,10 +17,11 @@ final class LogRetrievalManager
         private readonly ExchangeRepository $logs,
         private readonly LogUploader $uploader = new LogFileUploader(),
         private readonly GetLogRequestHandler $requestHandler = new GetLogRequestHandler(),
+        private readonly LogUploadLocationResolver $uploadLocationResolver = new LogUploadLocationResolver(),
     ) {
     }
 
-    public function request(int $chargerId, array $payload): array
+    public function request(int $chargerId, array $payload, ?string $csmsUrl = null): array
     {
         $response = $this->requestHandler->handle($payload);
         if (($response['status'] ?? null) !== 'Accepted') {
@@ -47,7 +48,7 @@ final class LogRetrievalManager
         ));
         $this->jobs[$chargerId] = [
             'request_id' => $requestId,
-            'remote_location' => $log['remoteLocation'],
+            'remote_location' => $this->uploadLocationResolver->resolve($log['remoteLocation'], $csmsUrl),
             'filename' => $response['filename'],
             'contents' => $contents . ($contents === '' ? '' : "\n"),
             'retries' => $payload['retries'] ?? 0,
