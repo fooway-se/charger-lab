@@ -47,6 +47,8 @@ Set the CSMS URL in **Setup** to its Docker service name and container port, for
 
 For a CSMS running on the host, use `host.docker.internal` and a port reachable from the station-worker container. The Compose file adds this hostname for the worker on Linux. Keep TLS verification enabled: the URL hostname must match the CSMS certificate, and its issuing CA must be trusted. Add a private CA certificate in the workspace TLS settings if needed.
 
+![Workspace settings showing the default CSMS URL, TLS trust options, and connection test](docs/images/charger-lab-workspace-settings.png)
+
 ## Data and local access
 
 The Compose setup publishes the browser app and mock CSMS on `127.0.0.1` only. The local browser API has no authentication, so keep it on the developer machine; do not expose it to a shared or public network. Use test credentials: CSMS passwords and workspace settings are persisted in the local SQLite data volume.
