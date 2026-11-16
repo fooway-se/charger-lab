@@ -3,7 +3,7 @@ services:
     build: .
     command: ["php", "-S", "0.0.0.0:8080", "-t", "public", "public/router.php"]
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     environment:
       DATA_PATH: /app/data/emulator.sqlite
     extra_hosts:
@@ -19,6 +19,8 @@ services:
     command: ["php", "bin/station-worker.php"]
     environment:
       DATA_PATH: /app/data/emulator.sqlite
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - charger-data:/app/data
     depends_on:
@@ -28,7 +30,7 @@ services:
     build: .
     command: ["php", "bin/mock-csms.php"]
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     networks:
       default:
         aliases:
