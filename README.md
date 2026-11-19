@@ -2,7 +2,7 @@
 
 Charger Lab is a local OCPP 2.0.1 Charging Station emulator for developing and testing Charging Station Management Systems (CSMSs). It includes a browser test bench and a mock CSMS for trying the basic flow. It is not a physical charger, production service, or OCA-certified implementation.
 
-![Charger Lab test bench showing a connected station, outlet controls, RFID panel, and OCPP message log](docs/images/charger-lab-test-bench.png)
+![Station simulator with OCPP 2.0.1 badge, connected charger, outlet controls, RFID panel, and OCPP message log](docs/images/charger-lab-test-bench.webp)
 
 ## Install and run
 

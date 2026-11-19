@@ -433,7 +433,6 @@ function renderState(state, preserveFormInput = false) {
     reconcileChildren(chargerList, workspaces);
     restoreLogScrollPositions(logScrollPositions);
     setTextContent(document.querySelector('#charger-count'), String(state.chargers.length).padStart(2, '0'));
-    setTextContent(document.querySelector('[data-role="test-bench-charger-count"]'), String(state.chargers.length).padStart(2, '0'));
     const chargerSelect = networkTestForm.elements.namedItem('network_test_charger_id');
     const selectedChargerId = chargerSelect.value;
     const existingOptions = new Map(Array.from(chargerSelect.options, (option) => [option.value, option]));
