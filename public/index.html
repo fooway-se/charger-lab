@@ -3,10 +3,10 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#c7d4cd">
+    <meta name="theme-color" content="#153b31">
     <title>Charger Lab · OCPP 2.0.1</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-17 0 108 108'%3E%3Cdefs%3E%3ClinearGradient id='fav-body' x1='0' y1='0' x2='1' y2='0.18'%3E%3Cstop offset='0' stop-color='%23fff'/%3E%3Cstop offset='1' stop-color='%23e9eeeb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='17' y='99' width='40' height='8' rx='2' fill='%23c4ceca'/%3E%3Cpath d='M13.5 38.5h47a4 4 0 0 1 4 4V88a7 7 0 0 1-7 7h-41a7 7 0 0 1-7-7V42.5a4 4 0 0 1 4-4z' fill='url(%23fav-body)' stroke='%23cfd8d2'/%3E%3Ccircle cx='37' cy='50' r='4.5' fill='%236ee4a2' opacity='.3'/%3E%3Ccircle cx='37' cy='50' r='2' fill='%2351bd88'/%3E%3Crect x='23' y='61' width='11' height='15' rx='3' fill='%23293c3a' stroke='%23788884' stroke-width='2'/%3E%3Crect x='40' y='61' width='11' height='15' rx='3' fill='%23293c3a' stroke='%23788884' stroke-width='2'/%3E%3Cpath d='M22 7h30a7 7 0 0 1 7 7v24a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V14a7 7 0 0 1 7-7z' fill='%23263b3b'/%3E%3Crect x='19' y='11' width='36' height='28' rx='3' fill='%23173a36'/%3E%3Cpath d='M39.5 13 31 24h5.5l-2 8 9-11.5H38z' fill='%239bebbd'/%3E%3Crect x='26' y='34' width='22' height='2' rx='1' fill='%235d937a'/%3E%3C/svg%3E">
-    <link rel="stylesheet" href="/style.css?v=4">
+    <link rel="stylesheet" href="/style.css?v=5">
     <script src="/app.js?v=5" defer></script>
 </head>
 <body>
@@ -23,7 +23,7 @@
                     <circle cx="37" cy="50" r="4.5" fill="#6ee4a2" opacity=".3"/>
                     <circle cx="37" cy="50" r="2" fill="#51bd88"/><rect x="23" y="61" width="11" height="15" rx="3" fill="#293c3a" stroke="#788884" stroke-width="2"/>
                     <rect x="40" y="61" width="11" height="15" rx="3" fill="#293c3a" stroke="#788884" stroke-width="2"/>
-                    <path d="M22 7h30a7 7 0 0 1 7 7v24a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V14a7 7 0 0 1 7-7z" fill="#263b3b"/>
+                    <path d="M22 7h30a7 7 0 0 1 7 7v24a4 4 0 0 1-4 4H19a4 4 0 0 1-4-4V14a7 7 0 0 1 7-7z" fill="#e1eae4"/>
                     <rect x="19" y="11" width="36" height="28" rx="3" fill="#173a36"/>
                     <path d="M39.5 13 31 24h5.5l-2 8 9-11.5H38z" fill="#9bebbd"/>
                     <rect x="26" y="34" width="22" height="2" rx="1" fill="#5d937a"/>
@@ -35,7 +35,7 @@
 </header>
 <main class="page-shell">
     <section class="page-heading">
-        <div><h1>Station simulator</h1><p class="subtitle">Bring virtual chargers online and inspect each message stream.</p></div>
+        <div><h1>Station simulator</h1><p class="subtitle">OCPP 2.0.1 Core Profile</p></div>
     </section>
     <div id="notice" class="notice" role="status" hidden></div>
     <nav id="screen-navigation" class="screen-navigation" aria-label="Workspace screens">
@@ -75,7 +75,6 @@
             <div id="test-bench-charger-list" class="charger-list-slot"></div>
         </section>
     </section>
-    <div class="profile-note"><span class="profile-note-icon">⌘</span><p><strong>Developer testing aid</strong><br>This simulator helps you inspect CSMS behavior. It is not a certification tool.</p></div>
 </main>
 <template id="charger-template">
     <div class="charger-workspace" data-charger-id="">
